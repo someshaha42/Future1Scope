@@ -42,14 +42,14 @@ fun SectionCard(
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(16.dp),
         color = FrameScopeColors.CardSurface,
         border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp)
+                .padding(14.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -63,7 +63,7 @@ fun SectionCard(
                 )
                 trailing?.invoke()
             }
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(10.dp))
             content()
         }
     }
@@ -72,7 +72,7 @@ fun SectionCard(
 @Composable
 fun SelectableOptionCard(
     title: String,
-    subtitle: String,
+    subtitle: String? = null,
     icon: ImageVector,
     selected: Boolean,
     enabled: Boolean,
@@ -108,7 +108,7 @@ fun SelectableOptionCard(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp)
+                .padding(12.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -117,8 +117,8 @@ fun SelectableOptionCard(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(34.dp)
-                        .clip(RoundedCornerShape(10.dp))
+                        .size(32.dp)
+                        .clip(RoundedCornerShape(9.dp))
                         .background(iconContainerColor),
                     contentAlignment = Alignment.Center
                 ) {
@@ -126,7 +126,7 @@ fun SelectableOptionCard(
                         imageVector = icon,
                         contentDescription = title,
                         tint = if (selected) FrameScopeColors.TextPrimary else FrameScopeColors.TextSecondary,
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(17.dp)
                     )
                 }
 
@@ -140,7 +140,7 @@ fun SelectableOptionCard(
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
             Text(
                 text = title,
@@ -148,13 +148,14 @@ fun SelectableOptionCard(
                 color = FrameScopeColors.TextPrimary
             )
 
-            Spacer(modifier = Modifier.height(4.dp))
-
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 12.sp, lineHeight = 16.sp),
-                color = FrameScopeColors.TextSecondary
-            )
+            if (!subtitle.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(3.dp))
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 12.sp, lineHeight = 16.sp),
+                    color = FrameScopeColors.TextSecondary
+                )
+            }
         }
     }
 }

@@ -22,12 +22,6 @@ enum class EncodingTab(
         displayName = "H.265 (HEVC)",
         shortName = "H.265",
         defaultBitrateMbps = 30
-    ),
-    AV1(
-        mimeType = MediaFormat.MIMETYPE_VIDEO_AV1,
-        displayName = "AV1",
-        shortName = "AV1",
-        defaultBitrateMbps = 25
     )
 }
 
@@ -78,10 +72,9 @@ object EncodingSpec {
     fun selectDefaultVideoCodec(
         supportMap: Map<EncodingTab, VideoCodecCapability>
     ): EncodingTab {
-        if (supportMap[EncodingTab.AV1]?.isSupported == true) return EncodingTab.AV1
         if (supportMap[EncodingTab.H265]?.isSupported == true) return EncodingTab.H265
         if (supportMap[EncodingTab.H264]?.isSupported == true) return EncodingTab.H264
-        return EncodingTab.AV1
+        return EncodingTab.H265
     }
 
     private fun detectCodecCapability(
@@ -195,9 +188,6 @@ object EncodingSpec {
             EncodingTab.H265 -> caps.profileLevels?.firstOrNull {
                 it.profile == MediaCodecInfo.CodecProfileLevel.HEVCProfileMain
             }?.profile
-            EncodingTab.AV1 -> caps.profileLevels?.firstOrNull {
-                it.profile == MediaCodecInfo.CodecProfileLevel.AV1ProfileMain8
-            }?.profile
             EncodingTab.H264 -> null
         }
 
@@ -310,7 +300,7 @@ object EncodingSpec {
         }
     }
 
-    fun inspectHardwareEncoder(tab: EncodingTab = EncodingTab.AV1): EncoderValidationReport {
+    fun inspectHardwareEncoder(tab: EncodingTab = EncodingTab.H265): EncoderValidationReport {
         val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
         val capability = detectCodecCapability(tab, list)
         val matchingName = capability.codecName

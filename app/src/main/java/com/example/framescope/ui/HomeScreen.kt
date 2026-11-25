@@ -46,7 +46,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.WbSunny
-import androidx.compose.material.icons.rounded.Fullscreen
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Settings
@@ -93,7 +92,6 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.framescope.R
 import com.example.framescope.data.AudioSourceMode
-import com.example.framescope.data.RecordingMode
 import com.example.framescope.encoding.EncodingForegroundService
 import com.example.framescope.encoding.EncodingTab
 import com.example.framescope.encoding.RecordingOrientation
@@ -318,29 +316,28 @@ fun HomeScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(scrollState)
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .widthIn(max = if (isWideLayout) 1040.dp else 600.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     HeroRecordingCard(
                         sessionState = sessionState,
-                        summaryLine = summaryLine,
                         onRecordClick = ::onRecordButtonClicked
                     )
 
                     if (isWideLayout) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(14.dp)
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             Column(
                                 modifier = Modifier.weight(1f),
-                                verticalArrangement = Arrangement.spacedBy(14.dp)
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
                                 VideoEncoderSection(
                                     selected = settings.videoCodec,
@@ -348,16 +345,10 @@ fun HomeScreen(
                                     enabled = controlsEnabled,
                                     onSelect = viewModel::selectVideoCodec
                                 )
-                                RecordingModeSection(
-                                    enabled = controlsEnabled,
-                                    onSelectFullScreen = {
-                                        viewModel.setRecordingMode(RecordingMode.FULL_SCREEN)
-                                    }
-                                )
                             }
                             Column(
                                 modifier = Modifier.weight(1f),
-                                verticalArrangement = Arrangement.spacedBy(14.dp)
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
                                 OrientationSection(
                                     selected = settings.orientation,
@@ -378,12 +369,6 @@ fun HomeScreen(
                             enabled = controlsEnabled,
                             onSelect = viewModel::selectVideoCodec
                         )
-                        RecordingModeSection(
-                            enabled = controlsEnabled,
-                            onSelectFullScreen = {
-                                viewModel.setRecordingMode(RecordingMode.FULL_SCREEN)
-                            }
-                        )
                         OrientationSection(
                             selected = settings.orientation,
                             enabled = controlsEnabled,
@@ -396,7 +381,7 @@ fun HomeScreen(
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                 }
             }
         }
@@ -420,7 +405,7 @@ private fun VideoEncoderSection(
             )
         }
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             EncodingTab.entries.forEach { tab ->
                 val cap = capabilities[tab]
                 val isSupported = cap?.isSupported == true
@@ -471,13 +456,13 @@ private fun VideoEncoderOptionCard(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp),
+                .padding(12.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(3.dp)
+                verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 Text(
                     text = tab.displayName,
@@ -632,18 +617,16 @@ private fun HomeTopBar(
 @Composable
 private fun HeroRecordingCard(
     sessionState: RecordingSessionState,
-    summaryLine: String,
     onRecordClick: () -> Unit
 ) {
     val isRecording = sessionState is RecordingSessionState.Recording
     val isStopping = sessionState is RecordingSessionState.Stopping
 
     val elapsedSeconds = (sessionState as? RecordingSessionState.Recording)?.elapsedSeconds ?: 0L
-    val activeSummary = (sessionState as? RecordingSessionState.Recording)?.summaryText ?: summaryLine
 
     val infiniteTransition = rememberInfiniteTransition(label = "recording_pulse")
     val pulseAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.35f,
+        initialValue = 0.45f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
             animation = tween(durationMillis = 700),
@@ -652,104 +635,38 @@ private fun HeroRecordingCard(
         label = "pulse_alpha"
     )
 
-    val statusText = when (sessionState) {
-        is RecordingSessionState.Idle,
-        is RecordingSessionState.Error -> stringResource(R.string.ready_to_record)
-        is RecordingSessionState.Recording -> stringResource(R.string.recording_active)
-        is RecordingSessionState.Stopping -> stringResource(R.string.recording_stopping)
-    }
-
-    val statusDotColor = when (sessionState) {
-        is RecordingSessionState.Recording -> FrameScopeColors.RecordRed.copy(alpha = pulseAlpha)
-        is RecordingSessionState.Stopping -> FrameScopeColors.SelectionBlue
-        else -> FrameScopeColors.ReadyGreen
-    }
-
-    val statusPillBg = when (sessionState) {
-        is RecordingSessionState.Recording -> FrameScopeColors.SpecRedContainer
-        is RecordingSessionState.Stopping -> FrameScopeColors.SelectionBlueTint
-        else -> FrameScopeColors.ReadyGreenBg
-    }
-
-    val statusTextColor = when (sessionState) {
-        is RecordingSessionState.Recording -> FrameScopeColors.SpecRedText
-        is RecordingSessionState.Stopping -> FrameScopeColors.SelectionBlue
-        else -> FrameScopeColors.ReadyGreen
-    }
-
-    val cardBorder = if (isRecording &&
-        (sessionState as RecordingSessionState.Recording).let { it.isRegionMode && it.showRegionBorder }
-    ) {
-        BorderStroke(2.dp, FrameScopeColors.RecordRed.copy(alpha = pulseAlpha))
+    val cardBorder = if (isRecording) {
+        BorderStroke(1.5.dp, FrameScopeColors.RecordRed.copy(alpha = pulseAlpha))
     } else {
         BorderStroke(1.dp, FrameScopeColors.BorderSubtle)
     }
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(18.dp),
         color = FrameScopeColors.CardSurface,
         border = cardBorder
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(20.dp),
+                .padding(horizontal = 16.dp, vertical = 14.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Surface(
-                shape = RoundedCornerShape(50),
-                color = statusPillBg
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .clip(CircleShape)
-                            .background(statusDotColor)
-                    )
-                    Text(
-                        text = statusText,
-                        style = MaterialTheme.typography.labelMedium.copy(
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 13.sp
-                        ),
-                        color = statusTextColor
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
             Text(
                 text = formatTimer(elapsedSeconds),
                 style = MaterialTheme.typography.headlineLarge.copy(
                     fontFamily = FontFamily.Monospace,
-                    fontSize = 40.sp,
-                    lineHeight = 46.sp,
-                    letterSpacing = 2.sp,
+                    fontSize = 36.sp,
+                    lineHeight = 42.sp,
+                    letterSpacing = 1.5.sp,
                     fontWeight = FontWeight.Bold
                 ),
                 color = FrameScopeColors.TextPrimary,
                 modifier = Modifier.testTag("recording_timer_text")
             )
 
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Text(
-                text = activeSummary,
-                style = MaterialTheme.typography.bodyMedium.copy(
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 12.sp
-                ),
-                color = FrameScopeColors.TextSecondary
-            )
-
-            Spacer(modifier = Modifier.height(18.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
             Button(
                 onClick = onRecordClick,
@@ -758,9 +675,10 @@ private fun HeroRecordingCard(
                 colors = ButtonDefaults.buttonColors(
                     containerColor = if (isRecording) FrameScopeColors.RecordRedDark else FrameScopeColors.RecordRed,
                     contentColor = Color.White,
-                    disabledContainerColor = FrameScopeColors.ElevatedSurface
+                    disabledContainerColor = FrameScopeColors.ElevatedSurface,
+                    disabledContentColor = FrameScopeColors.TextSecondary
                 ),
-                contentPadding = PaddingValues(vertical = 15.dp),
+                contentPadding = PaddingValues(vertical = 13.dp),
                 modifier = Modifier
                     .fillMaxWidth()
                     .minimumInteractiveComponentSize()
@@ -770,46 +688,28 @@ private fun HeroRecordingCard(
                     Icon(
                         imageVector = Icons.Rounded.Stop,
                         contentDescription = null,
-                        modifier = Modifier.size(20.dp)
+                        modifier = Modifier.size(18.dp)
                     )
-                } else {
+                    Spacer(modifier = Modifier.width(8.dp))
+                } else if (!isStopping) {
                     Box(
                         modifier = Modifier
-                            .size(12.dp)
+                            .size(11.dp)
                             .clip(CircleShape)
                             .background(Color.White)
                     )
+                    Spacer(modifier = Modifier.width(10.dp))
                 }
-                Spacer(modifier = Modifier.width(10.dp))
                 Text(
-                    text = if (isRecording) {
-                        stringResource(R.string.action_stop)
-                    } else {
-                        stringResource(R.string.action_record)
+                    text = when {
+                        isStopping -> stringResource(R.string.recording_stopping)
+                        isRecording -> stringResource(R.string.action_stop)
+                        else -> stringResource(R.string.action_record)
                     },
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun RecordingModeSection(
-    enabled: Boolean,
-    onSelectFullScreen: () -> Unit
-) {
-    SectionCard(title = stringResource(R.string.section_recording_mode)) {
-        SelectableOptionCard(
-            title = stringResource(R.string.mode_full_screen),
-            subtitle = stringResource(R.string.mode_full_screen_desc),
-            icon = Icons.Rounded.Fullscreen,
-            selected = true,
-            enabled = enabled,
-            testTag = "mode_full_screen_card",
-            onClick = onSelectFullScreen,
-            modifier = Modifier.fillMaxWidth()
-        )
     }
 }
 
@@ -826,7 +726,6 @@ private fun OrientationSection(
         ) {
             SelectableOptionCard(
                 title = stringResource(R.string.orientation_portrait),
-                subtitle = stringResource(R.string.orientation_portrait_desc),
                 icon = Icons.Rounded.StayCurrentPortrait,
                 selected = selected == RecordingOrientation.PORTRAIT,
                 enabled = enabled,
@@ -836,7 +735,6 @@ private fun OrientationSection(
             )
             SelectableOptionCard(
                 title = stringResource(R.string.orientation_landscape),
-                subtitle = stringResource(R.string.orientation_landscape_desc),
                 icon = Icons.Rounded.StayCurrentLandscape,
                 selected = selected == RecordingOrientation.LANDSCAPE,
                 enabled = enabled,
@@ -861,7 +759,6 @@ private fun AudioSourceSection(
         ) {
             SelectableOptionCard(
                 title = stringResource(R.string.audio_internal),
-                subtitle = stringResource(R.string.audio_internal_desc),
                 icon = Icons.Rounded.GraphicEq,
                 selected = selected == AudioSourceMode.INTERNAL_AUDIO,
                 enabled = enabled,
@@ -871,7 +768,6 @@ private fun AudioSourceSection(
             )
             SelectableOptionCard(
                 title = stringResource(R.string.audio_mic),
-                subtitle = stringResource(R.string.audio_mic_desc),
                 icon = Icons.Rounded.Mic,
                 selected = selected == AudioSourceMode.MICROPHONE,
                 enabled = enabled,
@@ -911,5 +807,5 @@ private fun formatTimer(totalSeconds: Long): String {
     val hrs = totalSeconds / 3600
     val mins = (totalSeconds % 3600) / 60
     val secs = totalSeconds % 60
-    return String.format("%02d:%02d:%02d", hrs, mins, secs)
+    return String.format("%02d : %02d : %02d", hrs, mins, secs)
 }

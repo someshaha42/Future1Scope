@@ -27,8 +27,8 @@ data class AppSettings(
     val recordingMode: RecordingMode = RecordingMode.FULL_SCREEN,
     val orientation: RecordingOrientation = RecordingOrientation.PORTRAIT,
     val audioSource: AudioSourceMode = AudioSourceMode.INTERNAL_AUDIO,
-    val videoCodec: EncodingTab = EncodingTab.AV1,
-    val bitrateMbps: Int = EncodingTab.AV1.defaultBitrateMbps,
+    val videoCodec: EncodingTab = EncodingTab.H265,
+    val bitrateMbps: Int = EncodingTab.H265.defaultBitrateMbps,
     val showRegionBorder: Boolean = false,
     val regionBounds: RegionBounds = RegionBounds(),
     val keepScreenAwake: Boolean = false

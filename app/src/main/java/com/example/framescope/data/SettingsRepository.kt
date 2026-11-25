@@ -39,7 +39,7 @@ class SettingsRepository(private val context: Context) {
 
         val videoCodec = prefs[Keys.VIDEO_CODEC]?.let { raw ->
             runCatching { EncodingTab.valueOf(raw) }.getOrNull()
-        } ?: EncodingTab.AV1
+        } ?: EncodingTab.H265
 
         AppSettings(
             recordingMode = RecordingMode.FULL_SCREEN,
