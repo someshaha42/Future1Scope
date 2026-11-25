@@ -12,7 +12,8 @@ sealed interface RecordingSessionState {
         val outputPath: String,
         val summaryText: String,
         val showRegionBorder: Boolean,
-        val isRegionMode: Boolean
+        val isRegionMode: Boolean,
+        val isPaused: Boolean = false
     ) : RecordingSessionState
 
     data object Stopping : RecordingSessionState

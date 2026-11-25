@@ -26,7 +26,6 @@ enum class CropAspectRatio(val label: String, val ratio: Float?) {
 }
 
 enum class CanvasAspectMode(val label: String, val ratio: Float?) {
-    DEFAULT("Default", 1f),
     ORIGINAL("Original", null),
     RATIO_9_16("9:16", 9f / 16f),
     RATIO_16_9("16:9", 16f / 9f),

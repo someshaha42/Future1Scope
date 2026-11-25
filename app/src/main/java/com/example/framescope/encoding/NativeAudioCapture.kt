@@ -22,8 +22,13 @@ class NativeAudioCapture(
     private val onFatalError: (Throwable) -> Unit
 ) {
     private val running = AtomicBoolean(false)
+    private val paused = AtomicBoolean(false)
     private var recorder: AudioRecord? = null
     private var captureThread: Thread? = null
+
+    fun setPaused(isPaused: Boolean) {
+        paused.set(isPaused)
+    }
 
     @SuppressLint("MissingPermission")
     fun start() {
@@ -95,6 +100,9 @@ class NativeAudioCapture(
                     )
                     when {
                         count > 0 -> {
+                            if (paused.get()) {
+                                continue
+                            }
                             val nowUs = System.nanoTime() / 1_000L
                             val frames = count / 2L
                             val chunkDurationUs = frames * 1_000_000L / sampleRate

@@ -9,6 +9,7 @@ class NativeDisplayCapture(
     private val projection: MediaProjection
 ) {
     private var virtualDisplay: VirtualDisplay? = null
+    private var targetSurface: Surface? = null
     var resizeHandler: CaptureResizeHandler? = null
         private set
 
@@ -21,6 +22,7 @@ class NativeDisplayCapture(
         renderer: RotationRenderer
     ) {
         check(virtualDisplay == null)
+        targetSurface = encoderSurface
 
         val created = projection.createVirtualDisplay(
             "FrameScopeDisplayCapture",
@@ -44,8 +46,18 @@ class NativeDisplayCapture(
         )
     }
 
+    fun pause() {
+        runCatching { virtualDisplay?.setSurface(null) }
+    }
+
+    fun resume() {
+        val surface = targetSurface ?: return
+        runCatching { virtualDisplay?.setSurface(surface) }
+    }
+
     fun stop() {
         resizeHandler = null
+        targetSurface = null
         runCatching { virtualDisplay?.release() }
         virtualDisplay = null
     }

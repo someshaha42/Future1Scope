@@ -11,6 +11,9 @@ class FrameScopeApplication : Application() {
     lateinit var recordingsRepository: RecordingsRepository
         private set
 
+    @Volatile
+    var hasCompletedWelcomeInProcess: Boolean = false
+
     override fun onCreate() {
         super.onCreate()
         settingsRepository = SettingsRepository(applicationContext)

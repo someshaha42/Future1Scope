@@ -369,7 +369,7 @@ fun CropToolScreen(
                             WorkspaceHeaderActionButton(
                                 label = "Canvas",
                                 icon = Icons.Rounded.AspectRatio,
-                                active = state.showCanvasOptions || state.canvasAspectMode != CanvasAspectMode.DEFAULT,
+                                active = state.showCanvasOptions || state.canvasAspectMode != CanvasAspectMode.ORIGINAL,
                                 testTag = "crop_canvas_button",
                                 onClick = viewModel::toggleCanvasOptions
                             )

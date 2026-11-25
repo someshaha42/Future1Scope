@@ -41,7 +41,7 @@ data class CropToolUiState(
     val zoom: Float = 1f,
     val panOffset: Offset = Offset.Zero,
     val isZoomEnabled: Boolean = false,
-    val canvasAspectMode: CanvasAspectMode = CanvasAspectMode.DEFAULT,
+    val canvasAspectMode: CanvasAspectMode = CanvasAspectMode.ORIGINAL,
     val showCanvasOptions: Boolean = false,
     val customCanvasWidth: String = "4",
     val customCanvasHeight: String = "3",
@@ -103,12 +103,11 @@ data class CropToolUiState(
         get() {
             val info = media
             return when (canvasAspectMode) {
-                CanvasAspectMode.DEFAULT,
-                CanvasAspectMode.RATIO_1_1 -> 1f
                 CanvasAspectMode.ORIGINAL -> if (info != null) {
                     (info.displayWidth.toFloat() / info.displayHeight.toFloat().coerceAtLeast(1f))
                         .coerceIn(0.35f, 2.5f)
                 } else 1f
+                CanvasAspectMode.RATIO_1_1 -> 1f
                 CanvasAspectMode.CUSTOM -> {
                     val w = customCanvasWidth.toFloatOrNull()
                     val h = customCanvasHeight.toFloatOrNull()
@@ -257,7 +256,7 @@ class CropToolViewModel(
                         zoom = 1f,
                         panOffset = Offset.Zero,
                         isZoomEnabled = false,
-                        canvasAspectMode = CanvasAspectMode.DEFAULT,
+                        canvasAspectMode = CanvasAspectMode.ORIGINAL,
                         showCanvasOptions = false,
                         aspectRatio = CropAspectRatio.ORIGINAL,
                         isVideoPlaying = false,

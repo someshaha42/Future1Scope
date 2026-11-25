@@ -15,6 +15,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.widget.RemoteViews
 import com.example.framescope.MainActivity
 import com.example.framescope.R
 import com.example.framescope.data.AudioSourceMode
@@ -37,6 +38,9 @@ class EncodingForegroundService : Service() {
     companion object {
         const val ACTION_START = "com.example.framescope.encoding.START"
         const val ACTION_STOP = "com.example.framescope.encoding.STOP"
+        const val ACTION_PAUSE = "com.example.framescope.encoding.PAUSE"
+        const val ACTION_RESUME = "com.example.framescope.encoding.RESUME"
+        const val ACTION_TOGGLE_PAUSE = "com.example.framescope.encoding.TOGGLE_PAUSE"
         const val EXTRA_RESULT_CODE = "projection_result_code"
         const val EXTRA_RESULT_DATA = "projection_result_data"
         const val EXTRA_TAB = "encoding_tab"
@@ -77,6 +81,15 @@ class EncodingForegroundService : Service() {
     private var displayCapture: NativeDisplayCapture? = null
     private var currentOutputPath: String? = null
 
+    @Volatile
+    private var isPaused = false
+    @Volatile
+    private var elapsedSeconds = 0L
+    private var activeSummary = ""
+    private var activeNotificationDesc = ""
+    private var activeShowBorder = false
+    private var activeIsRegion = false
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
@@ -84,16 +97,58 @@ class EncodingForegroundService : Service() {
                     startRecording(intent)
                 }
             }
+            ACTION_PAUSE -> setPausedState(true)
+            ACTION_RESUME -> setPausedState(false)
+            ACTION_TOGGLE_PAUSE -> setPausedState(!isPaused)
             ACTION_STOP -> stopRecording(fatalError = null)
         }
         return START_NOT_STICKY
     }
 
+    private fun setPausedState(pause: Boolean) {
+        if (!sessionActive.get() || tearingDown.get() || isPaused == pause) return
+        isPaused = pause
+        if (pause) {
+            muxer?.setPaused(true)
+            audioCapture?.setPaused(true)
+            displayCapture?.pause()
+        } else {
+            displayCapture?.resume()
+            audioCapture?.setPaused(false)
+            muxer?.setPaused(false)
+        }
+
+        val path = currentOutputPath ?: return
+        RecordingSessionManager.updateState(
+            RecordingSessionState.Recording(
+                elapsedSeconds = elapsedSeconds,
+                outputPath = path,
+                summaryText = activeSummary,
+                showRegionBorder = activeShowBorder,
+                isRegionMode = activeIsRegion,
+                isPaused = pause
+            )
+        )
+        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        runCatching {
+            nm.notify(
+                NOTIFICATION_ID,
+                createNotification(
+                    elapsedFormatted = formatElapsed(elapsedSeconds),
+                    pipelineLabel = activeNotificationDesc,
+                    paused = pause
+                )
+            )
+        }
+    }
+
     private fun startRecording(intent: Intent) {
         tearingDown.set(false)
+        isPaused = false
+        elapsedSeconds = 0L
         teardownLatch = CountDownLatch(1)
         createNotificationChannel()
-        val notification = createNotification("00:00:00")
+        val notification = createNotification("00:00:00", paused = false)
 
         startForeground(
             NOTIFICATION_ID,
@@ -229,38 +284,63 @@ class EncodingForegroundService : Service() {
                 fallbackSummary = intent.getStringExtra(EXTRA_SUMMARY)
             )
 
+            activeSummary = summary
+            activeShowBorder = showBorder
+            activeIsRegion = isRegion
+            val notificationDesc = "${vEncoder.activeTab.shortName} • ${targetWidth}×${targetHeight}"
+            activeNotificationDesc = notificationDesc
+
             RecordingSessionManager.updateState(
                 RecordingSessionState.Recording(
                     elapsedSeconds = 0L,
                     outputPath = outputPath,
                     summaryText = summary,
                     showRegionBorder = showBorder,
-                    isRegionMode = isRegion
+                    isRegionMode = isRegion,
+                    isPaused = false
                 )
             )
 
-            val notificationDesc = "${vEncoder.activeTab.shortName} encoding is active"
+            val nmInitial = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            runCatching {
+                nmInitial.notify(
+                    NOTIFICATION_ID,
+                    createNotification(
+                        elapsedFormatted = "00:00:00",
+                        pipelineLabel = notificationDesc,
+                        paused = false
+                    )
+                )
+            }
+
             timerJob?.cancel()
             timerJob = serviceScope.launch {
-                var elapsed = 0L
                 val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
                 while (isActive) {
                     delay(1_000L)
-                    elapsed += 1L
-                    RecordingSessionManager.updateState(
-                        RecordingSessionState.Recording(
-                            elapsedSeconds = elapsed,
-                            outputPath = outputPath,
-                            summaryText = summary,
-                            showRegionBorder = showBorder,
-                            isRegionMode = isRegion
+                    if (!isPaused) {
+                        elapsedSeconds += 1L
+                        val currentElapsed = elapsedSeconds
+                        RecordingSessionManager.updateState(
+                            RecordingSessionState.Recording(
+                                elapsedSeconds = currentElapsed,
+                                outputPath = outputPath,
+                                summaryText = summary,
+                                showRegionBorder = showBorder,
+                                isRegionMode = isRegion,
+                                isPaused = false
+                            )
                         )
-                    )
-                    runCatching {
-                        nm.notify(
-                            NOTIFICATION_ID,
-                            createNotification(formatElapsed(elapsed), notificationDesc)
-                        )
+                        runCatching {
+                            nm.notify(
+                                NOTIFICATION_ID,
+                                createNotification(
+                                    elapsedFormatted = formatElapsed(currentElapsed),
+                                    pipelineLabel = notificationDesc,
+                                    paused = false
+                                )
+                            )
+                        }
                     }
                 }
             }
@@ -413,7 +493,8 @@ class EncodingForegroundService : Service() {
 
     private fun createNotification(
         elapsedFormatted: String,
-        pipelineLabel: String = getString(R.string.notification_text)
+        pipelineLabel: String = getString(R.string.notification_text),
+        paused: Boolean = false
     ): Notification {
         val openIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -422,6 +503,16 @@ class EncodingForegroundService : Service() {
             this,
             0,
             openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val togglePauseIntent = Intent(this, EncodingForegroundService::class.java).apply {
+            action = ACTION_TOGGLE_PAUSE
+        }
+        val togglePausePending = PendingIntent.getService(
+            this,
+            2,
+            togglePauseIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
@@ -435,19 +526,47 @@ class EncodingForegroundService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        val statusText = if (paused) {
+            getString(R.string.recording_paused)
+        } else {
+            pipelineLabel
+        }
+        val pauseResumeText = if (paused) {
+            getString(R.string.notification_action_resume)
+        } else {
+            getString(R.string.notification_action_pause)
+        }
+        val pauseBgRes = if (paused) R.drawable.bg_notif_pill_resume else R.drawable.bg_notif_pill_pause
+        val dotRes = if (paused) R.drawable.bg_notif_dot_paused else R.drawable.bg_notif_dot_recording
+
+        val expandedViews = RemoteViews(packageName, R.layout.notification_recording).apply {
+            setImageViewResource(R.id.notif_status_dot, dotRes)
+            setTextViewText(R.id.notif_status_label, statusText)
+            setTextViewText(R.id.notif_timer_text, elapsedFormatted)
+            setTextViewText(R.id.notif_btn_pause_resume, pauseResumeText)
+            setInt(R.id.notif_btn_pause_resume, "setBackgroundResource", pauseBgRes)
+            setOnClickPendingIntent(R.id.notif_btn_pause_resume, togglePausePending)
+            setOnClickPendingIntent(R.id.notif_btn_stop, stopPending)
+        }
+
+        val compactViews = RemoteViews(packageName, R.layout.notification_recording_compact).apply {
+            setImageViewResource(R.id.notif_compact_dot, dotRes)
+            setTextViewText(R.id.notif_compact_timer, elapsedFormatted)
+            setTextViewText(R.id.notif_compact_pause_resume, pauseResumeText)
+            setInt(R.id.notif_compact_pause_resume, "setBackgroundResource", pauseBgRes)
+            setOnClickPendingIntent(R.id.notif_compact_pause_resume, togglePausePending)
+            setOnClickPendingIntent(R.id.notif_compact_stop, stopPending)
+        }
+
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.notification_title))
-            .setContentText("$pipelineLabel • $elapsedFormatted")
+            .setContentText("$statusText • $elapsedFormatted")
             .setSmallIcon(android.R.drawable.presence_video_online)
             .setContentIntent(openPending)
             .setOnlyAlertOnce(true)
-            .addAction(
-                Notification.Action.Builder(
-                    null,
-                    getString(R.string.notification_action_stop),
-                    stopPending
-                ).build()
-            )
+            .setStyle(Notification.DecoratedCustomViewStyle())
+            .setCustomContentView(compactViews)
+            .setCustomBigContentView(expandedViews)
             .setOngoing(true)
             .build()
     }

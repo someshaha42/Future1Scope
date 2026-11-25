@@ -31,6 +31,9 @@ class NativeMuxer(outputPath: String) {
 
     private var lastVideoPtsUs = -1L
     private var lastAudioPtsUs = -1L
+    private var paused = false
+    private var pauseStartedUs = -1L
+    private var totalPausedUs = 0L
 
     private val pendingVideo = ArrayDeque<PendingSample>()
     private val pendingAudio = ArrayDeque<PendingSample>()
@@ -86,12 +89,29 @@ class NativeMuxer(outputPath: String) {
         }
     }
 
+    fun setPaused(isPaused: Boolean) {
+        synchronized(lock) {
+            if (stopped) return
+            if (isPaused && !paused) {
+                paused = true
+                pauseStartedUs = System.nanoTime() / 1_000L
+            } else if (!isPaused && paused) {
+                val nowUs = System.nanoTime() / 1_000L
+                if (pauseStartedUs >= 0L) {
+                    totalPausedUs += (nowUs - pauseStartedUs).coerceAtLeast(0L)
+                }
+                paused = false
+                pauseStartedUs = -1L
+            }
+        }
+    }
+
     fun writeVideo(
         data: ByteBuffer,
         info: MediaCodec.BufferInfo
     ) {
         synchronized(lock) {
-            if (stopped || info.size <= 0 || (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
+            if (stopped || paused || info.size <= 0 || (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
                 return
             }
             if (!started) {
@@ -118,7 +138,7 @@ class NativeMuxer(outputPath: String) {
         info: MediaCodec.BufferInfo
     ) {
         synchronized(lock) {
-            if (stopped || info.size <= 0 || (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
+            if (stopped || paused || info.size <= 0 || (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
                 return
             }
             if (!started) {
@@ -152,19 +172,20 @@ class NativeMuxer(outputPath: String) {
         isVideo: Boolean
     ) {
         if (trackIndex < 0 || info.size <= 0) return
+        val adjustedPtsUs = (info.presentationTimeUs - totalPausedUs).coerceAtLeast(0L)
         val safePtsUs = if (isVideo) {
-            val clamped = if (lastVideoPtsUs >= 0L && info.presentationTimeUs < lastVideoPtsUs) {
-                lastVideoPtsUs
+            val clamped = if (lastVideoPtsUs >= 0L && adjustedPtsUs <= lastVideoPtsUs) {
+                lastVideoPtsUs + 1L
             } else {
-                info.presentationTimeUs.coerceAtLeast(0L)
+                adjustedPtsUs
             }
             lastVideoPtsUs = clamped
             clamped
         } else {
-            val clamped = if (lastAudioPtsUs >= 0L && info.presentationTimeUs < lastAudioPtsUs) {
-                lastAudioPtsUs
+            val clamped = if (lastAudioPtsUs >= 0L && adjustedPtsUs <= lastAudioPtsUs) {
+                lastAudioPtsUs + 1L
             } else {
-                info.presentationTimeUs.coerceAtLeast(0L)
+                adjustedPtsUs
             }
             lastAudioPtsUs = clamped
             clamped

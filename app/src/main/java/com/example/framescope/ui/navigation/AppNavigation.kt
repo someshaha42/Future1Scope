@@ -1,19 +1,26 @@
 package com.example.framescope.ui.navigation
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import com.example.framescope.FrameScopeApplication
+import com.example.framescope.encoding.RecordingSessionManager
+import com.example.framescope.encoding.RecordingSessionState
 import com.example.framescope.ui.EncodingSettingsScreen
 import com.example.framescope.ui.HomeViewModel
 import com.example.framescope.ui.MainTabsScreen
 import com.example.framescope.ui.RecordedVideosScreen
 import com.example.framescope.ui.VideoPlayerScreen
 import com.example.framescope.ui.crop.CropToolScreen
+import com.example.framescope.ui.welcome.WelcomeScreen
 import kotlinx.serialization.Serializable
+
+@Serializable
+data object WelcomeRoute
 
 @Serializable
 data object HomeRoute
@@ -41,10 +48,31 @@ fun FrameScopeNavHost(application: FrameScopeApplication) {
         )
     )
 
+    val startRoute: Any = remember {
+        val isRecordingActive = RecordingSessionManager.state.value !is RecordingSessionState.Idle
+        if (application.hasCompletedWelcomeInProcess || isRecordingActive) {
+            HomeRoute
+        } else {
+            WelcomeRoute
+        }
+    }
+
     NavHost(
         navController = navController,
-        startDestination = HomeRoute
+        startDestination = startRoute
     ) {
+        composable<WelcomeRoute> {
+            WelcomeScreen(
+                onEnter = {
+                    application.hasCompletedWelcomeInProcess = true
+                    navController.navigate(HomeRoute) {
+                        popUpTo<WelcomeRoute> { inclusive = true }
+                        launchSingleTop = true
+                    }
+                }
+            )
+        }
+
         composable<HomeRoute> {
             MainTabsScreen(
                 homeViewModel = homeViewModel,
