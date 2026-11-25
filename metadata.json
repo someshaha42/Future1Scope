@@ -1,0 +1,8 @@
+{
+  "name": "FrameScope",
+  "description": "Native Android screen recorder built with Kotlin and Jetpack Compose featuring H.264 hardware encoding, orientation policies, configurable bitrate, and internal or microphone audio capture.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

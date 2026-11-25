@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">FrameScope</string>
+    <string name="ready_to_record">Ready to record</string>
+    <string name="recording_active">Recording</string>
+    <string name="recording_stopping">Finalizing MP4…</string>
+    <string name="action_record">Record</string>
+    <string name="action_stop">Stop Recording</string>
+    <string name="section_recording_mode">Recording Mode</string>
+    <string name="mode_full_screen">Full Screen</string>
+    <string name="mode_full_screen_desc">Entire display capture</string>
+    <string name="mode_region_area">Region / Area</string>
+    <string name="mode_region_area_desc">Hardware-sized region capture</string>
+    <string name="section_orientation">Orientation</string>
+    <string name="orientation_portrait">Portrait</string>
+    <string name="orientation_portrait_desc">Vertical for Full Screen &amp; Region</string>
+    <string name="orientation_landscape">Landscape</string>
+    <string name="orientation_landscape_desc">Horizontal for Full Screen &amp; Region</string>
+    <string name="section_audio_source">Audio Source</string>
+    <string name="audio_internal">Internal Audio</string>
+    <string name="audio_internal_desc">Device media &amp; app playback</string>
+    <string name="audio_mic">Microphone</string>
+    <string name="audio_mic_desc">External mic prioritized automatically</string>
+    <string name="section_video_bitrate">Video Bitrate</string>
+    <string name="custom_bitrate_hint">Custom Bitrate (Mbps)</string>
+    <string name="section_region_border">Region Border Animation</string>
+    <string name="border_show">Show</string>
+    <string name="border_show_desc">Animated red capture frame</string>
+    <string name="border_hide">Hide</string>
+    <string name="border_hide_desc">Clean borderless capture</string>
+    <string name="encoding_settings_title">Encoding Settings</string>
+    <string name="recorded_videos_title">Recorded Videos</string>
+    <string name="notification_channel_name">Screen Recording</string>
+    <string name="notification_title">FrameScope Recording</string>
+    <string name="notification_text">H.264 native encoding is active</string>
+    <string name="notification_action_stop">Stop</string>
+</resources>
