@@ -30,10 +30,6 @@ class SettingsRepository(private val context: Context) {
     }
 
     val settings: Flow<AppSettings> = context.settingsDataStore.data.map { prefs ->
-        val mode = prefs[Keys.RECORDING_MODE]?.let { raw ->
-            runCatching { RecordingMode.valueOf(raw) }.getOrNull()
-        } ?: RecordingMode.FULL_SCREEN
-
         val orientation = prefs[Keys.ORIENTATION]?.let { raw ->
             runCatching { RecordingOrientation.valueOf(raw) }.getOrNull()
         } ?: RecordingOrientation.PORTRAIT
@@ -43,12 +39,12 @@ class SettingsRepository(private val context: Context) {
         } ?: AudioSourceMode.INTERNAL_AUDIO
 
         AppSettings(
-            recordingMode = mode,
+            recordingMode = RecordingMode.FULL_SCREEN,
             orientation = orientation,
             audioSource = audioSource,
             bitrateMbps = prefs[Keys.BITRATE_MBPS] ?: 150,
             customBitrateInput = prefs[Keys.CUSTOM_BITRATE_INPUT] ?: "",
-            showRegionBorder = prefs[Keys.SHOW_REGION_BORDER] ?: true,
+            showRegionBorder = false,
             regionBounds = RegionBounds(
                 leftFraction = prefs[Keys.REGION_LEFT] ?: 0.08f,
                 topFraction = prefs[Keys.REGION_TOP] ?: 0.14f,

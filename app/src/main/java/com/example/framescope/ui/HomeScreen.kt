@@ -10,7 +10,6 @@ import android.os.Build
 import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -45,8 +44,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.WbSunny
-import androidx.compose.material.icons.rounded.Crop
-import androidx.compose.material.icons.rounded.CropFree
 import androidx.compose.material.icons.rounded.Fullscreen
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Mic
@@ -56,8 +53,6 @@ import androidx.compose.material.icons.rounded.StayCurrentPortrait
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material.icons.rounded.Videocam
-import androidx.compose.material.icons.rounded.Visibility
-import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.WbSunny
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -106,8 +101,6 @@ import com.example.framescope.encoding.EncodingForegroundService
 import com.example.framescope.encoding.EncodingTab
 import com.example.framescope.encoding.RecordingOrientation
 import com.example.framescope.encoding.RecordingSessionState
-import com.example.framescope.ui.components.AnimatedRegionFramePreview
-import com.example.framescope.ui.components.RegionEditorDialog
 import com.example.framescope.ui.components.SectionCard
 import com.example.framescope.ui.components.SelectableOptionCard
 import com.example.framescope.ui.theme.FrameScopeColors
@@ -128,7 +121,6 @@ fun HomeScreen(
 
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
-    var showRegionEditor by remember { mutableStateOf(false) }
 
     val displayInfo = remember(context) { readDisplayMetrics(context) }
     val targetDimensions = remember(settings, displayInfo) {
@@ -169,11 +161,8 @@ fun HomeScreen(
                 putExtra(EncodingForegroundService.EXTRA_ORIENTATION, settings.orientation.name)
                 putExtra(EncodingForegroundService.EXTRA_AUDIO_SOURCE, settings.audioSource.name)
                 putExtra(EncodingForegroundService.EXTRA_SUMMARY, summaryLine)
-                putExtra(EncodingForegroundService.EXTRA_SHOW_BORDER, settings.showRegionBorder)
-                putExtra(
-                    EncodingForegroundService.EXTRA_IS_REGION,
-                    settings.recordingMode == RecordingMode.REGION_AREA
-                )
+                putExtra(EncodingForegroundService.EXTRA_SHOW_BORDER, false)
+                putExtra(EncodingForegroundService.EXTRA_IS_REGION, false)
             }
             ContextCompat.startForegroundService(context, startIntent)
         } else {
@@ -265,21 +254,6 @@ fun HomeScreen(
         )
     }
 
-    if (showRegionEditor) {
-        RegionEditorDialog(
-            initialBounds = settings.regionBounds,
-            orientation = settings.orientation,
-            screenWidth = displayInfo.widthPx,
-            screenHeight = displayInfo.heightPx,
-            onDismiss = { showRegionEditor = false },
-            onSave = { updated ->
-                viewModel.setRegionBounds(updated)
-                viewModel.setRecordingMode(RecordingMode.REGION_AREA)
-                showRegionEditor = false
-            }
-        )
-    }
-
     Scaffold(
         containerColor = FrameScopeColors.Background,
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
@@ -304,7 +278,6 @@ fun HomeScreen(
                         snackbarHostState.showSnackbar(msg)
                     }
                 },
-                onOpenRegionEditor = { showRegionEditor = true },
                 onOpenRecordedVideos = onOpenRecordedVideos,
                 onOpenSettings = onOpenSettings
             )
@@ -348,14 +321,10 @@ fun HomeScreen(
                                 verticalArrangement = Arrangement.spacedBy(14.dp)
                             ) {
                                 RecordingModeSection(
-                                    selected = settings.recordingMode,
                                     enabled = controlsEnabled,
-                                    regionBounds = settings.regionBounds,
-                                    orientation = settings.orientation,
-                                    showRegionBorder = settings.showRegionBorder,
-                                    targetDimensions = targetDimensions,
-                                    onSelect = viewModel::setRecordingMode,
-                                    onEditRegion = { showRegionEditor = true }
+                                    onSelectFullScreen = {
+                                        viewModel.setRecordingMode(RecordingMode.FULL_SCREEN)
+                                    }
                                 )
                                 OrientationSection(
                                     selected = settings.orientation,
@@ -380,23 +349,14 @@ fun HomeScreen(
                                     onSelectPreset = viewModel::selectPresetBitrate,
                                     onCustomChanged = viewModel::updateCustomBitrate
                                 )
-                                RegionBorderSection(
-                                    showBorder = settings.showRegionBorder,
-                                    enabled = controlsEnabled,
-                                    onSelect = viewModel::setShowRegionBorder
-                                )
                             }
                         }
                     } else {
                         RecordingModeSection(
-                            selected = settings.recordingMode,
                             enabled = controlsEnabled,
-                            regionBounds = settings.regionBounds,
-                            orientation = settings.orientation,
-                            showRegionBorder = settings.showRegionBorder,
-                            targetDimensions = targetDimensions,
-                            onSelect = viewModel::setRecordingMode,
-                            onEditRegion = { showRegionEditor = true }
+                            onSelectFullScreen = {
+                                viewModel.setRecordingMode(RecordingMode.FULL_SCREEN)
+                            }
                         )
                         OrientationSection(
                             selected = settings.orientation,
@@ -416,17 +376,7 @@ fun HomeScreen(
                             onSelectPreset = viewModel::selectPresetBitrate,
                             onCustomChanged = viewModel::updateCustomBitrate
                         )
-                        RegionBorderSection(
-                            showBorder = settings.showRegionBorder,
-                            enabled = controlsEnabled,
-                            onSelect = viewModel::setShowRegionBorder
-                        )
                     }
-
-                    RecordedVideosFooterButton(
-                        count = recordings.size,
-                        onClick = onOpenRecordedVideos
-                    )
 
                     Spacer(modifier = Modifier.height(12.dp))
                 }
@@ -440,7 +390,6 @@ private fun HomeTopBar(
     recordingsCount: Int,
     keepScreenAwake: Boolean,
     onToggleKeepAwake: () -> Unit,
-    onOpenRegionEditor: () -> Unit,
     onOpenRecordedVideos: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
@@ -487,17 +436,6 @@ private fun HomeTopBar(
                 imageVector = if (keepScreenAwake) Icons.Rounded.WbSunny else Icons.Outlined.WbSunny,
                 contentDescription = "Toggle keep screen awake",
                 tint = if (keepScreenAwake) FrameScopeColors.SelectionBlue else FrameScopeColors.TextSecondary
-            )
-        }
-
-        IconButton(
-            onClick = onOpenRegionEditor,
-            modifier = Modifier.testTag("crop_region_button")
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.Crop,
-                contentDescription = "Configure capture region",
-                tint = FrameScopeColors.TextSecondary
             )
         }
 
@@ -713,72 +651,20 @@ private fun HeroRecordingCard(
 
 @Composable
 private fun RecordingModeSection(
-    selected: RecordingMode,
     enabled: Boolean,
-    regionBounds: com.example.framescope.data.RegionBounds,
-    orientation: RecordingOrientation,
-    showRegionBorder: Boolean,
-    targetDimensions: com.example.framescope.encoding.VideoDimensions,
-    onSelect: (RecordingMode) -> Unit,
-    onEditRegion: () -> Unit
+    onSelectFullScreen: () -> Unit
 ) {
-    SectionCard(
-        title = stringResource(R.string.section_recording_mode),
-        trailing = if (selected == RecordingMode.REGION_AREA) {
-            {
-                TextButton(
-                    onClick = onEditRegion,
-                    enabled = enabled,
-                    modifier = Modifier.testTag("edit_region_button")
-                ) {
-                    Text(
-                        text = "Adjust Region",
-                        color = FrameScopeColors.SelectionBlue,
-                        style = MaterialTheme.typography.labelMedium
-                    )
-                }
-            }
-        } else {
-            null
-        }
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            SelectableOptionCard(
-                title = stringResource(R.string.mode_full_screen),
-                subtitle = stringResource(R.string.mode_full_screen_desc),
-                icon = Icons.Rounded.Fullscreen,
-                selected = selected == RecordingMode.FULL_SCREEN,
-                enabled = enabled,
-                testTag = "mode_full_screen_card",
-                onClick = { onSelect(RecordingMode.FULL_SCREEN) },
-                modifier = Modifier.weight(1f)
-            )
-            SelectableOptionCard(
-                title = stringResource(R.string.mode_region_area),
-                subtitle = stringResource(R.string.mode_region_area_desc),
-                icon = Icons.Rounded.CropFree,
-                selected = selected == RecordingMode.REGION_AREA,
-                enabled = enabled,
-                testTag = "mode_region_area_card",
-                onClick = { onSelect(RecordingMode.REGION_AREA) },
-                modifier = Modifier.weight(1f)
-            )
-        }
-
-        AnimatedVisibility(visible = selected == RecordingMode.REGION_AREA) {
-            Column {
-                Spacer(modifier = Modifier.height(12.dp))
-                AnimatedRegionFramePreview(
-                    regionBounds = regionBounds,
-                    orientation = orientation,
-                    animateBorder = showRegionBorder,
-                    targetDimensions = targetDimensions
-                )
-            }
-        }
+    SectionCard(title = stringResource(R.string.section_recording_mode)) {
+        SelectableOptionCard(
+            title = stringResource(R.string.mode_full_screen),
+            subtitle = stringResource(R.string.mode_full_screen_desc),
+            icon = Icons.Rounded.Fullscreen,
+            selected = true,
+            enabled = enabled,
+            testTag = "mode_full_screen_card",
+            onClick = onSelectFullScreen,
+            modifier = Modifier.fillMaxWidth()
+        )
     }
 }
 
@@ -960,81 +846,6 @@ private fun BitrateChip(
                     fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
                 ),
                 color = if (selected) FrameScopeColors.SelectionBlue else FrameScopeColors.TextPrimary
-            )
-        }
-    }
-}
-
-@Composable
-private fun RegionBorderSection(
-    showBorder: Boolean,
-    enabled: Boolean,
-    onSelect: (Boolean) -> Unit
-) {
-    SectionCard(title = stringResource(R.string.section_region_border)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            SelectableOptionCard(
-                title = stringResource(R.string.border_show),
-                subtitle = stringResource(R.string.border_show_desc),
-                icon = Icons.Rounded.Visibility,
-                selected = showBorder,
-                enabled = enabled,
-                testTag = "region_border_show_card",
-                onClick = { onSelect(true) },
-                modifier = Modifier.weight(1f)
-            )
-            SelectableOptionCard(
-                title = stringResource(R.string.border_hide),
-                subtitle = stringResource(R.string.border_hide_desc),
-                icon = Icons.Rounded.VisibilityOff,
-                selected = !showBorder,
-                enabled = enabled,
-                testTag = "region_border_hide_card",
-                onClick = { onSelect(false) },
-                modifier = Modifier.weight(1f)
-            )
-        }
-    }
-}
-
-@Composable
-private fun RecordedVideosFooterButton(
-    count: Int,
-    onClick: () -> Unit
-) {
-    val shape = RoundedCornerShape(16.dp)
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .minimumInteractiveComponentSize()
-            .clip(shape)
-            .clickable(onClick = onClick)
-            .testTag("recorded_videos_footer_button"),
-        shape = shape,
-        color = FrameScopeColors.CardSurface,
-        border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 16.dp, horizontal = 20.dp),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.VideoLibrary,
-                contentDescription = null,
-                tint = FrameScopeColors.RecordRed,
-                modifier = Modifier.size(20.dp)
-            )
-            Spacer(modifier = Modifier.width(10.dp))
-            Text(
-                text = "Recorded Videos ($count)",
-                style = MaterialTheme.typography.titleMedium,
-                color = FrameScopeColors.RecordRed
             )
         }
     }
