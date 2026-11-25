@@ -1,0 +1,1074 @@
+package com.example.framescope.ui.crop
+
+import android.graphics.Bitmap
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Collections
+import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.FolderOpen
+import androidx.compose.material.icons.rounded.Image
+import androidx.compose.material.icons.rounded.PlayCircleOutline
+import androidx.compose.material.icons.rounded.VideoLibrary
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.example.framescope.crop.CanvasAspectMode
+import com.example.framescope.crop.CropAspectRatio
+import com.example.framescope.crop.CropExportedItem
+import com.example.framescope.crop.CropMediaType
+import com.example.framescope.crop.ImageExportFormatOption
+import com.example.framescope.crop.VideoBitrateMode
+import com.example.framescope.crop.VideoExportFormatOption
+import com.example.framescope.ui.components.SectionCard
+import com.example.framescope.ui.theme.FrameScopeColors
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.roundToLong
+
+private enum class TimelineDragTarget {
+    NONE,
+    START_HANDLE,
+    END_HANDLE,
+    PLAYHEAD,
+    TRACK_SCRUB
+}
+
+@Composable
+internal fun ImportInterfaceCard(
+    hasLoadedMedia: Boolean,
+    onPickAll: () -> Unit,
+    onPickVideo: () -> Unit,
+    onPickImage: () -> Unit,
+    onPickFromFile: () -> Unit,
+    onCancelImport: () -> Unit
+) {
+    SectionCard(
+        title = "Import Media",
+        trailing = if (hasLoadedMedia) {
+            {
+                TextButton(
+                    onClick = onCancelImport,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                ) {
+                    Text("Close", color = FrameScopeColors.TextSecondary)
+                }
+            }
+        } else {
+            null
+        }
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                ImportTileButton(
+                    label = "All",
+                    icon = Icons.Rounded.Collections,
+                    testTag = "crop_import_all",
+                    onClick = onPickAll,
+                    modifier = Modifier.weight(1f)
+                )
+                ImportTileButton(
+                    label = "Video",
+                    icon = Icons.Rounded.VideoLibrary,
+                    testTag = "crop_import_video",
+                    onClick = onPickVideo,
+                    modifier = Modifier.weight(1f)
+                )
+                ImportTileButton(
+                    label = "Image",
+                    icon = Icons.Rounded.Image,
+                    testTag = "crop_import_image",
+                    onClick = onPickImage,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            OutlinedButton(
+                onClick = onPickFromFile,
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, FrameScopeColors.SelectionBlue),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    containerColor = FrameScopeColors.SelectionBlueTint,
+                    contentColor = FrameScopeColors.TextPrimary
+                ),
+                contentPadding = PaddingValues(vertical = 13.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .minimumInteractiveComponentSize()
+                    .testTag("crop_import_file")
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.FolderOpen,
+                    contentDescription = null,
+                    tint = FrameScopeColors.SelectionBlue,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Pick From File",
+                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ImportTileButton(
+    label: String,
+    icon: ImageVector,
+    testTag: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val shape = RoundedCornerShape(12.dp)
+    Surface(
+        modifier = modifier
+            .minimumInteractiveComponentSize()
+            .clip(shape)
+            .clickable(onClick = onClick)
+            .testTag(testTag),
+        shape = shape,
+        color = FrameScopeColors.InnerSurface,
+        border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 12.dp, horizontal = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = FrameScopeColors.SelectionBlue,
+                modifier = Modifier.size(22.dp)
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = FrameScopeColors.TextPrimary
+            )
+        }
+    }
+}
+
+@Composable
+internal fun CanvasAspectOptionsBar(
+    selectedMode: CanvasAspectMode,
+    customWidth: String,
+    customHeight: String,
+    onSelectMode: (CanvasAspectMode) -> Unit,
+    onCustomChanged: (String, String) -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("crop_canvas_options_bar"),
+        shape = RoundedCornerShape(12.dp),
+        color = FrameScopeColors.CardSurface,
+        border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                CanvasAspectMode.entries.forEach { mode ->
+                    val isSelected = selectedMode == mode
+                    val chipShape = RoundedCornerShape(9.dp)
+                    Surface(
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .clip(chipShape)
+                            .clickable { onSelectMode(mode) }
+                            .testTag("canvas_ratio_${mode.name.lowercase()}"),
+                        shape = chipShape,
+                        color = if (isSelected) FrameScopeColors.SelectionBlueTint else FrameScopeColors.InnerSurface,
+                        border = BorderStroke(
+                            if (isSelected) 1.5.dp else 1.dp,
+                            if (isSelected) FrameScopeColors.SelectionBlue else FrameScopeColors.BorderSubtle
+                        )
+                    ) {
+                        Box(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = mode.label,
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 12.sp
+                                ),
+                                color = if (isSelected) FrameScopeColors.SelectionBlue else FrameScopeColors.TextPrimary
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (selectedMode == CanvasAspectMode.CUSTOM) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = customWidth,
+                        onValueChange = { onCustomChanged(it, customHeight) },
+                        singleLine = true,
+                        label = { Text("Canvas W") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = FrameScopeColors.SelectionBlue,
+                            unfocusedBorderColor = FrameScopeColors.BorderSubtle,
+                            focusedTextColor = FrameScopeColors.TextPrimary,
+                            unfocusedTextColor = FrameScopeColors.TextPrimary
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("custom_canvas_width")
+                    )
+                    Text(":", color = FrameScopeColors.TextSecondary, fontWeight = FontWeight.Bold)
+                    OutlinedTextField(
+                        value = customHeight,
+                        onValueChange = { onCustomChanged(customWidth, it) },
+                        singleLine = true,
+                        label = { Text("Canvas H") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = FrameScopeColors.SelectionBlue,
+                            unfocusedBorderColor = FrameScopeColors.BorderSubtle,
+                            focusedTextColor = FrameScopeColors.TextPrimary,
+                            unfocusedTextColor = FrameScopeColors.TextPrimary
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("custom_canvas_height")
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun VideoTimelineSection(
+    durationMs: Long,
+    trimStartMs: Long,
+    trimEndMs: Long,
+    currentPositionMs: Long,
+    onSeek: (Long, Boolean) -> Unit,
+    onTrimRangeChanged: (Long, Long) -> Unit
+) {
+    val safeDuration = durationMs.coerceAtLeast(1L)
+    val safeStart = trimStartMs.coerceIn(0L, safeDuration)
+    val safeEnd = trimEndMs.coerceIn(safeStart, safeDuration).let {
+        if (it <= safeStart && safeDuration > 0L) safeDuration else it
+    }
+    val safePos = currentPositionMs.coerceIn(0L, safeDuration)
+
+    val density = LocalDensity.current
+    val handleHitPx = with(density) { 22.dp.toPx() }
+    val trackPadPx = with(density) { 14.dp.toPx() }
+    val tapSlopPx = with(density) { 10.dp.toPx() }
+
+    val latestDuration by rememberUpdatedState(safeDuration)
+    val latestStart by rememberUpdatedState(safeStart)
+    val latestEnd by rememberUpdatedState(safeEnd)
+    val latestPos by rememberUpdatedState(safePos)
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("crop_video_timeline_card"),
+        shape = RoundedCornerShape(14.dp),
+        color = FrameScopeColors.CardSurface,
+        border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Start ${formatTimelineMs(safeStart)}",
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.SemiBold
+                    ),
+                    color = FrameScopeColors.TextSecondary
+                )
+                Text(
+                    text = formatTimelineMs(safePos),
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold
+                    ),
+                    color = FrameScopeColors.SelectionBlue
+                )
+                Text(
+                    text = "End ${formatTimelineMs(safeEnd)}",
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.SemiBold
+                    ),
+                    color = FrameScopeColors.TextSecondary
+                )
+            }
+
+            Canvas(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(50.dp)
+                    .testTag("crop_video_timeline")
+                    .pointerInput(durationMs) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            down.consume()
+
+                            val trackLeft = trackPadPx
+                            val trackRight = (size.width - trackPadPx).coerceAtLeast(trackLeft + 1f)
+                            val trackWidth = (trackRight - trackLeft).coerceAtLeast(1f)
+                            val dur = latestDuration.toFloat().coerceAtLeast(1f)
+
+                            fun msToX(ms: Long): Float =
+                                trackLeft + (ms.toFloat() / dur).coerceIn(0f, 1f) * trackWidth
+
+                            fun xToMs(x: Float): Long =
+                                (((x - trackLeft) / trackWidth).coerceIn(0f, 1f) * dur).roundToLong()
+
+                            val startX = msToX(latestStart)
+                            val endX = msToX(latestEnd)
+                            val playX = msToX(latestPos)
+                            val downX = down.position.x
+
+                            val dPlay = abs(downX - playX)
+                            val dStart = abs(downX - startX)
+                            val dEnd = abs(downX - endX)
+
+                            val target = when {
+                                dPlay <= handleHitPx && dPlay < dStart && dPlay < dEnd -> TimelineDragTarget.PLAYHEAD
+                                dStart <= handleHitPx && dStart <= dEnd -> TimelineDragTarget.START_HANDLE
+                                dEnd <= handleHitPx -> TimelineDragTarget.END_HANDLE
+                                dPlay <= handleHitPx -> TimelineDragTarget.PLAYHEAD
+                                else -> TimelineDragTarget.TRACK_SCRUB
+                            }
+
+                            var totalMoved = 0f
+                            var lastX = downX
+
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val primary = event.changes.firstOrNull() ?: break
+                                if (!primary.pressed) {
+                                    primary.consume()
+                                    if (target == TimelineDragTarget.TRACK_SCRUB && totalMoved <= tapSlopPx) {
+                                        val tappedMs = xToMs(primary.position.x)
+                                        onSeek(tappedMs, true)
+                                    }
+                                    break
+                                }
+
+                                val delta = primary.positionChange()
+                                if (delta != Offset.Zero) {
+                                    primary.consume()
+                                    totalMoved += abs(delta.x)
+                                    lastX = primary.position.x
+                                    val draggedMs = xToMs(lastX)
+
+                                    when (target) {
+                                        TimelineDragTarget.START_HANDLE -> {
+                                            val minSpan = minOf(500L, latestDuration)
+                                            val nextStart = draggedMs.coerceIn(0L, (latestEnd - minSpan).coerceAtLeast(0L))
+                                            onTrimRangeChanged(nextStart, latestEnd)
+                                            onSeek(nextStart, false)
+                                        }
+                                        TimelineDragTarget.END_HANDLE -> {
+                                            val minSpan = minOf(500L, latestDuration)
+                                            val nextEnd = draggedMs.coerceIn((latestStart + minSpan).coerceAtMost(latestDuration), latestDuration)
+                                            onTrimRangeChanged(latestStart, nextEnd)
+                                            onSeek(nextEnd, false)
+                                        }
+                                        TimelineDragTarget.PLAYHEAD,
+                                        TimelineDragTarget.TRACK_SCRUB -> {
+                                            if (totalMoved > tapSlopPx || target == TimelineDragTarget.PLAYHEAD) {
+                                                onSeek(draggedMs, false)
+                                            }
+                                        }
+                                        TimelineDragTarget.NONE -> Unit
+                                    }
+                                }
+                            }
+                        }
+                    }
+            ) {
+                val trackLeft = trackPadPx
+                val trackRight = (size.width - trackPadPx).coerceAtLeast(trackLeft + 1f)
+                val trackWidth = (trackRight - trackLeft).coerceAtLeast(1f)
+                val centerY = size.height / 2f
+                val trackHeight = 14.dp.toPx()
+                val trackTop = centerY - trackHeight / 2f
+
+                val startFrac = (safeStart.toFloat() / safeDuration.toFloat()).coerceIn(0f, 1f)
+                val endFrac = (safeEnd.toFloat() / safeDuration.toFloat()).coerceIn(startFrac, 1f)
+                val posFrac = (safePos.toFloat() / safeDuration.toFloat()).coerceIn(0f, 1f)
+
+                val startX = trackLeft + startFrac * trackWidth
+                val endX = trackLeft + endFrac * trackWidth
+                val playX = trackLeft + posFrac * trackWidth
+
+                // Full track background
+                drawRoundRect(
+                    color = FrameScopeColors.InnerSurface,
+                    topLeft = Offset(trackLeft, trackTop),
+                    size = Size(trackWidth, trackHeight),
+                    cornerRadius = CornerRadius(6.dp.toPx(), 6.dp.toPx())
+                )
+
+                // Active trim segment
+                val activeW = (endX - startX).coerceAtLeast(2f)
+                drawRoundRect(
+                    color = FrameScopeColors.SelectionBlueTint,
+                    topLeft = Offset(startX, trackTop),
+                    size = Size(activeW, trackHeight),
+                    cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx())
+                )
+                drawLine(
+                    color = FrameScopeColors.SelectionBlue,
+                    start = Offset(startX, trackTop),
+                    end = Offset(endX, trackTop),
+                    strokeWidth = 2.dp.toPx()
+                )
+                drawLine(
+                    color = FrameScopeColors.SelectionBlue,
+                    start = Offset(startX, trackTop + trackHeight),
+                    end = Offset(endX, trackTop + trackHeight),
+                    strokeWidth = 2.dp.toPx()
+                )
+
+                // Start & End trim handles
+                val handleW = 7.dp.toPx()
+                val handleH = 26.dp.toPx()
+                drawRoundRect(
+                    color = FrameScopeColors.SelectionBlue,
+                    topLeft = Offset(startX - handleW / 2f, centerY - handleH / 2f),
+                    size = Size(handleW, handleH),
+                    cornerRadius = CornerRadius(3.dp.toPx(), 3.dp.toPx())
+                )
+                drawRoundRect(
+                    color = FrameScopeColors.SelectionBlue,
+                    topLeft = Offset(endX - handleW / 2f, centerY - handleH / 2f),
+                    size = Size(handleW, handleH),
+                    cornerRadius = CornerRadius(3.dp.toPx(), 3.dp.toPx())
+                )
+
+                // Playhead line + knob
+                drawLine(
+                    color = Color.White,
+                    start = Offset(playX, centerY - 17.dp.toPx()),
+                    end = Offset(playX, centerY + 17.dp.toPx()),
+                    strokeWidth = 2.5.dp.toPx()
+                )
+                drawCircle(
+                    color = Color.White,
+                    radius = 6.5.dp.toPx(),
+                    center = Offset(playX, centerY)
+                )
+                drawCircle(
+                    color = FrameScopeColors.SelectionBlue,
+                    radius = 3.5.dp.toPx(),
+                    center = Offset(playX, centerY)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+internal fun AspectRatioSection(
+    selected: CropAspectRatio,
+    customWidth: String,
+    customHeight: String,
+    customError: String?,
+    onSelectRatio: (CropAspectRatio) -> Unit,
+    onCustomChanged: (String, String) -> Unit
+) {
+    SectionCard(title = "Aspect Ratio") {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                CropAspectRatio.entries.forEach { ratio ->
+                    val isSelected = selected == ratio
+                    val chipShape = RoundedCornerShape(10.dp)
+                    Surface(
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .clip(chipShape)
+                            .clickable { onSelectRatio(ratio) }
+                            .testTag("aspect_chip_${ratio.name.lowercase()}"),
+                        shape = chipShape,
+                        color = if (isSelected) FrameScopeColors.SelectionBlueTint else FrameScopeColors.InnerSurface,
+                        border = BorderStroke(
+                            if (isSelected) 1.5.dp else 1.dp,
+                            if (isSelected) FrameScopeColors.SelectionBlue else FrameScopeColors.BorderSubtle
+                        )
+                    ) {
+                        Box(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = ratio.label,
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 13.sp
+                                ),
+                                color = if (isSelected) FrameScopeColors.SelectionBlue else FrameScopeColors.TextPrimary
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (selected == CropAspectRatio.CUSTOM) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = customWidth,
+                        onValueChange = { onCustomChanged(it, customHeight) },
+                        singleLine = true,
+                        label = { Text("W") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = FrameScopeColors.SelectionBlue,
+                            unfocusedBorderColor = FrameScopeColors.BorderSubtle,
+                            focusedTextColor = FrameScopeColors.TextPrimary,
+                            unfocusedTextColor = FrameScopeColors.TextPrimary
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("custom_ratio_width")
+                    )
+                    Text(":", color = FrameScopeColors.TextSecondary, fontWeight = FontWeight.Bold)
+                    OutlinedTextField(
+                        value = customHeight,
+                        onValueChange = { onCustomChanged(customWidth, it) },
+                        singleLine = true,
+                        label = { Text("H") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = FrameScopeColors.SelectionBlue,
+                            unfocusedBorderColor = FrameScopeColors.BorderSubtle,
+                            focusedTextColor = FrameScopeColors.TextPrimary,
+                            unfocusedTextColor = FrameScopeColors.TextPrimary
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("custom_ratio_height")
+                    )
+                }
+                if (customError != null) {
+                    Text(
+                        text = customError,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = FrameScopeColors.SpecRedText
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun VideoBitrateModeSection(
+    mode: VideoBitrateMode,
+    customBitrateMbps: Float,
+    originalBitrateBps: Long?,
+    onSelectMode: (VideoBitrateMode) -> Unit,
+    onSliderChanged: (Float) -> Unit
+) {
+    val origMbpsText = if (originalBitrateBps != null && originalBitrateBps > 0L) {
+        String.format(Locale.US, "%.1f Mbps", originalBitrateBps / 1_000_000.0)
+    } else {
+        "Unavailable"
+    }
+
+    SectionCard(title = "Bitrate Mode") {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            val customSelected = mode == VideoBitrateMode.CUSTOM
+            val customBorder by animateColorAsState(
+                if (customSelected) FrameScopeColors.SelectionBlue else FrameScopeColors.BorderSubtle,
+                label = "custom_bitrate_border"
+            )
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable { onSelectMode(VideoBitrateMode.CUSTOM) }
+                    .testTag("bitrate_mode_custom"),
+                shape = RoundedCornerShape(12.dp),
+                color = if (customSelected) FrameScopeColors.SelectionBlueTint else FrameScopeColors.InnerSurface,
+                border = BorderStroke(if (customSelected) 1.5.dp else 1.dp, customBorder)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Custom",
+                            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                            color = FrameScopeColors.TextPrimary
+                        )
+                        Text(
+                            text = String.format(Locale.US, "%.1f Mbps", customBitrateMbps),
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.SemiBold
+                            ),
+                            color = FrameScopeColors.SelectionBlue
+                        )
+                    }
+
+                    Slider(
+                        value = customBitrateMbps.coerceIn(0f, 50f),
+                        onValueChange = onSliderChanged,
+                        valueRange = 0f..50f,
+                        colors = SliderDefaults.colors(
+                            thumbColor = FrameScopeColors.SelectionBlue,
+                            activeTrackColor = FrameScopeColors.SelectionBlue,
+                            inactiveTrackColor = FrameScopeColors.ElevatedSurface
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("crop_bitrate_slider")
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "0 Mbps",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = FrameScopeColors.TextMuted
+                        )
+                        Text(
+                            text = "50 Mbps",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = FrameScopeColors.TextMuted
+                        )
+                    }
+                }
+            }
+
+            val origSelected = mode == VideoBitrateMode.ORIGINAL_PRESERVATION
+            val origBorder by animateColorAsState(
+                if (origSelected) FrameScopeColors.SelectionBlue else FrameScopeColors.BorderSubtle,
+                label = "orig_bitrate_border"
+            )
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .minimumInteractiveComponentSize()
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable { onSelectMode(VideoBitrateMode.ORIGINAL_PRESERVATION) }
+                    .testTag("bitrate_mode_original"),
+                shape = RoundedCornerShape(12.dp),
+                color = if (origSelected) FrameScopeColors.SelectionBlueTint else FrameScopeColors.InnerSurface,
+                border = BorderStroke(if (origSelected) 1.5.dp else 1.dp, origBorder)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Original Preservation",
+                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                        color = FrameScopeColors.TextPrimary
+                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = origMbpsText,
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.SemiBold
+                            ),
+                            color = if (originalBitrateBps != null && originalBitrateBps > 0L) {
+                                FrameScopeColors.ReadyGreen
+                            } else {
+                                FrameScopeColors.SpecRedText
+                            }
+                        )
+                        if (origSelected) {
+                            Icon(
+                                imageVector = Icons.Rounded.CheckCircle,
+                                contentDescription = "Selected",
+                                tint = FrameScopeColors.SelectionBlue,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun ImageFormatSection(
+    options: List<ImageExportFormatOption>,
+    selected: ImageExportFormatOption?,
+    onSelect: (ImageExportFormatOption) -> Unit
+) {
+    SectionCard(title = "Export Format") {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            options.forEach { option ->
+                val isSelected = selected?.id == option.id
+                FormatChip(
+                    label = option.label,
+                    selected = isSelected,
+                    testTag = "image_format_${option.id.name.lowercase()}",
+                    onClick = { onSelect(option) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+internal fun VideoFormatSection(
+    options: List<VideoExportFormatOption>,
+    selected: VideoExportFormatOption?,
+    onSelect: (VideoExportFormatOption) -> Unit
+) {
+    SectionCard(title = "Export Format") {
+        if (options.isEmpty()) {
+            Text(
+                text = "No supported video export muxer/encoder found on this device.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = FrameScopeColors.SpecRedText
+            )
+        } else {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                options.forEach { option ->
+                    val isSelected = selected == option
+                    FormatChip(
+                        label = option.label,
+                        selected = isSelected,
+                        testTag = "video_format_${option.container.name.lowercase()}",
+                        onClick = { onSelect(option) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FormatChip(
+    label: String,
+    selected: Boolean,
+    testTag: String,
+    onClick: () -> Unit
+) {
+    val shape = RoundedCornerShape(10.dp)
+    Surface(
+        modifier = Modifier
+            .minimumInteractiveComponentSize()
+            .clip(shape)
+            .clickable(onClick = onClick)
+            .testTag(testTag),
+        shape = shape,
+        color = if (selected) FrameScopeColors.SelectionBlueTint else FrameScopeColors.InnerSurface,
+        border = BorderStroke(
+            if (selected) 1.5.dp else 1.dp,
+            if (selected) FrameScopeColors.SelectionBlue else FrameScopeColors.BorderSubtle
+        )
+    ) {
+        Box(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = if (selected) FrameScopeColors.SelectionBlue else FrameScopeColors.TextPrimary
+            )
+        }
+    }
+}
+
+@Composable
+internal fun RecentExportsSection(
+    exports: List<CropExportedItem>,
+    thumbnails: Map<String, Bitmap>,
+    onItemClick: (CropExportedItem) -> Unit,
+    onDeleteClick: (CropExportedItem) -> Unit
+) {
+    val timeFormat = remember { SimpleDateFormat("hh:mm a • MMM d", Locale.getDefault()) }
+
+    SectionCard(title = "Recent Exports") {
+        if (exports.isEmpty()) {
+            Text(
+                text = "No cropped videos or images exported yet.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = FrameScopeColors.TextMuted,
+                modifier = Modifier.padding(vertical = 8.dp)
+            )
+        } else {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                exports.forEachIndexed { index, item ->
+                    val thumb = thumbnails[item.filePath]
+                    val cardShape = RoundedCornerShape(12.dp)
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(cardShape)
+                            .clickable { onItemClick(item) }
+                            .testTag("recent_export_item_$index"),
+                        shape = cardShape,
+                        color = FrameScopeColors.InnerSurface,
+                        border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(56.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(FrameScopeColors.ElevatedSurface),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (thumb != null) {
+                                    val imgBmp = remember(thumb) { thumb.asImageBitmap() }
+                                    Image(
+                                        bitmap = imgBmp,
+                                        contentDescription = item.fileName,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                    if (item.mediaType == CropMediaType.VIDEO) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.PlayCircleOutline,
+                                            contentDescription = null,
+                                            tint = Color.White.copy(alpha = 0.9f),
+                                            modifier = Modifier.size(24.dp)
+                                        )
+                                    }
+                                } else {
+                                    Icon(
+                                        imageVector = if (item.mediaType == CropMediaType.VIDEO) {
+                                            Icons.Rounded.VideoLibrary
+                                        } else {
+                                            Icons.Rounded.Image
+                                        },
+                                        contentDescription = item.fileName,
+                                        tint = FrameScopeColors.SelectionBlue,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
+                            }
+
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    text = item.fileName,
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                    color = FrameScopeColors.TextPrimary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = FrameScopeColors.SelectionBlueTint,
+                                        border = BorderStroke(1.dp, FrameScopeColors.SelectionBlue)
+                                    ) {
+                                        Text(
+                                            text = item.formatLabel,
+                                            style = MaterialTheme.typography.labelMedium.copy(
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold
+                                            ),
+                                            color = FrameScopeColors.SelectionBlue,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+
+                                    val dims = if (item.width > 0 && item.height > 0) {
+                                        "${item.width}×${item.height}"
+                                    } else {
+                                        ""
+                                    }
+                                    val dur = if (item.mediaType == CropMediaType.VIDEO && item.durationMs > 0L) {
+                                        " • ${formatTimelineMs(item.durationMs)}"
+                                    } else {
+                                        ""
+                                    }
+                                    if (dims.isNotEmpty() || dur.isNotEmpty()) {
+                                        Text(
+                                            text = "$dims$dur",
+                                            style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
+                                            color = FrameScopeColors.TextSecondary,
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+
+                                Text(
+                                    text = timeFormat.format(Date(item.exportedAtMs)),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = FrameScopeColors.TextMuted,
+                                    maxLines = 1
+                                )
+                            }
+
+                            IconButton(
+                                onClick = { onDeleteClick(item) },
+                                modifier = Modifier
+                                    .minimumInteractiveComponentSize()
+                                    .testTag("delete_export_item_$index")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.DeleteOutline,
+                                    contentDescription = "Delete ${item.fileName}",
+                                    tint = FrameScopeColors.TextSecondary
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+internal fun formatTimelineMs(ms: Long): String {
+    val totalSec = (ms.coerceAtLeast(0L) / 1_000L)
+    val mins = totalSec / 60L
+    val secs = totalSec % 60L
+    val hrs = mins / 60L
+    return if (hrs > 0L) {
+        String.format(Locale.US, "%d:%02d:%02d", hrs, mins % 60L, secs)
+    } else {
+        String.format(Locale.US, "%02d:%02d", mins, secs)
+    }
+}

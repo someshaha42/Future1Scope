@@ -81,7 +81,10 @@ fun FrameScopeNavHost(application: FrameScopeApplication) {
 
         composable<CropToolRoute> {
             CropToolScreen(
-                onBack = { navController.popBackStack() }
+                onBack = { navController.popBackStack() },
+                onPlayVideo = { filePath ->
+                    navController.navigate(VideoPlayerRoute(filePath = filePath))
+                }
             )
         }
     }

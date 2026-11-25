@@ -373,6 +373,66 @@ object CropMediaInspector {
         }
     }
 
+    fun inspectVideoPipelineSupport(
+        sourceVideoMime: String?,
+        container: VideoContainerFormat?
+    ): CodecPipelineSupport {
+        val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+
+        val decoderInfo = if (!sourceVideoMime.isNullOrBlank()) {
+            val decoders = list.codecInfos.filter { info ->
+                !info.isEncoder && info.supportedTypes.any { it.equals(sourceVideoMime, ignoreCase = true) }
+            }
+            decoders.firstOrNull { it.isHardwareAccelerated } ?: decoders.firstOrNull()
+        } else {
+            null
+        }
+
+        val targetContainer = container ?: VideoContainerFormat.MP4
+        val encoderMimes = when (targetContainer) {
+            VideoContainerFormat.MP4 -> {
+                if (sourceVideoMime.equals(MediaFormat.MIMETYPE_VIDEO_HEVC, ignoreCase = true)) {
+                    listOf(MediaFormat.MIMETYPE_VIDEO_HEVC, MediaFormat.MIMETYPE_VIDEO_AVC)
+                } else {
+                    listOf(MediaFormat.MIMETYPE_VIDEO_AVC, MediaFormat.MIMETYPE_VIDEO_HEVC)
+                }
+            }
+            VideoContainerFormat.WEBM -> listOf(MediaFormat.MIMETYPE_VIDEO_VP9, MediaFormat.MIMETYPE_VIDEO_VP8)
+            VideoContainerFormat.THREE_GP -> listOf(MediaFormat.MIMETYPE_VIDEO_AVC, MediaFormat.MIMETYPE_VIDEO_H263)
+        }
+
+        val matchingEncoders = encoderMimes.flatMap { mime ->
+            list.codecInfos.filter { info ->
+                info.isEncoder &&
+                    info.supportedTypes.any { it.equals(mime, ignoreCase = true) } &&
+                    runCatching {
+                        MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface in
+                            info.getCapabilitiesForType(mime).colorFormats
+                    }.getOrDefault(false)
+            }
+        }
+        val encoderInfo = matchingEncoders.firstOrNull { it.isHardwareAccelerated }
+            ?: matchingEncoders.firstOrNull()
+
+        val hwDecoder = decoderInfo?.isHardwareAccelerated == true
+        val hwEncoder = encoderInfo?.isHardwareAccelerated == true
+
+        val statusText = when {
+            hwDecoder && hwEncoder -> "✓ Hardware Decoder & Hardware Encoder"
+            !hwDecoder && !hwEncoder -> "✓ Software Decoder & Software Encoder"
+            hwDecoder -> "✓ Hardware Decoder • Software Encoder"
+            else -> "✓ Software Decoder • Hardware Encoder"
+        }
+
+        return CodecPipelineSupport(
+            isHardwareDecoder = hwDecoder,
+            isHardwareEncoder = hwEncoder,
+            decoderName = decoderInfo?.name,
+            encoderName = encoderInfo?.name,
+            statusText = statusText
+        )
+    }
+
     fun calculateRecommendedBitrateMbps(
         outputWidth: Int,
         outputHeight: Int,

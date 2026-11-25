@@ -103,13 +103,7 @@ object ImageCropProcessor {
             croppedBitmap = Bitmap.createBitmap(sourceBitmap, leftPx, topPx, outW, outH)
 
             val outputSpec = resolveCompressSpec(formatOption, croppedBitmap.hasAlpha())
-            val outDir = File(
-                context.getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: context.filesDir,
-                "FrameScope"
-            ).apply { if (!exists()) mkdirs() }
-
-            val stamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
-            val outFile = File(outDir, "FrameScope_Crop_$stamp.${outputSpec.extension}")
+            val outFile = CropExportsRepository(context).createImageExportFile(outputSpec.extension)
 
             finalBitmap = if (!outputSpec.supportsAlpha && croppedBitmap.hasAlpha()) {
                 val targetColorSpace = croppedBitmap.colorSpace

@@ -1,5 +1,6 @@
 package com.example.framescope.crop
 
+import android.media.MediaMuxer
 import android.net.Uri
 
 enum class CropImportSource {
@@ -15,6 +16,17 @@ enum class CropMediaType {
 }
 
 enum class CropAspectRatio(val label: String, val ratio: Float?) {
+    ORIGINAL("Original", null),
+    RATIO_9_16("9:16", 9f / 16f),
+    RATIO_16_9("16:9", 16f / 9f),
+    RATIO_4_5("4:5", 4f / 5f),
+    RATIO_1_1("1:1", 1f),
+    RATIO_2_3("2:3", 2f / 3f),
+    CUSTOM("Custom", null)
+}
+
+enum class CanvasAspectMode(val label: String, val ratio: Float?) {
+    DEFAULT("Default", 1f),
     ORIGINAL("Original", null),
     RATIO_9_16("9:16", 9f / 16f),
     RATIO_16_9("16:9", 16f / 9f),
@@ -48,15 +60,23 @@ enum class VideoContainerFormat(
     val mimeType: String,
     val muxerOutputFormat: Int
 ) {
-    MP4("mp4", "video/mp4", android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4),
-    WEBM("webm", "video/webm", android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM),
-    THREE_GP("3gp", "video/3gpp", android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_3GPP)
+    MP4("mp4", "video/mp4", MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4),
+    WEBM("webm", "video/webm", MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM),
+    THREE_GP("3gp", "video/3gpp", MediaMuxer.OutputFormat.MUXER_OUTPUT_3GPP)
 }
 
 data class VideoExportFormatOption(
     val label: String,
     val container: VideoContainerFormat,
     val isOriginal: Boolean
+)
+
+data class CodecPipelineSupport(
+    val isHardwareDecoder: Boolean,
+    val isHardwareEncoder: Boolean,
+    val decoderName: String?,
+    val encoderName: String?,
+    val statusText: String
 )
 
 data class NormalizedCropRect(
@@ -92,6 +112,18 @@ data class ImportedMediaInfo(
     val sourceVideoMime: String? = null,
     val imageExportOptions: List<ImageExportFormatOption> = emptyList(),
     val videoExportOptions: List<VideoExportFormatOption> = emptyList()
+)
+
+data class CropExportedItem(
+    val filePath: String,
+    val fileName: String,
+    val mediaType: CropMediaType,
+    val formatLabel: String,
+    val width: Int,
+    val height: Int,
+    val durationMs: Long,
+    val sizeBytes: Long,
+    val exportedAtMs: Long
 )
 
 sealed interface CropExportState {

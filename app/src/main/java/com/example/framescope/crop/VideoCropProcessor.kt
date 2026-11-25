@@ -58,15 +58,11 @@ object VideoCropProcessor {
         cropRect: NormalizedCropRect,
         formatOption: VideoExportFormatOption,
         targetBitrateBps: Int,
+        trimStartMs: Long = 0L,
+        trimEndMs: Long = media.durationMs,
         onProgress: (Float, String) -> Unit
     ): CropExportState = withContext(Dispatchers.IO) {
-        val outDir = File(
-            context.getExternalFilesDir(Environment.DIRECTORY_MOVIES) ?: context.filesDir,
-            "FrameScope"
-        ).apply { if (!exists()) mkdirs() }
-
-        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
-        val outFile = File(outDir, "FrameScope_Crop_$stamp.${formatOption.container.extension}")
+        val outFile = CropExportsRepository(context).createVideoExportFile(formatOption.container.extension)
 
         val videoExtractor = MediaExtractor()
         var audioExtractor: MediaExtractor? = null
@@ -168,7 +164,16 @@ object VideoCropProcessor {
             decoder.start()
             videoExtractor.selectTrack(videoTrackIndex)
 
-            val durationUs = (media.durationMs * 1_000L).coerceAtLeast(1L)
+            val trimStartUs = trimStartMs.coerceAtLeast(0L) * 1_000L
+            val effectiveEndMs = if (trimEndMs > trimStartMs) trimEndMs else media.durationMs
+            val trimEndUs = if (effectiveEndMs > 0L) effectiveEndMs * 1_000L else Long.MAX_VALUE
+            val durationUs = ((if (trimEndUs < Long.MAX_VALUE) trimEndUs else (media.durationMs * 1_000L)) - trimStartUs)
+                .coerceAtLeast(1L)
+
+            if (trimStartUs > 0L) {
+                videoExtractor.seekTo(trimStartUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+            }
+
             var muxerVideoTrack = -1
             var muxerAudioTrack = -1
             var lastVideoPtsUs = -1L
@@ -192,7 +197,8 @@ object VideoCropProcessor {
                         val inBuf = decoder.getInputBuffer(inIndex)
                         if (inBuf != null) {
                             val sampleSize = videoExtractor.readSampleData(inBuf, 0)
-                            if (sampleSize < 0) {
+                            val samplePtsUs = videoExtractor.sampleTime.coerceAtLeast(0L)
+                            if (sampleSize < 0 || samplePtsUs > trimEndUs) {
                                 decoder.queueInputBuffer(
                                     inIndex,
                                     0,
@@ -202,12 +208,11 @@ object VideoCropProcessor {
                                 )
                                 inputDone = true
                             } else {
-                                val ptsUs = videoExtractor.sampleTime.coerceAtLeast(0L)
                                 decoder.queueInputBuffer(
                                     inIndex,
                                     0,
                                     sampleSize,
-                                    ptsUs,
+                                    samplePtsUs,
                                     0
                                 )
                                 videoExtractor.advance()
@@ -220,12 +225,15 @@ object VideoCropProcessor {
                 if (!decoderDone) {
                     val outIndex = decoder.dequeueOutputBuffer(bufferInfo, TIMEOUT_US)
                     if (outIndex >= 0) {
+                        val ptsUs = bufferInfo.presentationTimeUs
+                        val withinRange = ptsUs >= trimStartUs && ptsUs <= trimEndUs
                         val doRender = bufferInfo.size > 0 &&
+                            withinRange &&
                             (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0
                         decoder.releaseOutputBuffer(outIndex, doRender)
                         if (doRender) {
                             glContext.awaitNewImage()
-                            glContext.drawCroppedFrame(bufferInfo.presentationTimeUs)
+                            glContext.drawCroppedFrame((ptsUs - trimStartUs).coerceAtLeast(0L))
                         }
                         if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
                             decoderDone = true
@@ -286,12 +294,15 @@ object VideoCropProcessor {
                 }
             }
 
-            // 4. Copy compatible audio track cleanly
+            // 4. Copy compatible audio track cleanly within [trimStartUs, trimEndUs]
             if (muxerStarted && muxerAudioTrack >= 0 && audioTrackIndex >= 0) {
                 onProgress(0.94f, "Muxing audio track…")
                 audioExtractor = MediaExtractor().apply {
                     setDataSource(context, media.uri, null)
                     selectTrack(audioTrackIndex)
+                    if (trimStartUs > 0L) {
+                        seekTo(trimStartUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+                    }
                 }
                 val maxAudioSize = (compatibleAudioFormat?.let {
                     if (it.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) {
@@ -306,11 +317,17 @@ object VideoCropProcessor {
                 while (coroutineContext.isActive) {
                     val sampleSize = audioExtractor.readSampleData(audioBuf, 0)
                     if (sampleSize < 0) break
-                    val sampleTime = audioExtractor.sampleTime.coerceAtLeast(0L)
-                    if (lastVideoPtsUs > 0L && sampleTime > lastVideoPtsUs + 100_000L) {
+                    val rawSampleTime = audioExtractor.sampleTime.coerceAtLeast(0L)
+                    if (rawSampleTime > trimEndUs) break
+                    if (rawSampleTime < trimStartUs) {
+                        if (!audioExtractor.advance()) break
+                        continue
+                    }
+                    val rebasedTime = (rawSampleTime - trimStartUs).coerceAtLeast(0L)
+                    if (lastVideoPtsUs > 0L && rebasedTime > lastVideoPtsUs + 100_000L) {
                         break
                     }
-                    val pts = if (sampleTime <= lastAudioPtsUs) lastAudioPtsUs + 1L else sampleTime
+                    val pts = if (rebasedTime <= lastAudioPtsUs) lastAudioPtsUs + 1L else rebasedTime
                     lastAudioPtsUs = pts
 
                     audioInfo.set(
