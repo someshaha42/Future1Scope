@@ -15,6 +15,7 @@ class NativeVideoEncoder(
     private val height: Int,
     private val existingProjectVideoBitrate: Int,
     private val muxer: NativeMuxer,
+    private val preferredFrameRate: Int = 60,
     private val onFatalError: (Throwable) -> Unit
 ) {
     private val stopped = AtomicBoolean(false)
@@ -24,6 +25,8 @@ class NativeVideoEncoder(
     private var encoderThread: HandlerThread? = null
     private var callbackHandler: Handler? = null
 
+    var activeTab: EncodingTab = tab
+        private set
     var configuredWidth: Int = width
         private set
     var configuredHeight: Int = height
@@ -35,24 +38,47 @@ class NativeVideoEncoder(
         private set
 
     fun start() {
-        val resolved = EncodingSpec.resolveCompatibleVideoConfig(
-            tab = tab,
-            requestedWidth = width,
-            requestedHeight = height,
-            requestedBitrateBps = existingProjectVideoBitrate
-        )
-        configuredWidth = resolved.width
-        configuredHeight = resolved.height
-        configuredBitrateBps = resolved.bitrateBps
-
         val thread = HandlerThread("VideoEncoderThread").apply { start() }
         encoderThread = thread
         val handler = Handler(thread.looper)
         callbackHandler = handler
 
-        val mediaCodec = createCodec(resolved.codecName)
-        codec = mediaCodec
+        val tabsToTry = if (tab == EncodingTab.H265) {
+            listOf(EncodingTab.H265, EncodingTab.H264)
+        } else {
+            listOf(tab)
+        }
 
+        var lastFailure: Throwable? = null
+        for (candidateTab in tabsToTry) {
+            val resolved = EncodingSpec.resolveCompatibleVideoConfig(
+                tab = candidateTab,
+                requestedWidth = width,
+                requestedHeight = height,
+                requestedBitrateBps = existingProjectVideoBitrate,
+                preferredFrameRate = preferredFrameRate
+            )
+
+            val result = runCatching {
+                val mediaCodec = createCodec(candidateTab, resolved.codecName)
+                attachCallback(mediaCodec, handler)
+                configureCodecWithFallback(mediaCodec, resolved)
+                inputSurface = mediaCodec.createInputSurface()
+                codec = mediaCodec
+                activeTab = candidateTab
+                configuredWidth = resolved.width
+                configuredHeight = resolved.height
+                configuredBitrateBps = resolved.bitrateBps
+                mediaCodec.start()
+            }
+            if (result.isSuccess) return
+            lastFailure = result.exceptionOrNull()
+        }
+
+        throw lastFailure ?: IllegalStateException("Unable to configure ${tab.displayName} encoder.")
+    }
+
+    private fun attachCallback(mediaCodec: MediaCodec, handler: Handler) {
         mediaCodec.setCallback(
             object : MediaCodec.Callback() {
                 override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {
@@ -105,38 +131,49 @@ class NativeVideoEncoder(
             },
             handler
         )
-
-        configureCodecWithFallback(mediaCodec, resolved)
-        inputSurface = mediaCodec.createInputSurface()
-        mediaCodec.start()
     }
 
-    private fun createCodec(codecName: String?): MediaCodec {
+    private fun createCodec(candidateTab: EncodingTab, codecName: String?): MediaCodec {
         if (!codecName.isNullOrBlank()) {
             val byName = runCatching { MediaCodec.createByCodecName(codecName) }.getOrNull()
             if (byName != null) return byName
         }
-        return MediaCodec.createEncoderByType(tab.mimeType)
+        return MediaCodec.createEncoderByType(candidateTab.mimeType)
     }
 
     private fun configureCodecWithFallback(
         mediaCodec: MediaCodec,
         resolved: ResolvedVideoConfig
     ) {
-        val attempts = listOf(
-            Pair(resolved.bitrateMode, true),
-            Pair(resolved.bitrateMode, false),
-            Pair(null, false)
+        data class Attempt(
+            val bitrateMode: Int?,
+            val profile: Int?,
+            val includeColor: Boolean,
+            val disableBFrames: Boolean
         )
+
+        val attempts = listOf(
+            Attempt(resolved.bitrateMode, resolved.profile, includeColor = true, disableBFrames = resolved.supportsMaxBFramesZero),
+            Attempt(resolved.bitrateMode, resolved.profile, includeColor = true, disableBFrames = false),
+            Attempt(resolved.bitrateMode, null, includeColor = false, disableBFrames = false),
+            Attempt(null, null, includeColor = false, disableBFrames = false)
+        )
+
         var lastError: Throwable? = null
-        for ((mode, includeColor) in attempts) {
-            val format = MediaFormat.createVideoFormat(tab.mimeType, resolved.width, resolved.height)
+        for (attempt in attempts) {
+            val format = MediaFormat.createVideoFormat(
+                resolved.tab.mimeType,
+                resolved.width,
+                resolved.height
+            )
             EncodingSpec.configureVideoFormat(
                 format = format,
                 existingProjectVideoBitrate = resolved.bitrateBps,
-                bitrateMode = mode,
+                bitrateMode = attempt.bitrateMode,
                 frameRate = resolved.frameRate,
-                includeColorMetadata = includeColor
+                profile = attempt.profile,
+                includeColorMetadata = attempt.includeColor,
+                disableBFrames = attempt.disableBFrames
             )
             val result = runCatching {
                 mediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
@@ -145,14 +182,15 @@ class NativeVideoEncoder(
             lastError = result.exceptionOrNull()
             runCatching { mediaCodec.reset() }
         }
-        throw lastError ?: IllegalStateException("Unable to configure H.264 hardware encoder.")
+        runCatching { mediaCodec.release() }
+        throw lastError ?: IllegalStateException("Unable to configure ${resolved.tab.displayName} encoder.")
     }
 
     private fun validateVideoOutputFormat(format: MediaFormat) {
         if (format.containsKey(MediaFormat.KEY_MIME)) {
             val actualMime = format.getString(MediaFormat.KEY_MIME)
-            check(actualMime == null || actualMime.equals(tab.mimeType, ignoreCase = true)) {
-                "Encoder output MIME ($actualMime) does not match selected tab (${tab.mimeType})."
+            check(actualMime == null || actualMime.equals(activeTab.mimeType, ignoreCase = true)) {
+                "Encoder output MIME ($actualMime) does not match active codec (${activeTab.mimeType})."
             }
         }
     }
@@ -165,7 +203,12 @@ class NativeVideoEncoder(
 
     fun stop() {
         if (!stopped.compareAndSet(false, true)) return
-        val mediaCodec = codec ?: return
+        val mediaCodec = codec ?: run {
+            encoderThread?.quitSafely()
+            encoderThread = null
+            callbackHandler = null
+            return
+        }
         runCatching { mediaCodec.signalEndOfInputStream() }
         runCatching { eosLatch.await(1_500, TimeUnit.MILLISECONDS) }
 

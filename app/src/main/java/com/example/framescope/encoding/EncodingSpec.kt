@@ -6,6 +6,7 @@ import android.media.MediaFormat
 import kotlin.math.roundToInt
 
 enum class EncodingTab(val mimeType: String, val displayName: String) {
+    H265(MediaFormat.MIMETYPE_VIDEO_HEVC, "H.265"),
     H264(MediaFormat.MIMETYPE_VIDEO_AVC, "H.264")
 }
 
@@ -18,12 +19,16 @@ data class EncoderValidationReport(
 )
 
 data class ResolvedVideoConfig(
+    val tab: EncodingTab,
     val codecName: String?,
     val width: Int,
     val height: Int,
     val bitrateBps: Int,
     val bitrateMode: Int?,
-    val frameRate: Int
+    val frameRate: Int,
+    val profile: Int?,
+    val level: Int?,
+    val supportsMaxBFramesZero: Boolean
 )
 
 object EncodingSpec {
@@ -34,10 +39,11 @@ object EncodingSpec {
     const val GOP_SECONDS = 2
 
     fun resolveCompatibleVideoConfig(
-        tab: EncodingTab = EncodingTab.H264,
+        tab: EncodingTab = EncodingTab.H265,
         requestedWidth: Int,
         requestedHeight: Int,
-        requestedBitrateBps: Int
+        requestedBitrateBps: Int,
+        preferredFrameRate: Int = 60
     ): ResolvedVideoConfig {
         val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
         val candidates = list.codecInfos.filter { info ->
@@ -55,12 +61,16 @@ object EncodingSpec {
             val safeEvenW = (requestedWidth and 1.inv()).coerceAtLeast(16)
             val safeEvenH = (requestedHeight and 1.inv()).coerceAtLeast(16)
             return ResolvedVideoConfig(
+                tab = tab,
                 codecName = null,
                 width = safeEvenW,
                 height = safeEvenH,
                 bitrateBps = requestedBitrateBps.coerceAtLeast(500_000),
                 bitrateMode = MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR,
-                frameRate = 60
+                frameRate = preferredFrameRate.coerceIn(24, 60),
+                profile = null,
+                level = null,
+                supportsMaxBFramesZero = false
             )
         }
 
@@ -95,29 +105,45 @@ object EncodingSpec {
             else -> null
         }
 
+        val desiredFps = preferredFrameRate.coerceIn(30, 60)
         val frameRate = if (videoCaps != null) {
             val achievable = runCatching {
                 videoCaps.getSupportedFrameRatesFor(alignedW, alignedH)
             }.getOrNull()
             if (achievable != null) {
-                60.0.coerceIn(achievable.lower, achievable.upper).roundToInt().coerceAtLeast(24)
+                desiredFps.toDouble().coerceIn(achievable.lower, achievable.upper)
+                    .roundToInt()
+                    .coerceAtLeast(24)
             } else {
-                60.coerceIn(
+                desiredFps.coerceIn(
                     videoCaps.supportedFrameRates.lower.coerceAtLeast(24),
                     videoCaps.supportedFrameRates.upper.coerceAtLeast(24)
                 )
             }
         } else {
-            60
+            desiredFps
+        }
+
+        val selectedProfile = if (tab == EncodingTab.H265) {
+            val mainProfile = caps.profileLevels?.firstOrNull {
+                it.profile == MediaCodecInfo.CodecProfileLevel.HEVCProfileMain
+            }
+            mainProfile?.profile
+        } else {
+            null
         }
 
         return ResolvedVideoConfig(
+            tab = tab,
             codecName = matching.name,
             width = alignedW,
             height = alignedH,
             bitrateBps = clampedBitrate,
             bitrateMode = bitrateMode,
-            frameRate = frameRate
+            frameRate = frameRate,
+            profile = selectedProfile,
+            level = null,
+            supportsMaxBFramesZero = matching.isHardwareAccelerated
         )
     }
 
@@ -152,7 +178,6 @@ object EncodingSpec {
             return targetW to targetH
         }
 
-        // Proportionally scale down if combined width*height exceeds encoder macroblock limit
         val scales = listOf(0.85f, 0.75f, 0.66f, 0.5f, 0.35f)
         for (scale in scales) {
             val scaledW = alignDown((rawWidth * scale).roundToInt().coerceIn(minW, maxW), wAlign, minW)
@@ -176,7 +201,9 @@ object EncodingSpec {
             existingProjectVideoBitrate = existingProjectVideoBitrate,
             bitrateMode = MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR,
             frameRate = 60,
-            includeColorMetadata = true
+            profile = null,
+            includeColorMetadata = true,
+            disableBFrames = false
         )
     }
 
@@ -185,7 +212,9 @@ object EncodingSpec {
         existingProjectVideoBitrate: Int,
         bitrateMode: Int?,
         frameRate: Int,
-        includeColorMetadata: Boolean
+        profile: Int? = null,
+        includeColorMetadata: Boolean = true,
+        disableBFrames: Boolean = false
     ) {
         require(existingProjectVideoBitrate > 0) {
             "The existing project video bitrate must be supplied."
@@ -193,6 +222,9 @@ object EncodingSpec {
         format.setInteger(MediaFormat.KEY_BIT_RATE, existingProjectVideoBitrate)
         if (bitrateMode != null) {
             format.setInteger(MediaFormat.KEY_BITRATE_MODE, bitrateMode)
+        }
+        if (profile != null) {
+            format.setInteger(MediaFormat.KEY_PROFILE, profile)
         }
         format.setInteger(
             MediaFormat.KEY_COLOR_FORMAT,
@@ -203,6 +235,9 @@ object EncodingSpec {
             format.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
             format.setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
             format.setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
+        }
+        if (disableBFrames) {
+            format.setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
         }
         // Display-driven capture: supply nominal operating rate hint without forcing fixed FPS output
         format.setInteger(MediaFormat.KEY_FRAME_RATE, frameRate.coerceAtLeast(24))
@@ -223,7 +258,7 @@ object EncodingSpec {
         }
     }
 
-    fun inspectHardwareEncoder(tab: EncodingTab = EncodingTab.H264): EncoderValidationReport {
+    fun inspectHardwareEncoder(tab: EncodingTab = EncodingTab.H265): EncoderValidationReport {
         val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
         val matching = list.codecInfos.firstOrNull { info ->
             info.isEncoder &&

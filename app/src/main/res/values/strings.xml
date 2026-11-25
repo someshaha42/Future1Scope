@@ -32,6 +32,6 @@
     <string name="recorded_videos_title">Recorded Videos</string>
     <string name="notification_channel_name">Screen Recording</string>
     <string name="notification_title">FrameScope Recording</string>
-    <string name="notification_text">H.264 native encoding is active</string>
+    <string name="notification_text">H.265 native encoding is active</string>
     <string name="notification_action_stop">Stop</string>
 </resources>

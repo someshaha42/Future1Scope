@@ -14,7 +14,7 @@ data class VideoDimensions(
     val height: Int
 ) {
     /**
-     * Hardware H.264 encoders require even pixel dimensions for YUV 4:2:0 subsampling.
+     * Hardware H.265/HEVC encoders require even pixel dimensions for YUV 4:2:0 subsampling.
      */
     fun alignEven(): VideoDimensions {
         val evenW = (width and 1.inv()).coerceAtLeast(16)

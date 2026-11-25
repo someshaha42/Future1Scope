@@ -6,6 +6,9 @@ import android.media.MediaMetadataRetriever
 import android.os.Environment
 import android.provider.MediaStore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
@@ -22,7 +25,7 @@ class RecordingsRepository(private val context: Context) {
     }
 
     fun createNewOutputFile(): File {
-        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
         return File(getRecordingsDirectory(), "FrameScope_$stamp.mp4")
     }
 
@@ -32,8 +35,10 @@ class RecordingsRepository(private val context: Context) {
             file.isFile && file.extension.equals("mp4", ignoreCase = true) && file.length() > 0L
         }?.sortedByDescending { it.lastModified() }.orEmpty()
 
-        files.map { file ->
-            readMetadata(file)
+        coroutineScope {
+            files.map { file ->
+                async { readMetadata(file) }
+            }.awaitAll()
         }
     }
 

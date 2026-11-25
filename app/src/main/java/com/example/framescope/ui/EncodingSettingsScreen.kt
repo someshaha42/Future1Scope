@@ -64,7 +64,7 @@ private data class FixedEncodingSpecItem(
     val icon: ImageVector
 )
 
-private val H264_SPEC_ITEMS = listOf(
+private val H265_SPEC_ITEMS = listOf(
     FixedEncodingSpecItem(
         title = "Bitrate Mode",
         value = "VBR (Variable Bitrate)",
@@ -173,7 +173,7 @@ fun EncodingSettingsScreen(
             ) {
                 ActiveCodecHeaderCard()
 
-                H264_SPEC_ITEMS.forEach { spec ->
+                H265_SPEC_ITEMS.forEach { spec ->
                     EncodingSpecCard(item = spec)
                 }
 
@@ -192,7 +192,7 @@ private fun ActiveCodecHeaderCard() {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .testTag("codec_header_h264"),
+            .testTag("codec_header_h265"),
         shape = RoundedCornerShape(18.dp),
         color = FrameScopeColors.CardSurface,
         border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle)
@@ -222,7 +222,7 @@ private fun ActiveCodecHeaderCard() {
                     )
                 }
                 Text(
-                    text = "H.264",
+                    text = "H.265 (HEVC)",
                     style = MaterialTheme.typography.titleMedium,
                     color = FrameScopeColors.TextPrimary
                 )
@@ -248,7 +248,7 @@ private fun ActiveCodecHeaderCard() {
                             .background(FrameScopeColors.RecordRed)
                     )
                     Text(
-                        text = "H.264",
+                        text = "H.265",
                         style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
                         color = FrameScopeColors.TextPrimary
                     )

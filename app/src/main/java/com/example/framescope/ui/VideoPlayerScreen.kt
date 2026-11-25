@@ -1,5 +1,6 @@
 package com.example.framescope.ui
 
+import android.media.AudioManager
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -23,7 +24,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.Replay
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -57,6 +60,7 @@ fun VideoPlayerScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
 
     var isLoading by remember(filePath) { mutableStateOf(true) }
+    var isCompleted by remember(filePath) { mutableStateOf(false) }
     var playbackError by remember(filePath) {
         mutableStateOf(
             if (!file.exists() || file.length() <= 0L) {
@@ -155,15 +159,21 @@ fun VideoPlayerScreen(
                 AndroidView(
                     factory = { ctx ->
                         FrameLayout(ctx).apply {
+                            val container = this
                             val vv = VideoView(ctx).apply {
                                 val controller = MediaController(ctx)
-                                controller.setAnchorView(this)
+                                controller.setAnchorView(container)
                                 setMediaController(controller)
+                                setAudioFocusRequest(AudioManager.AUDIOFOCUS_GAIN)
                                 setVideoPath(filePath)
                                 setOnPreparedListener { mp ->
                                     isLoading = false
+                                    isCompleted = false
                                     mp.isLooping = false
                                     start()
+                                }
+                                setOnCompletionListener {
+                                    isCompleted = true
                                 }
                                 setOnErrorListener { _, what, extra ->
                                     isLoading = false
@@ -191,6 +201,22 @@ fun VideoPlayerScreen(
                     CircularProgressIndicator(
                         color = FrameScopeColors.SelectionBlue
                     )
+                } else if (isCompleted) {
+                    FilledTonalButton(
+                        onClick = {
+                            isCompleted = false
+                            videoViewRef?.seekTo(0)
+                            videoViewRef?.start()
+                        },
+                        modifier = Modifier.testTag("player_replay_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Replay,
+                            contentDescription = "Replay"
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Replay")
+                    }
                 }
             }
         }

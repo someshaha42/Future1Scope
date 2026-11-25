@@ -33,7 +33,7 @@ class NativeAudioCapture(
             AudioFormat.ENCODING_PCM_16BIT
         )
         check(minBuffer > 0) {
-            "AudioRecord does not support the required ${sampleRate} Hz Mono PCM format."
+            "AudioRecord does not support the required $sampleRate Hz Mono PCM format."
         }
 
         val audioFormat = AudioFormat.Builder()
@@ -80,11 +80,10 @@ class NativeAudioCapture(
         running.set(true)
         audioRecord.startRecording()
 
-        val sessionStartUs = System.nanoTime() / 1_000L
-
         captureThread = Thread({
             val chunkSize = minOf(AAC_FRAME_BYTES, maxOf(minBuffer, AAC_FRAME_BYTES))
             val buffer = ByteArray(chunkSize)
+            var audioAnchorUs = -1L
             var totalFrames = 0L
             try {
                 while (running.get()) {
@@ -96,9 +95,20 @@ class NativeAudioCapture(
                     )
                     when {
                         count > 0 -> {
+                            val nowUs = System.nanoTime() / 1_000L
                             val frames = count / 2L
-                            val ptsUs = sessionStartUs +
-                                (totalFrames * 1_000_000L / sampleRate)
+                            val chunkDurationUs = frames * 1_000_000L / sampleRate
+                            if (audioAnchorUs < 0L) {
+                                // Anchor on the first actual hardware PCM delivery to match Surface timestamps
+                                audioAnchorUs = (nowUs - chunkDurationUs).coerceAtLeast(0L)
+                            }
+                            var ptsUs = audioAnchorUs + (totalFrames * 1_000_000L / sampleRate)
+                            // Re-anchor smoothly if hardware capture stalls > 80ms to keep A/V lip-sync tight
+                            val driftUs = nowUs - (ptsUs + chunkDurationUs)
+                            if (kotlin.math.abs(driftUs) > MAX_AV_DRIFT_US) {
+                                audioAnchorUs += driftUs
+                                ptsUs = audioAnchorUs + (totalFrames * 1_000_000L / sampleRate)
+                            }
                             encoder.queuePcm(
                                 buffer.copyOf(count),
                                 count,
@@ -136,7 +146,6 @@ class NativeAudioCapture(
     private fun selectPreferredExternalMic(audioRecord: AudioRecord) {
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
         val inputs = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
-        // Prioritize wired and USB microphones that route directly without requiring SCO handshake
         val directExternalTypes = listOf(
             AudioDeviceInfo.TYPE_USB_HEADSET,
             AudioDeviceInfo.TYPE_USB_DEVICE,
@@ -149,7 +158,6 @@ class NativeAudioCapture(
                 return
             }
         }
-        // Only route BLE/SCO headset if communication device is already active on it
         val activeComm = audioManager.communicationDevice
         if (activeComm != null &&
             (activeComm.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
@@ -174,5 +182,6 @@ class NativeAudioCapture(
 
     companion object {
         private const val AAC_FRAME_BYTES = 2048 // 1024 Mono 16-bit samples = 1 AAC frame
+        private const val MAX_AV_DRIFT_US = 80_000L
     }
 }

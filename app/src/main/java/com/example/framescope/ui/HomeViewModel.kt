@@ -60,7 +60,8 @@ class HomeViewModel(
         }
         viewModelScope.launch {
             _encoderReport.value = withContext(Dispatchers.Default) {
-                EncodingSpec.inspectHardwareEncoder(EncodingTab.H264)
+                val hevc = EncodingSpec.inspectHardwareEncoder(EncodingTab.H265)
+                if (hevc.isCompatible) hevc else EncodingSpec.inspectHardwareEncoder(EncodingTab.H264)
             }
         }
     }

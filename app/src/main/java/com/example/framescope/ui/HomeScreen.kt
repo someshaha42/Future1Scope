@@ -5,8 +5,10 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.hardware.display.DisplayManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.view.Display
 import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -152,10 +154,11 @@ fun HomeScreen(
                 action = EncodingForegroundService.ACTION_START
                 putExtra(EncodingForegroundService.EXTRA_RESULT_CODE, result.resultCode)
                 putExtra(EncodingForegroundService.EXTRA_RESULT_DATA, result.data)
-                putExtra(EncodingForegroundService.EXTRA_TAB, EncodingTab.H264.name)
+                putExtra(EncodingForegroundService.EXTRA_TAB, EncodingTab.H265.name)
                 putExtra(EncodingForegroundService.EXTRA_WIDTH, targetDimensions.width)
                 putExtra(EncodingForegroundService.EXTRA_HEIGHT, targetDimensions.height)
                 putExtra(EncodingForegroundService.EXTRA_DENSITY, displayInfo.densityDpi)
+                putExtra(EncodingForegroundService.EXTRA_FRAME_RATE, displayInfo.refreshRateHz)
                 putExtra(EncodingForegroundService.EXTRA_BITRATE, settings.effectiveBitrateBps)
                 putExtra(EncodingForegroundService.EXTRA_OUTPUT_PATH, outputPath)
                 putExtra(EncodingForegroundService.EXTRA_ORIENTATION, settings.orientation.name)
@@ -870,17 +873,24 @@ private fun BitrateChip(
 private data class DeviceDisplayInfo(
     val widthPx: Int,
     val heightPx: Int,
-    val densityDpi: Int
+    val densityDpi: Int,
+    val refreshRateHz: Int
 )
 
 private fun readDisplayMetrics(context: Context): DeviceDisplayInfo {
     val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     val bounds = windowManager.maximumWindowMetrics.bounds
     val densityDpi = context.resources.displayMetrics.densityDpi
+    val displayManager = context.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
+    val refreshRate = displayManager?.getDisplay(Display.DEFAULT_DISPLAY)?.refreshRate
+        ?.toInt()
+        ?.coerceIn(30, 120)
+        ?: 60
     return DeviceDisplayInfo(
         widthPx = bounds.width().coerceAtLeast(720),
         heightPx = bounds.height().coerceAtLeast(1280),
-        densityDpi = densityDpi.coerceAtLeast(160)
+        densityDpi = densityDpi.coerceAtLeast(160),
+        refreshRateHz = refreshRate
     )
 }
 

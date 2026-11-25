@@ -50,6 +50,7 @@ class EncodingForegroundService : Service() {
         const val EXTRA_SUMMARY = "summary_text"
         const val EXTRA_SHOW_BORDER = "show_border"
         const val EXTRA_IS_REGION = "is_region"
+        const val EXTRA_FRAME_RATE = "frame_rate"
 
         private const val CHANNEL_ID = "framescope_encoding"
         private const val NOTIFICATION_ID = 4101
@@ -114,8 +115,9 @@ class EncodingForegroundService : Service() {
             projection = mediaProjection
 
             val tab = when (intent.getStringExtra(EXTRA_TAB)) {
+                EncodingTab.H265.name -> EncodingTab.H265
                 EncodingTab.H264.name -> EncodingTab.H264
-                else -> EncodingTab.H264
+                else -> EncodingTab.H265
             }
             val orientation = intent.getStringExtra(EXTRA_ORIENTATION)?.let { raw ->
                 runCatching { RecordingOrientation.valueOf(raw) }.getOrNull()
@@ -128,6 +130,7 @@ class EncodingForegroundService : Service() {
             val height = intent.getIntExtra(EXTRA_HEIGHT, 0)
             val density = intent.getIntExtra(EXTRA_DENSITY, 0)
             val bitrate = intent.getIntExtra(EXTRA_BITRATE, 0)
+            val preferredFrameRate = intent.getIntExtra(EXTRA_FRAME_RATE, 60).coerceIn(24, 120)
             val outputPath = intent.getStringExtra(EXTRA_OUTPUT_PATH)
                 ?: error("Output MP4 path is missing.")
             val showBorder = intent.getBooleanExtra(EXTRA_SHOW_BORDER, false)
@@ -147,6 +150,7 @@ class EncodingForegroundService : Service() {
                 height = height,
                 existingProjectVideoBitrate = bitrate,
                 muxer = nativeMuxer,
+                preferredFrameRate = preferredFrameRate,
                 onFatalError = { err ->
                     stopRecording(fatalError = err.message ?: "Video encoder error")
                 }
