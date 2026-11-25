@@ -203,19 +203,29 @@ fun RecordedVideosScreen(
                             video = video,
                             onPlay = { onPlayVideo(video.filePath) },
                             onShare = {
-                                val uri = FileProvider.getUriForFile(
-                                    context,
-                                    "${context.packageName}.fileprovider",
-                                    File(video.filePath)
-                                )
-                                val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                    type = "video/mp4"
-                                    putExtra(Intent.EXTRA_STREAM, uri)
-                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                runCatching {
+                                    val file = File(video.filePath)
+                                    require(file.exists() && file.length() > 0L) {
+                                        "Recording file is missing."
+                                    }
+                                    val uri = FileProvider.getUriForFile(
+                                        context,
+                                        "${context.packageName}.fileprovider",
+                                        file
+                                    )
+                                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                        type = "video/mp4"
+                                        putExtra(Intent.EXTRA_STREAM, uri)
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    }
+                                    context.startActivity(
+                                        Intent.createChooser(shareIntent, "Share Recording")
+                                    )
+                                }.onFailure {
+                                    coroutineScope.launch {
+                                        snackbarHostState.showSnackbar("Unable to share recording")
+                                    }
                                 }
-                                context.startActivity(
-                                    Intent.createChooser(shareIntent, "Share Recording")
-                                )
                             },
                             onExport = {
                                 coroutineScope.launch {

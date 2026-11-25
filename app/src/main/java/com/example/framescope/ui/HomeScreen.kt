@@ -164,7 +164,15 @@ fun HomeScreen(
                 putExtra(EncodingForegroundService.EXTRA_SHOW_BORDER, false)
                 putExtra(EncodingForegroundService.EXTRA_IS_REGION, false)
             }
-            ContextCompat.startForegroundService(context, startIntent)
+            runCatching {
+                ContextCompat.startForegroundService(context, startIntent)
+            }.onFailure { err ->
+                coroutineScope.launch {
+                    snackbarHostState.showSnackbar(
+                        err.message ?: "Unable to start recording service."
+                    )
+                }
+            }
         } else {
             coroutineScope.launch {
                 snackbarHostState.showSnackbar("Screen capture permission was cancelled.")
@@ -205,7 +213,15 @@ fun HomeScreen(
             val stopIntent = Intent(context, EncodingForegroundService::class.java).apply {
                 action = EncodingForegroundService.ACTION_STOP
             }
-            context.startService(stopIntent)
+            runCatching {
+                context.startService(stopIntent)
+            }.onFailure { err ->
+                coroutineScope.launch {
+                    snackbarHostState.showSnackbar(
+                        err.message ?: "Unable to stop recording service."
+                    )
+                }
+            }
             return
         }
         if (isStopping) return
@@ -859,7 +875,7 @@ private data class DeviceDisplayInfo(
 
 private fun readDisplayMetrics(context: Context): DeviceDisplayInfo {
     val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-    val bounds = windowManager.currentWindowMetrics.bounds
+    val bounds = windowManager.maximumWindowMetrics.bounds
     val densityDpi = context.resources.displayMetrics.densityDpi
     return DeviceDisplayInfo(
         widthPx = bounds.width().coerceAtLeast(720),

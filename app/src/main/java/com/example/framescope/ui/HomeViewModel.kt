@@ -18,12 +18,14 @@ import com.example.framescope.encoding.RecordingSessionManager
 import com.example.framescope.encoding.RecordingSessionState
 import com.example.framescope.encoding.VideoDimensions
 import com.example.framescope.encoding.getCaptureDimensions
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class HomeViewModel(
     private val settingsRepository: SettingsRepository,
@@ -57,7 +59,9 @@ class HomeViewModel(
             }
         }
         viewModelScope.launch {
-            _encoderReport.value = EncodingSpec.inspectHardwareEncoder(EncodingTab.H264)
+            _encoderReport.value = withContext(Dispatchers.Default) {
+                EncodingSpec.inspectHardwareEncoder(EncodingTab.H264)
+            }
         }
     }
 

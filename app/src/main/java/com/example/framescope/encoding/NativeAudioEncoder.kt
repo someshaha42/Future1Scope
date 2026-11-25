@@ -4,27 +4,32 @@ import android.media.MediaCodec
 import android.media.MediaFormat
 import android.os.Handler
 import android.os.HandlerThread
-import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 class NativeAudioEncoder(
     private val muxer: NativeMuxer,
+    private val sampleRate: Int = EncodingSpec.AUDIO_SAMPLE_RATE,
     private val onFatalError: (Throwable) -> Unit
 ) {
     private data class PcmPacket(
         val data: ByteArray,
+        val offset: Int,
         val size: Int,
         val presentationTimeUs: Long
     )
 
     private val running = AtomicBoolean(false)
+    private val stopping = AtomicBoolean(false)
     private val eosQueued = AtomicBoolean(false)
+    private val errorReported = AtomicBoolean(false)
     private val eosLatch = CountDownLatch(1)
+    private val queueLock = Any()
 
-    private val availableInputIndices = ConcurrentLinkedQueue<Int>()
-    private val pendingPcmPackets = ConcurrentLinkedQueue<PcmPacket>()
+    private val availableInputIndices = ArrayDeque<Int>()
+    private val pendingPcmPackets = ArrayDeque<PcmPacket>()
+    private var lastQueuedPtsUs = 0L
 
     private var codec: MediaCodec? = null
     private var thread: HandlerThread? = null
@@ -42,11 +47,21 @@ class NativeAudioEncoder(
         mediaCodec.setCallback(
             object : MediaCodec.Callback() {
                 override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {
-                    if (!running.get() && pendingPcmPackets.isEmpty()) {
-                        queueEndOfStream(codec, index)
+                    if (stopping.get()) {
+                        synchronized(queueLock) {
+                            if (pendingPcmPackets.isEmpty()) {
+                                queueEndOfStream(codec, index)
+                                return
+                            }
+                            availableInputIndices.addLast(index)
+                        }
+                        drainPendingInputs(codec)
                         return
                     }
-                    availableInputIndices.offer(index)
+                    if (!running.get()) return
+                    synchronized(queueLock) {
+                        availableInputIndices.addLast(index)
+                    }
                     drainPendingInputs(codec)
                 }
 
@@ -63,7 +78,7 @@ class NativeAudioEncoder(
                             muxer.writeAudio(output, info)
                         }
                     } catch (t: Throwable) {
-                        onFatalError(t)
+                        reportError(t)
                     } finally {
                         runCatching { codec.releaseOutputBuffer(index, false) }
                         if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
@@ -73,23 +88,24 @@ class NativeAudioEncoder(
                 }
 
                 override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {
+                    if (stopping.get()) return
                     try {
                         muxer.addAudioTrack(format)
                     } catch (t: Throwable) {
-                        onFatalError(t)
+                        reportError(t)
                     }
                 }
 
                 override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) {
                     eosLatch.countDown()
-                    onFatalError(e)
+                    reportError(e)
                 }
             },
             encoderHandler
         )
 
         mediaCodec.configure(
-            EncodingSpec.createAudioFormat(),
+            EncodingSpec.createAudioFormat(sampleRate = sampleRate),
             null,
             null,
             MediaCodec.CONFIGURE_FLAG_ENCODE
@@ -103,8 +119,20 @@ class NativeAudioEncoder(
         size: Int,
         presentationTimeUs: Long
     ) {
-        if (!running.get() || size <= 0) return
-        pendingPcmPackets.offer(PcmPacket(pcm, size, presentationTimeUs))
+        if (!running.get() || stopping.get() || size <= 0) return
+        synchronized(queueLock) {
+            if (pendingPcmPackets.size >= MAX_PENDING_PACKETS) {
+                pendingPcmPackets.removeFirst()
+            }
+            pendingPcmPackets.addLast(
+                PcmPacket(
+                    data = pcm,
+                    offset = 0,
+                    size = size,
+                    presentationTimeUs = presentationTimeUs
+                )
+            )
+        }
         handler?.post {
             codec?.let { drainPendingInputs(it) }
         }
@@ -112,29 +140,79 @@ class NativeAudioEncoder(
 
     private fun drainPendingInputs(mediaCodec: MediaCodec) {
         while (true) {
-            val packet = pendingPcmPackets.peek() ?: break
-            val index = availableInputIndices.poll() ?: break
-            pendingPcmPackets.poll()
+            var packet: PcmPacket? = null
+            var index: Int? = null
+            synchronized(queueLock) {
+                if (pendingPcmPackets.isEmpty() || availableInputIndices.isEmpty()) return@synchronized
+                packet = pendingPcmPackets.removeFirst()
+                index = availableInputIndices.removeFirst()
+            }
+            val currentPacket = packet ?: break
+            val bufferIndex = index ?: break
 
-            val input = mediaCodec.getInputBuffer(index)
+            val input = runCatching { mediaCodec.getInputBuffer(bufferIndex) }.getOrNull()
             if (input == null) {
-                availableInputIndices.offer(index)
+                synchronized(queueLock) {
+                    pendingPcmPackets.addFirst(currentPacket)
+                    availableInputIndices.addFirst(bufferIndex)
+                }
                 break
             }
-            val writeSize = minOf(packet.size, input.remaining())
+
             input.clear()
-            input.put(packet.data, 0, writeSize)
-            mediaCodec.queueInputBuffer(
-                index,
-                0,
-                writeSize,
-                packet.presentationTimeUs,
-                0
-            )
+            val capacity = input.remaining()
+            if (capacity <= 0) {
+                synchronized(queueLock) {
+                    pendingPcmPackets.addFirst(currentPacket)
+                    availableInputIndices.addFirst(bufferIndex)
+                }
+                break
+            }
+
+            val writeSize = minOf(currentPacket.size, capacity)
+            input.put(currentPacket.data, currentPacket.offset, writeSize)
+
+            val pts = currentPacket.presentationTimeUs.coerceAtLeast(lastQueuedPtsUs)
+            lastQueuedPtsUs = pts
+
+            runCatching {
+                mediaCodec.queueInputBuffer(
+                    bufferIndex,
+                    0,
+                    writeSize,
+                    pts,
+                    0
+                )
+            }.onFailure { err ->
+                reportError(err)
+                return
+            }
+
+            if (writeSize < currentPacket.size) {
+                val remainingBytes = currentPacket.size - writeSize
+                val writtenSamples = writeSize / 2L
+                val nextPts = pts + (writtenSamples * 1_000_000L / sampleRate.coerceAtLeast(8_000))
+                synchronized(queueLock) {
+                    pendingPcmPackets.addFirst(
+                        PcmPacket(
+                            data = currentPacket.data,
+                            offset = currentPacket.offset + writeSize,
+                            size = remainingBytes,
+                            presentationTimeUs = nextPts
+                        )
+                    )
+                }
+            }
         }
 
-        if (!running.get() && pendingPcmPackets.isEmpty()) {
-            val eosIndex = availableInputIndices.poll()
+        if (!running.get()) {
+            val eosIndex = synchronized(queueLock) {
+                if (pendingPcmPackets.isEmpty() && availableInputIndices.isNotEmpty()) {
+                    availableInputIndices.removeFirst()
+                } else {
+                    null
+                }
+            }
             if (eosIndex != null) {
                 queueEndOfStream(mediaCodec, eosIndex)
             }
@@ -148,27 +226,56 @@ class NativeAudioEncoder(
                     index,
                     0,
                     0,
-                    0L,
+                    lastQueuedPtsUs,
                     MediaCodec.BUFFER_FLAG_END_OF_STREAM
                 )
             }
         }
     }
 
-    fun stop() {
-        if (!running.compareAndSet(true, false)) return
-        val mediaCodec = codec ?: return
-        handler?.post {
-            drainPendingInputs(mediaCodec)
+    private fun reportError(t: Throwable) {
+        if (!stopping.get() && errorReported.compareAndSet(false, true)) {
+            onFatalError(t)
         }
-        runCatching { eosLatch.await(1_000, TimeUnit.MILLISECONDS) }
-        runCatching { mediaCodec.stop() }
-        runCatching { mediaCodec.release() }
+    }
+
+    fun stop() {
+        if (!stopping.compareAndSet(false, true)) return
+        running.set(false)
+        val mediaCodec = codec ?: return
+        val encoderHandler = handler
+        if (encoderHandler != null && thread?.isAlive == true) {
+            encoderHandler.post {
+                drainPendingInputs(mediaCodec)
+            }
+            runCatching { eosLatch.await(1_000, TimeUnit.MILLISECONDS) }
+            val releaseLatch = CountDownLatch(1)
+            val posted = encoderHandler.post {
+                runCatching { mediaCodec.stop() }
+                runCatching { mediaCodec.release() }
+                releaseLatch.countDown()
+            }
+            if (posted) {
+                runCatching { releaseLatch.await(1_000, TimeUnit.MILLISECONDS) }
+            } else {
+                runCatching { mediaCodec.stop() }
+                runCatching { mediaCodec.release() }
+            }
+        } else {
+            runCatching { mediaCodec.stop() }
+            runCatching { mediaCodec.release() }
+        }
         thread?.quitSafely()
-        availableInputIndices.clear()
-        pendingPcmPackets.clear()
+        synchronized(queueLock) {
+            availableInputIndices.clear()
+            pendingPcmPackets.clear()
+        }
         codec = null
         thread = null
         handler = null
+    }
+
+    private companion object {
+        const val MAX_PENDING_PACKETS = 250
     }
 }

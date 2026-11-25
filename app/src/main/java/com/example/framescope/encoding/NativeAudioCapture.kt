@@ -18,6 +18,7 @@ class NativeAudioCapture(
     private val audioSourceMode: AudioSourceMode,
     private val projection: MediaProjection,
     private val encoder: NativeAudioEncoder,
+    private val sampleRate: Int = EncodingSpec.AUDIO_SAMPLE_RATE,
     private val onFatalError: (Throwable) -> Unit
 ) {
     private val running = AtomicBoolean(false)
@@ -27,19 +28,21 @@ class NativeAudioCapture(
     @SuppressLint("MissingPermission")
     fun start() {
         val minBuffer = AudioRecord.getMinBufferSize(
-            EncodingSpec.AUDIO_SAMPLE_RATE,
+            sampleRate,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT
         )
         check(minBuffer > 0) {
-            "AudioRecord does not support the required 48 kHz Mono PCM format."
+            "AudioRecord does not support the required ${sampleRate} Hz Mono PCM format."
         }
 
         val audioFormat = AudioFormat.Builder()
             .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-            .setSampleRate(EncodingSpec.AUDIO_SAMPLE_RATE)
+            .setSampleRate(sampleRate)
             .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
             .build()
+
+        val recordBufferBytes = maxOf(minBuffer * 2, AAC_FRAME_BYTES * 4)
 
         val audioRecord = when (audioSourceMode) {
             AudioSourceMode.INTERNAL_AUDIO -> {
@@ -52,7 +55,7 @@ class NativeAudioCapture(
                 AudioRecord.Builder()
                     .setAudioPlaybackCaptureConfig(playbackConfig)
                     .setAudioFormat(audioFormat)
-                    .setBufferSizeInBytes(minBuffer * 2)
+                    .setBufferSizeInBytes(recordBufferBytes)
                     .build()
             }
 
@@ -60,7 +63,7 @@ class NativeAudioCapture(
                 val micRecord = AudioRecord.Builder()
                     .setAudioSource(MediaRecorder.AudioSource.MIC)
                     .setAudioFormat(audioFormat)
-                    .setBufferSizeInBytes(minBuffer * 2)
+                    .setBufferSizeInBytes(recordBufferBytes)
                     .build()
 
                 selectPreferredExternalMic(micRecord)
@@ -69,6 +72,7 @@ class NativeAudioCapture(
         }
 
         check(audioRecord.state == AudioRecord.STATE_INITIALIZED) {
+            runCatching { audioRecord.release() }
             "AudioRecord initialization failed for $audioSourceMode."
         }
 
@@ -79,7 +83,8 @@ class NativeAudioCapture(
         val sessionStartUs = System.nanoTime() / 1_000L
 
         captureThread = Thread({
-            val buffer = ByteArray(minBuffer)
+            val chunkSize = minOf(AAC_FRAME_BYTES, maxOf(minBuffer, AAC_FRAME_BYTES))
+            val buffer = ByteArray(chunkSize)
             var totalFrames = 0L
             try {
                 while (running.get()) {
@@ -89,23 +94,41 @@ class NativeAudioCapture(
                         buffer.size,
                         AudioRecord.READ_BLOCKING
                     )
-                    if (count > 0) {
-                        val bytesPerFrame = 2
-                        val frames = count / bytesPerFrame
-                        val ptsUs = sessionStartUs +
-                            (totalFrames * 1_000_000L / EncodingSpec.AUDIO_SAMPLE_RATE)
-                        encoder.queuePcm(
-                            buffer.copyOf(count),
-                            count,
-                            ptsUs
-                        )
-                        totalFrames += frames
+                    when {
+                        count > 0 -> {
+                            val frames = count / 2L
+                            val ptsUs = sessionStartUs +
+                                (totalFrames * 1_000_000L / sampleRate)
+                            encoder.queuePcm(
+                                buffer.copyOf(count),
+                                count,
+                                ptsUs
+                            )
+                            totalFrames += frames
+                        }
+                        count == 0 -> {
+                            Thread.sleep(5)
+                        }
+                        else -> {
+                            if (running.get()) {
+                                if (count == AudioRecord.ERROR_DEAD_OBJECT ||
+                                    count == AudioRecord.ERROR_INVALID_OPERATION
+                                ) {
+                                    onFatalError(IllegalStateException("Audio capture stopped ($count)"))
+                                    break
+                                }
+                                Thread.sleep(10)
+                            }
+                        }
                     }
                 }
+            } catch (_: InterruptedException) {
+                // Normal shutdown interruption
             } catch (t: Throwable) {
                 if (running.get()) onFatalError(t)
             }
         }, "AudioCaptureThread").apply {
+            priority = Thread.MAX_PRIORITY
             start()
         }
     }
@@ -113,18 +136,28 @@ class NativeAudioCapture(
     private fun selectPreferredExternalMic(audioRecord: AudioRecord) {
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
         val inputs = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
-        val priorityTypes = listOf(
+        // Prioritize wired and USB microphones that route directly without requiring SCO handshake
+        val directExternalTypes = listOf(
             AudioDeviceInfo.TYPE_USB_HEADSET,
             AudioDeviceInfo.TYPE_USB_DEVICE,
-            AudioDeviceInfo.TYPE_WIRED_HEADSET,
-            AudioDeviceInfo.TYPE_BLE_HEADSET,
-            AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+            AudioDeviceInfo.TYPE_WIRED_HEADSET
         )
-        for (type in priorityTypes) {
+        for (type in directExternalTypes) {
             val match = inputs.firstOrNull { it.type == type }
             if (match != null) {
                 audioRecord.setPreferredDevice(match)
                 return
+            }
+        }
+        // Only route BLE/SCO headset if communication device is already active on it
+        val activeComm = audioManager.communicationDevice
+        if (activeComm != null &&
+            (activeComm.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                activeComm.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO)
+        ) {
+            val match = inputs.firstOrNull { it.type == activeComm.type }
+            if (match != null) {
+                audioRecord.setPreferredDevice(match)
             }
         }
     }
@@ -132,9 +165,14 @@ class NativeAudioCapture(
     fun stop() {
         running.set(false)
         runCatching { recorder?.stop() }
-        runCatching { captureThread?.join(1_000) }
+        captureThread?.interrupt()
+        runCatching { captureThread?.join(800) }
         runCatching { recorder?.release() }
         recorder = null
         captureThread = null
+    }
+
+    companion object {
+        private const val AAC_FRAME_BYTES = 2048 // 1024 Mono 16-bit samples = 1 AAC frame
     }
 }

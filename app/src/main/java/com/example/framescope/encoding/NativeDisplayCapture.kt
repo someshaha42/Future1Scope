@@ -37,7 +37,9 @@ class NativeDisplayCapture(
             mode = orientation,
             virtualDisplay = created,
             densityDpi = densityDpi,
-            renderer = renderer
+            renderer = renderer,
+            lockedWidth = width,
+            lockedHeight = height
         )
     }
 

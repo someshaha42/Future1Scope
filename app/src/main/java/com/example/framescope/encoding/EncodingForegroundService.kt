@@ -7,11 +7,14 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.media.AudioFormat
+import android.media.AudioRecord
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import com.example.framescope.MainActivity
 import com.example.framescope.R
 import com.example.framescope.data.AudioSourceMode
@@ -25,6 +28,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 class EncodingForegroundService : Service() {
@@ -48,12 +53,19 @@ class EncodingForegroundService : Service() {
 
         private const val CHANNEL_ID = "framescope_encoding"
         private const val NOTIFICATION_ID = 4101
+        private const val WAKE_LOCK_TAG = "FrameScope::EncodingWakeLock"
+        private const val MAX_WAKE_LOCK_MS = 4 * 60 * 60 * 1000L
     }
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val teardownLock = Any()
+    private val sessionActive = AtomicBoolean(false)
     private val tearingDown = AtomicBoolean(false)
 
+    @Volatile
+    private var teardownLatch: CountDownLatch? = null
+
+    private var wakeLock: PowerManager.WakeLock? = null
     private var timerJob: Job? = null
     private var projection: MediaProjection? = null
     private var projectionCallback: MediaProjection.Callback? = null
@@ -66,7 +78,11 @@ class EncodingForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START -> startRecording(intent)
+            ACTION_START -> {
+                if (sessionActive.compareAndSet(false, true)) {
+                    startRecording(intent)
+                }
+            }
             ACTION_STOP -> stopRecording(fatalError = null)
         }
         return START_NOT_STICKY
@@ -74,6 +90,7 @@ class EncodingForegroundService : Service() {
 
     private fun startRecording(intent: Intent) {
         tearingDown.set(false)
+        teardownLatch = CountDownLatch(1)
         createNotificationChannel()
         val notification = createNotification("00:00:00")
 
@@ -83,6 +100,8 @@ class EncodingForegroundService : Service() {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
         )
+
+        acquireWakeLock()
 
         try {
             val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
@@ -111,8 +130,7 @@ class EncodingForegroundService : Service() {
             val bitrate = intent.getIntExtra(EXTRA_BITRATE, 0)
             val outputPath = intent.getStringExtra(EXTRA_OUTPUT_PATH)
                 ?: error("Output MP4 path is missing.")
-            val summary = intent.getStringExtra(EXTRA_SUMMARY) ?: "${width}×${height}"
-            val showBorder = intent.getBooleanExtra(EXTRA_SHOW_BORDER, true)
+            val showBorder = intent.getBooleanExtra(EXTRA_SHOW_BORDER, false)
             val isRegion = intent.getBooleanExtra(EXTRA_IS_REGION, false)
 
             check(width > 0 && height > 0 && density > 0 && bitrate > 0) {
@@ -134,16 +152,20 @@ class EncodingForegroundService : Service() {
                 }
             )
             videoEncoder = vEncoder
+            vEncoder.start()
+
+            val targetWidth = vEncoder.configuredWidth
+            val targetHeight = vEncoder.configuredHeight
+            val audioSampleRate = resolveSupportedAudioSampleRate()
 
             val aEncoder = NativeAudioEncoder(
                 muxer = nativeMuxer,
+                sampleRate = audioSampleRate,
                 onFatalError = { err ->
                     stopRecording(fatalError = err.message ?: "Audio encoder error")
                 }
             )
             audioEncoder = aEncoder
-
-            vEncoder.start()
             aEncoder.start()
 
             val aCapture = NativeAudioCapture(
@@ -151,6 +173,7 @@ class EncodingForegroundService : Service() {
                 audioSourceMode = audioSource,
                 projection = mediaProjection,
                 encoder = aEncoder,
+                sampleRate = audioSampleRate,
                 onFatalError = { err ->
                     stopRecording(fatalError = err.message ?: "Audio capture error")
                 }
@@ -159,8 +182,8 @@ class EncodingForegroundService : Service() {
             aCapture.start()
 
             val rotationCoordinator = SurfaceRotationCoordinator().apply {
-                updateInputSize(width, height)
-                updateOutputSize(width, height)
+                updateInputSize(targetWidth, targetHeight)
+                updateOutputSize(targetWidth, targetHeight)
                 updateOrientation(orientation)
             }
 
@@ -180,12 +203,20 @@ class EncodingForegroundService : Service() {
             mediaProjection.registerCallback(callback, Handler(Looper.getMainLooper()))
 
             dCapture.start(
-                width = width,
-                height = height,
+                width = targetWidth,
+                height = targetHeight,
                 densityDpi = density,
                 encoderSurface = vEncoder.inputSurface,
                 orientation = orientation,
                 renderer = rotationCoordinator
+            )
+
+            val summary = buildActiveSummary(
+                width = targetWidth,
+                height = targetHeight,
+                orientation = orientation,
+                audioSource = audioSource,
+                fallbackSummary = intent.getStringExtra(EXTRA_SUMMARY)
             )
 
             RecordingSessionManager.updateState(
@@ -214,11 +245,48 @@ class EncodingForegroundService : Service() {
                             isRegionMode = isRegion
                         )
                     )
-                    nm.notify(NOTIFICATION_ID, createNotification(formatElapsed(elapsed)))
+                    runCatching {
+                        nm.notify(NOTIFICATION_ID, createNotification(formatElapsed(elapsed)))
+                    }
                 }
             }
         } catch (t: Throwable) {
             stopRecording(fatalError = t.message ?: "Unable to start screen capture")
+        }
+    }
+
+    private fun resolveSupportedAudioSampleRate(): Int {
+        val candidates = listOf(EncodingSpec.AUDIO_SAMPLE_RATE, 44_100)
+        for (rate in candidates) {
+            val minBuf = AudioRecord.getMinBufferSize(
+                rate,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT
+            )
+            if (minBuf > 0) return rate
+        }
+        return EncodingSpec.AUDIO_SAMPLE_RATE
+    }
+
+    private fun buildActiveSummary(
+        width: Int,
+        height: Int,
+        orientation: RecordingOrientation,
+        audioSource: AudioSourceMode,
+        fallbackSummary: String?
+    ): String {
+        val orientationLabel = when (orientation) {
+            RecordingOrientation.PORTRAIT -> "Portrait"
+            RecordingOrientation.LANDSCAPE -> "Landscape"
+        }
+        val audioLabel = when (audioSource) {
+            AudioSourceMode.INTERNAL_AUDIO -> "Internal Audio"
+            AudioSourceMode.MICROPHONE -> "Microphone"
+        }
+        return if (width > 0 && height > 0) {
+            "Full Screen (${width}×${height}) • $orientationLabel • $audioLabel"
+        } else {
+            fallbackSummary ?: "${width}×${height}"
         }
     }
 
@@ -232,6 +300,15 @@ class EncodingForegroundService : Service() {
         val completedPath = currentOutputPath
 
         serviceScope.launch(Dispatchers.IO) {
+            performTeardown(fatalError, completedPath)
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
+    }
+
+    private suspend fun performTeardown(fatalError: String?, completedPath: String?) {
+        try {
+            var hasSamples = false
             synchronized(teardownLock) {
                 runCatching { displayCapture?.stop() }
                 displayCapture = null
@@ -253,15 +330,23 @@ class EncodingForegroundService : Service() {
                 runCatching { projection?.stop() }
                 projection = null
 
+                hasSamples = muxer?.hasRecordedSamples() == true
                 runCatching { muxer?.stopAndRelease() }
+                if (!hasSamples) {
+                    hasSamples = muxer?.hasRecordedSamples() == true
+                }
                 muxer = null
             }
 
             if (fatalError == null && completedPath != null) {
                 val outFile = File(completedPath)
-                if (outFile.exists() && outFile.length() > 0L) {
-                    RecordingsRepository(applicationContext).exportToMediaStore(completedPath)
+                if (outFile.exists() && outFile.length() > 0L && hasSamples) {
+                    runCatching {
+                        RecordingsRepository(applicationContext).exportToMediaStore(completedPath)
+                    }
                     RecordingSessionManager.markCompleted(completedPath)
+                } else {
+                    runCatching { outFile.delete() }
                 }
                 RecordingSessionManager.updateState(RecordingSessionState.Idle)
             } else if (fatalError != null) {
@@ -272,10 +357,32 @@ class EncodingForegroundService : Service() {
             } else {
                 RecordingSessionManager.updateState(RecordingSessionState.Idle)
             }
-
+        } finally {
             currentOutputPath = null
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            releaseWakeLock()
+            sessionActive.set(false)
+            teardownLatch?.countDown()
+        }
+    }
+
+    private fun acquireWakeLock() {
+        runCatching {
+            val pm = getSystemService(POWER_SERVICE) as? PowerManager ?: return
+            if (wakeLock?.isHeld != true) {
+                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG).apply {
+                    setReferenceCounted(false)
+                    acquire(MAX_WAKE_LOCK_MS)
+                }
+            }
+        }
+    }
+
+    private fun releaseWakeLock() {
+        runCatching {
+            if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
+            }
+            wakeLock = null
         }
     }
 
@@ -315,6 +422,7 @@ class EncodingForegroundService : Service() {
             .setContentText("${getString(R.string.notification_text)} • $elapsedFormatted")
             .setSmallIcon(android.R.drawable.presence_video_online)
             .setContentIntent(openPending)
+            .setOnlyAlertOnce(true)
             .addAction(
                 Notification.Action.Builder(
                     null,
@@ -336,7 +444,11 @@ class EncodingForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        stopRecording(fatalError = null)
+        if (sessionActive.get() || tearingDown.get()) {
+            stopRecording(fatalError = null)
+            runCatching { teardownLatch?.await(3_500, TimeUnit.MILLISECONDS) }
+        }
+        releaseWakeLock()
         serviceScope.cancel()
         super.onDestroy()
     }

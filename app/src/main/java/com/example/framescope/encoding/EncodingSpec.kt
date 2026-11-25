@@ -3,6 +3,7 @@ package com.example.framescope.encoding
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaFormat
+import kotlin.math.roundToInt
 
 enum class EncodingTab(val mimeType: String, val displayName: String) {
     H264(MediaFormat.MIMETYPE_VIDEO_AVC, "H.264")
@@ -16,6 +17,15 @@ data class EncoderValidationReport(
     val isCompatible: Boolean
 )
 
+data class ResolvedVideoConfig(
+    val codecName: String?,
+    val width: Int,
+    val height: Int,
+    val bitrateBps: Int,
+    val bitrateMode: Int?,
+    val frameRate: Int
+)
+
 object EncodingSpec {
     const val AUDIO_MIME = MediaFormat.MIMETYPE_AUDIO_AAC
     const val AUDIO_SAMPLE_RATE = 48_000
@@ -23,34 +33,185 @@ object EncodingSpec {
     const val AUDIO_BITRATE = 128_000
     const val GOP_SECONDS = 2
 
+    fun resolveCompatibleVideoConfig(
+        tab: EncodingTab = EncodingTab.H264,
+        requestedWidth: Int,
+        requestedHeight: Int,
+        requestedBitrateBps: Int
+    ): ResolvedVideoConfig {
+        val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+        val candidates = list.codecInfos.filter { info ->
+            info.isEncoder &&
+                info.supportedTypes.any { it.equals(tab.mimeType, ignoreCase = true) }
+        }
+
+        val matching = candidates.firstOrNull { info ->
+            info.isHardwareAccelerated && supportsSurfaceInput(info, tab.mimeType)
+        } ?: candidates.firstOrNull { info ->
+            supportsSurfaceInput(info, tab.mimeType)
+        } ?: candidates.firstOrNull()
+
+        if (matching == null) {
+            val safeEvenW = (requestedWidth and 1.inv()).coerceAtLeast(16)
+            val safeEvenH = (requestedHeight and 1.inv()).coerceAtLeast(16)
+            return ResolvedVideoConfig(
+                codecName = null,
+                width = safeEvenW,
+                height = safeEvenH,
+                bitrateBps = requestedBitrateBps.coerceAtLeast(500_000),
+                bitrateMode = MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR,
+                frameRate = 60
+            )
+        }
+
+        val caps = matching.getCapabilitiesForType(tab.mimeType)
+        val videoCaps = caps.videoCapabilities
+        val encoderCaps = caps.encoderCapabilities
+
+        val (alignedW, alignedH) = if (videoCaps != null) {
+            fitSupportedDimensions(videoCaps, requestedWidth, requestedHeight)
+        } else {
+            Pair(
+                (requestedWidth and 1.inv()).coerceAtLeast(16),
+                (requestedHeight and 1.inv()).coerceAtLeast(16)
+            )
+        }
+
+        val clampedBitrate = if (videoCaps != null) {
+            requestedBitrateBps.coerceIn(
+                videoCaps.bitrateRange.lower.coerceAtLeast(500_000),
+                videoCaps.bitrateRange.upper.coerceAtLeast(videoCaps.bitrateRange.lower)
+            )
+        } else {
+            requestedBitrateBps.coerceAtLeast(500_000)
+        }
+
+        val bitrateMode = when {
+            encoderCaps == null -> MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
+            encoderCaps.isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR) ->
+                MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
+            encoderCaps.isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR) ->
+                MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
+            else -> null
+        }
+
+        val frameRate = if (videoCaps != null) {
+            val achievable = runCatching {
+                videoCaps.getSupportedFrameRatesFor(alignedW, alignedH)
+            }.getOrNull()
+            if (achievable != null) {
+                60.0.coerceIn(achievable.lower, achievable.upper).roundToInt().coerceAtLeast(24)
+            } else {
+                60.coerceIn(
+                    videoCaps.supportedFrameRates.lower.coerceAtLeast(24),
+                    videoCaps.supportedFrameRates.upper.coerceAtLeast(24)
+                )
+            }
+        } else {
+            60
+        }
+
+        return ResolvedVideoConfig(
+            codecName = matching.name,
+            width = alignedW,
+            height = alignedH,
+            bitrateBps = clampedBitrate,
+            bitrateMode = bitrateMode,
+            frameRate = frameRate
+        )
+    }
+
+    private fun supportsSurfaceInput(info: MediaCodecInfo, mimeType: String): Boolean {
+        val caps = runCatching { info.getCapabilitiesForType(mimeType) }.getOrNull() ?: return false
+        return MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface in caps.colorFormats
+    }
+
+    private fun fitSupportedDimensions(
+        videoCaps: MediaCodecInfo.VideoCapabilities,
+        rawWidth: Int,
+        rawHeight: Int
+    ): Pair<Int, Int> {
+        val wAlign = videoCaps.widthAlignment.coerceAtLeast(2)
+        val hAlign = videoCaps.heightAlignment.coerceAtLeast(2)
+
+        fun alignDown(value: Int, alignment: Int, minVal: Int): Int {
+            val evenAlign = if (alignment % 2 == 0) alignment else alignment * 2
+            val aligned = (value / evenAlign) * evenAlign
+            return aligned.coerceAtLeast(minVal)
+        }
+
+        val minW = videoCaps.supportedWidths.lower.coerceAtLeast(wAlign)
+        val minH = videoCaps.supportedHeights.lower.coerceAtLeast(hAlign)
+        val maxW = videoCaps.supportedWidths.upper
+        val maxH = videoCaps.supportedHeights.upper
+
+        var targetW = alignDown(rawWidth.coerceIn(minW, maxW), wAlign, minW)
+        var targetH = alignDown(rawHeight.coerceIn(minH, maxH), hAlign, minH)
+
+        if (videoCaps.isSizeSupported(targetW, targetH)) {
+            return targetW to targetH
+        }
+
+        // Proportionally scale down if combined width*height exceeds encoder macroblock limit
+        val scales = listOf(0.85f, 0.75f, 0.66f, 0.5f, 0.35f)
+        for (scale in scales) {
+            val scaledW = alignDown((rawWidth * scale).roundToInt().coerceIn(minW, maxW), wAlign, minW)
+            val scaledH = alignDown((rawHeight * scale).roundToInt().coerceIn(minH, maxH), hAlign, minH)
+            if (videoCaps.isSizeSupported(scaledW, scaledH)) {
+                return scaledW to scaledH
+            }
+        }
+
+        targetW = alignDown(rawWidth.coerceAtMost(maxW), wAlign, minW)
+        targetH = alignDown(rawHeight.coerceAtMost(maxH), hAlign, minH)
+        return targetW to targetH
+    }
+
     fun configureVideoFormat(
         format: MediaFormat,
         existingProjectVideoBitrate: Int
+    ) {
+        configureVideoFormat(
+            format = format,
+            existingProjectVideoBitrate = existingProjectVideoBitrate,
+            bitrateMode = MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR,
+            frameRate = 60,
+            includeColorMetadata = true
+        )
+    }
+
+    fun configureVideoFormat(
+        format: MediaFormat,
+        existingProjectVideoBitrate: Int,
+        bitrateMode: Int?,
+        frameRate: Int,
+        includeColorMetadata: Boolean
     ) {
         require(existingProjectVideoBitrate > 0) {
             "The existing project video bitrate must be supplied."
         }
         format.setInteger(MediaFormat.KEY_BIT_RATE, existingProjectVideoBitrate)
-        format.setInteger(
-            MediaFormat.KEY_BITRATE_MODE,
-            MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
-        )
+        if (bitrateMode != null) {
+            format.setInteger(MediaFormat.KEY_BITRATE_MODE, bitrateMode)
+        }
         format.setInteger(
             MediaFormat.KEY_COLOR_FORMAT,
             MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
         )
         format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, GOP_SECONDS)
-        format.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
-        format.setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
-        format.setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
+        if (includeColorMetadata) {
+            format.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
+            format.setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
+            format.setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
+        }
         // Display-driven capture: supply nominal operating rate hint without forcing fixed FPS output
-        format.setInteger(MediaFormat.KEY_FRAME_RATE, 60)
+        format.setInteger(MediaFormat.KEY_FRAME_RATE, frameRate.coerceAtLeast(24))
     }
 
-    fun createAudioFormat(): MediaFormat {
+    fun createAudioFormat(sampleRate: Int = AUDIO_SAMPLE_RATE): MediaFormat {
         return MediaFormat.createAudioFormat(
             AUDIO_MIME,
-            AUDIO_SAMPLE_RATE,
+            sampleRate,
             AUDIO_CHANNEL_COUNT
         ).apply {
             setInteger(
@@ -58,6 +219,7 @@ object EncodingSpec {
                 MediaCodecInfo.CodecProfileLevel.AACObjectLC
             )
             setInteger(MediaFormat.KEY_BIT_RATE, AUDIO_BITRATE)
+            setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16_384)
         }
     }
 

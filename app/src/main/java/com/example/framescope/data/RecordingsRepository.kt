@@ -93,7 +93,7 @@ class RecordingsRepository(private val context: Context) {
         return@withContext try {
             resolver.openOutputStream(uri)?.use { out ->
                 source.inputStream().use { input ->
-                    input.copyTo(out)
+                    input.copyTo(out, bufferSize = 256 * 1024)
                 }
             }
             val publishValues = ContentValues().apply {

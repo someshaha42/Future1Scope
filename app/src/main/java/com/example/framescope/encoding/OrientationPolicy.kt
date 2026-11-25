@@ -140,14 +140,22 @@ class CaptureResizeHandler(
     private val mode: RecordingOrientation,
     private val virtualDisplay: VirtualDisplay,
     private val densityDpi: Int,
-    private val renderer: RotationRenderer
+    private val renderer: RotationRenderer,
+    private val lockedWidth: Int = 0,
+    private val lockedHeight: Int = 0
 ) {
     fun onCaptureSizeChanged(
         captureWidth: Int,
         captureHeight: Int
     ) {
-        val outputSize = getOutputDimensions(mode, captureWidth, captureHeight)
-        virtualDisplay.resize(outputSize.width, outputSize.height, densityDpi)
+        val outputSize = if (lockedWidth > 0 && lockedHeight > 0) {
+            VideoDimensions(lockedWidth, lockedHeight)
+        } else {
+            getOutputDimensions(mode, captureWidth, captureHeight)
+        }
+        runCatching {
+            virtualDisplay.resize(outputSize.width, outputSize.height, densityDpi)
+        }
         renderer.updateInputSize(captureWidth, captureHeight)
         renderer.updateOutputSize(outputSize.width, outputSize.height)
         renderer.updateOrientation(mode)
