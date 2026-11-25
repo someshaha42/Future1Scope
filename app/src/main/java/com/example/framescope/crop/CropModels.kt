@@ -16,7 +16,7 @@ enum class CropMediaType {
 }
 
 enum class CropAspectRatio(val label: String, val ratio: Float?) {
-    ORIGINAL("Original", null),
+    FREE("Free", null),
     RATIO_9_16("9:16", 9f / 16f),
     RATIO_16_9("16:9", 16f / 9f),
     RATIO_4_5("4:5", 4f / 5f),
@@ -34,6 +34,13 @@ enum class CanvasAspectMode(val label: String, val ratio: Float?) {
     RATIO_2_3("2:3", 2f / 3f),
     CUSTOM("Custom", null)
 }
+
+data class CropEditSnapshot(
+    val cropRect: NormalizedCropRect = NormalizedCropRect(0f, 0f, 1f, 1f),
+    val aspectRatio: CropAspectRatio = CropAspectRatio.FREE,
+    val customAspectWidth: String = "4",
+    val customAspectHeight: String = "3"
+)
 
 enum class VideoBitrateMode {
     CUSTOM,

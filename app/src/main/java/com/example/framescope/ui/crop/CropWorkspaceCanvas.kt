@@ -17,11 +17,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -34,12 +36,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
@@ -49,8 +50,11 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.framescope.crop.CropMediaType
 import com.example.framescope.crop.ImportedMediaInfo
@@ -83,12 +87,17 @@ fun CropWorkspaceCanvas(
     zoom: Float,
     panOffset: Offset,
     isZoomEnabled: Boolean,
+    isPreviewMode: Boolean,
     canvasAspectRatio: Float,
+    cropCompositionAspectRatio: Float,
     lockedAspectRatio: Float?,
+    maxWorkspaceHeightDp: Dp,
     isVideoPlaying: Boolean,
     trimStartMs: Long,
     trimEndMs: Long,
     seekRequestMs: Long?,
+    onCropGestureStart: () -> Unit,
+    onCropGestureEnd: () -> Unit,
     onCropChanged: (NormalizedCropRect) -> Unit,
     onTransformChanged: (Float, Offset) -> Unit,
     onPanChanged: (Offset) -> Unit,
@@ -98,88 +107,159 @@ fun CropWorkspaceCanvas(
     modifier: Modifier = Modifier
 ) {
     val density = LocalDensity.current
-    val cornerHitRadiusPx = with(density) { 38.dp.toPx() }
+    val cornerHitRadiusPx = with(density) { 40.dp.toPx() }
     val edgeHitRadiusPx = with(density) { 30.dp.toPx() }
     val minCropPx = with(density) { 42.dp.toPx() }
-    val innerMarginPx = with(density) { 14.dp.toPx() }
+    val innerMarginPx = with(density) { 12.dp.toPx() }
 
     BoxWithConstraints(
-        modifier = modifier
-            .fillMaxWidth()
-            .heightIn(max = 420.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(Color(0xFF04060A))
-            .border(1.dp, FrameScopeColors.BorderSubtle, RoundedCornerShape(16.dp))
-            .padding(6.dp),
+        modifier = modifier.fillMaxWidth(),
         contentAlignment = Alignment.Center
     ) {
-        val safeCanvasRatio = canvasAspectRatio.coerceIn(0.35f, 2.5f)
+        val targetWorkspaceRatio = if (isPreviewMode) {
+            cropCompositionAspectRatio.coerceIn(0.25f, 3.5f)
+        } else {
+            canvasAspectRatio.coerceIn(0.35f, 2.5f)
+        }
+
         val availW = maxWidth
-        val availH = minOf(maxWidth / safeCanvasRatio, 408.dp)
-        val canvasWidthDp = minOf(availW, availH * safeCanvasRatio)
-        val canvasHeightDp = canvasWidthDp / safeCanvasRatio
+        val availH = maxWorkspaceHeightDp.coerceAtLeast(240.dp)
+        val widthFromH = availH * targetWorkspaceRatio
+        val canvasWidthDp = minOf(availW, widthFromH)
+        val canvasHeightDp = (canvasWidthDp / targetWorkspaceRatio).coerceAtLeast(120.dp)
 
         val canvasWidthPx = with(density) { canvasWidthDp.toPx() }.coerceAtLeast(1f)
         val canvasHeightPx = with(density) { canvasHeightDp.toPx() }.coerceAtLeast(1f)
 
-        val fitW = (canvasWidthPx - innerMarginPx * 2f).coerceAtLeast(1f)
-        val fitH = (canvasHeightPx - innerMarginPx * 2f).coerceAtLeast(1f)
-
         val srcW = media.displayWidth.toFloat().coerceAtLeast(1f)
         val srcH = media.displayHeight.toFloat().coerceAtLeast(1f)
         val srcRatio = srcW / srcH
-        val fitRatio = fitW / fitH
 
-        val (baseW, baseH) = if (srcRatio >= fitRatio) {
+        // Editing coordinates: media is permanently centered & fitted proportionally inside the single canvas.
+        val fitW = (canvasWidthPx - innerMarginPx * 2f).coerceAtLeast(1f)
+        val fitH = (canvasHeightPx - innerMarginPx * 2f).coerceAtLeast(1f)
+        val fitRatio = fitW / fitH
+        val (editMediaW, editMediaH) = if (srcRatio >= fitRatio) {
             fitW to (fitW / srcRatio)
         } else {
             (fitH * srcRatio) to fitH
         }
+        val editMediaLeft = (canvasWidthPx - editMediaW) / 2f
+        val editMediaTop = (canvasHeightPx - editMediaH) / 2f
 
-        // Media ALWAYS remains centered inside the canvas; zoom transforms the canvas viewport itself.
-        val baseMediaLeft = (canvasWidthPx - baseW) / 2f
-        val baseMediaTop = (canvasHeightPx - baseH) / 2f
-        val mediaWidthDp = with(density) { baseW.toDp() }
-        val mediaHeightDp = with(density) { baseH.toDp() }
+        // Preview coordinates: render ONLY the selected crop area scaled cleanly without distortion.
+        val cropSrcW = (cropRect.widthFraction * srcW).coerceAtLeast(1f)
+        val cropSrcH = (cropRect.heightFraction * srcH).coerceAtLeast(1f)
+        val previewScale = minOf(canvasWidthPx / cropSrcW, canvasHeightPx / cropSrcH)
+        val previewMediaW = (srcW * previewScale).coerceAtLeast(1f)
+        val previewMediaH = (srcH * previewScale).coerceAtLeast(1f)
+        val cropCenterX = ((cropRect.left + cropRect.right) * 0.5f) * previewMediaW
+        val cropCenterY = ((cropRect.top + cropRect.bottom) * 0.5f) * previewMediaH
+        val previewMediaLeft = (canvasWidthPx * 0.5f) - cropCenterX
+        val previewMediaTop = (canvasHeightPx * 0.5f) - cropCenterY
 
-        val maxPanX = (canvasWidthPx * (zoom - 1f) / 2f).coerceAtLeast(0f)
-        val maxPanY = (canvasHeightPx * (zoom - 1f) / 2f).coerceAtLeast(0f)
+        val activeMediaLeft = if (isPreviewMode) previewMediaLeft else editMediaLeft
+        val activeMediaTop = if (isPreviewMode) previewMediaTop else editMediaTop
+        val activeMediaW = if (isPreviewMode) previewMediaW else editMediaW
+        val activeMediaH = if (isPreviewMode) previewMediaH else editMediaH
 
-        val clampedPan = Offset(
-            x = panOffset.x.coerceIn(-maxPanX, maxPanX),
-            y = panOffset.y.coerceIn(-maxPanY, maxPanY)
-        )
+        val mediaWidthDp = with(density) { activeMediaW.toDp() }
+        val mediaHeightDp = with(density) { activeMediaH.toDp() }
+
+        // Generous pan range when zoomed so corners & edges can always be centered in every direction.
+        val maxPanX = if (zoom > 1.001f) canvasWidthPx * zoom * 0.5f else canvasWidthPx * 0.25f
+        val maxPanY = if (zoom > 1.001f) canvasHeightPx * zoom * 0.5f else canvasHeightPx * 0.25f
+
+        val clampedPan = if (isPreviewMode) {
+            Offset.Zero
+        } else {
+            Offset(
+                x = panOffset.x.coerceIn(-maxPanX, maxPanX),
+                y = panOffset.y.coerceIn(-maxPanY, maxPanY)
+            )
+        }
 
         val latestCrop by rememberUpdatedState(cropRect)
         val latestZoom by rememberUpdatedState(zoom)
         val latestPan by rememberUpdatedState(clampedPan)
         val latestZoomEnabled by rememberUpdatedState(isZoomEnabled)
+        val latestPreviewMode by rememberUpdatedState(isPreviewMode)
         val latestAspect by rememberUpdatedState(lockedAspectRatio)
         val latestCanvasW by rememberUpdatedState(canvasWidthPx)
         val latestCanvasH by rememberUpdatedState(canvasHeightPx)
-        val latestMediaLeft by rememberUpdatedState(baseMediaLeft)
-        val latestMediaTop by rememberUpdatedState(baseMediaTop)
-        val latestMediaW by rememberUpdatedState(baseW)
-        val latestMediaH by rememberUpdatedState(baseH)
+        val latestMediaLeft by rememberUpdatedState(editMediaLeft)
+        val latestMediaTop by rememberUpdatedState(editMediaTop)
+        val latestMediaW by rememberUpdatedState(editMediaW)
+        val latestMediaH by rememberUpdatedState(editMediaH)
         val latestSrcRatio by rememberUpdatedState(srcRatio)
 
+        val workspaceBorderColor = when {
+            isPreviewMode -> FrameScopeColors.SelectionBlue.copy(alpha = 0.75f)
+            isZoomEnabled -> Color(0xFF38BDF8)
+            else -> FrameScopeColors.BorderSubtle
+        }
+
+        // Single Central Workspace Box (no nested/double frame layers)
         Box(
             modifier = Modifier
                 .size(canvasWidthDp, canvasHeightDp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(Color(0xFF0B0F17))
+                .clip(RoundedCornerShape(14.dp))
+                .background(Color(0xFF070A10))
                 .border(
-                    1.25.dp,
-                    FrameScopeColors.SelectionBlue.copy(alpha = 0.5f),
-                    RoundedCornerShape(12.dp)
+                    width = if (isZoomEnabled || isPreviewMode) 1.5.dp else 1.dp,
+                    color = workspaceBorderColor,
+                    shape = RoundedCornerShape(14.dp)
                 )
                 .clipToBounds()
                 .testTag("crop_preview_canvas")
                 .pointerInput(media.uri) {
                     awaitEachGesture {
                         val firstDown = awaitFirstDown(requireUnconsumed = false)
+                        if (latestPreviewMode) {
+                            return@awaitEachGesture
+                        }
                         firstDown.consume()
 
+                        if (latestZoomEnabled) {
+                            // Zoom Mode active: crop handles & selection box are LOCKED.
+                            // 1-finger drag ALWAYS pans the Canvas Viewport; 2-finger pinch zooms + pans.
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val pressedChanges = event.changes.filter { it.pressed }
+                                if (pressedChanges.isEmpty()) break
+
+                                if (pressedChanges.size >= 2) {
+                                    val zoomDelta = event.calculateZoom()
+                                    val panDelta = event.calculatePan()
+                                    val nextZoom = (latestZoom * zoomDelta).coerceIn(1f, 5f)
+                                    val nextMaxX = if (nextZoom > 1.001f) latestCanvasW * nextZoom * 0.5f else latestCanvasW * 0.25f
+                                    val nextMaxY = if (nextZoom > 1.001f) latestCanvasH * nextZoom * 0.5f else latestCanvasH * 0.25f
+                                    val nextPan = Offset(
+                                        x = (latestPan.x + panDelta.x).coerceIn(-nextMaxX, nextMaxX),
+                                        y = (latestPan.y + panDelta.y).coerceIn(-nextMaxY, nextMaxY)
+                                    )
+                                    onTransformChanged(nextZoom, nextPan)
+                                    pressedChanges.forEach { it.consume() }
+                                } else {
+                                    val primary = pressedChanges.first()
+                                    val screenDelta = primary.positionChange()
+                                    if (screenDelta != Offset.Zero) {
+                                        primary.consume()
+                                        val curZoom = latestZoom.coerceAtLeast(1f)
+                                        val maxX = if (curZoom > 1.001f) latestCanvasW * curZoom * 0.5f else latestCanvasW * 0.25f
+                                        val maxY = if (curZoom > 1.001f) latestCanvasH * curZoom * 0.5f else latestCanvasH * 0.25f
+                                        val nextPan = Offset(
+                                            x = (latestPan.x + screenDelta.x).coerceIn(-maxX, maxX),
+                                            y = (latestPan.y + screenDelta.y).coerceIn(-maxY, maxY)
+                                        )
+                                        onPanChanged(nextPan)
+                                    }
+                                }
+                            }
+                            return@awaitEachGesture
+                        }
+
+                        // Crop Editing Mode active: map touch into Canvas Viewport coordinates.
                         val cx = latestCanvasW / 2f
                         val cy = latestCanvasH / 2f
                         val z = latestZoom.coerceAtLeast(1f)
@@ -200,60 +280,35 @@ fun CropWorkspaceCanvas(
                             edgeRadius = edgeHitRadiusPx / z
                         )
 
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            val pressedChanges = event.changes.filter { it.pressed }
-                            if (pressedChanges.isEmpty()) break
+                        val isEditableTarget = dragTarget != CropDragTarget.NONE &&
+                            dragTarget != CropDragTarget.OUTSIDE_CROP
+                        if (isEditableTarget) {
+                            onCropGestureStart()
+                        }
 
-                            if (pressedChanges.size >= 2 && latestZoomEnabled) {
-                                val zoomDelta = event.calculateZoom()
-                                val panDelta = event.calculatePan()
-                                val nextZoom = (latestZoom * zoomDelta).coerceIn(1f, 5f)
-                                val nextMaxPanX = (latestCanvasW * (nextZoom - 1f) / 2f).coerceAtLeast(0f)
-                                val nextMaxPanY = (latestCanvasH * (nextZoom - 1f) / 2f).coerceAtLeast(0f)
-                                val nextPan = Offset(
-                                    x = (latestPan.x + panDelta.x).coerceIn(-nextMaxPanX, nextMaxPanX),
-                                    y = (latestPan.y + panDelta.y).coerceIn(-nextMaxPanY, nextMaxPanY)
-                                )
-                                onTransformChanged(nextZoom, nextPan)
-                                pressedChanges.forEach { it.consume() }
-                                continue
-                            }
+                        try {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val pressedChanges = event.changes.filter { it.pressed }
+                                if (pressedChanges.isEmpty()) break
 
-                            val primary = pressedChanges.first()
-                            val screenDelta = primary.positionChange()
-                            if (screenDelta != Offset.Zero) {
-                                primary.consume()
-                                val curZoom = latestZoom.coerceAtLeast(1f)
-                                val cur = latestCrop
-                                val mW = latestMediaW.coerceAtLeast(1f)
-                                val mH = latestMediaH.coerceAtLeast(1f)
-                                val delta = Offset(screenDelta.x / curZoom, screenDelta.y / curZoom)
+                                if (!isEditableTarget || latestZoomEnabled || latestPreviewMode) {
+                                    pressedChanges.forEach { it.consume() }
+                                    continue
+                                }
 
-                                when (dragTarget) {
-                                    CropDragTarget.OUTSIDE_CROP -> {
-                                        if (latestZoomEnabled && curZoom > 1.02f) {
-                                            val maxX = (latestCanvasW * (curZoom - 1f) / 2f).coerceAtLeast(0f)
-                                            val maxY = (latestCanvasH * (curZoom - 1f) / 2f).coerceAtLeast(0f)
-                                            val nextPan = Offset(
-                                                x = (latestPan.x + screenDelta.x).coerceIn(-maxX, maxX),
-                                                y = (latestPan.y + screenDelta.y).coerceIn(-maxY, maxY)
-                                            )
-                                            onPanChanged(nextPan)
-                                        }
-                                    }
+                                val primary = pressedChanges.first()
+                                val screenDelta = primary.positionChange()
+                                if (screenDelta != Offset.Zero) {
+                                    primary.consume()
+                                    val curZoom = latestZoom.coerceAtLeast(1f)
+                                    val cur = latestCrop
+                                    val mW = latestMediaW.coerceAtLeast(1f)
+                                    val mH = latestMediaH.coerceAtLeast(1f)
+                                    val delta = Offset(screenDelta.x / curZoom, screenDelta.y / curZoom)
 
-                                    CropDragTarget.CENTER_CONTENT -> {
-                                        val isFullFrame = cur.widthFraction >= 0.995f && cur.heightFraction >= 0.995f
-                                        if (isFullFrame && latestZoomEnabled && curZoom > 1.02f) {
-                                            val maxX = (latestCanvasW * (curZoom - 1f) / 2f).coerceAtLeast(0f)
-                                            val maxY = (latestCanvasH * (curZoom - 1f) / 2f).coerceAtLeast(0f)
-                                            val nextPan = Offset(
-                                                x = (latestPan.x + screenDelta.x).coerceIn(-maxX, maxX),
-                                                y = (latestPan.y + screenDelta.y).coerceIn(-maxY, maxY)
-                                            )
-                                            onPanChanged(nextPan)
-                                        } else {
+                                    when (dragTarget) {
+                                        CropDragTarget.CENTER_CONTENT -> {
                                             val dLeft = delta.x / mW
                                             val dTop = delta.y / mH
                                             val wFrac = cur.widthFraction
@@ -269,48 +324,57 @@ fun CropWorkspaceCanvas(
                                                 )
                                             )
                                         }
-                                    }
 
-                                    CropDragTarget.NONE -> Unit
+                                        CropDragTarget.NONE,
+                                        CropDragTarget.OUTSIDE_CROP -> Unit
 
-                                    else -> {
-                                        val minWFrac = (minCropPx / mW).coerceIn(0.04f, 0.8f)
-                                        val minHFrac = (minCropPx / mH).coerceIn(0.04f, 0.8f)
-                                        val dx = delta.x / mW
-                                        val dy = delta.y / mH
+                                        else -> {
+                                            val minWFrac = (minCropPx / mW).coerceIn(0.04f, 0.8f)
+                                            val minHFrac = (minCropPx / mH).coerceIn(0.04f, 0.8f)
+                                            val dx = delta.x / mW
+                                            val dy = delta.y / mH
 
-                                        val updated = computeResizedCropRect(
-                                            current = cur,
-                                            target = dragTarget,
-                                            dx = dx,
-                                            dy = dy,
-                                            minWFrac = minWFrac,
-                                            minHFrac = minHFrac,
-                                            lockedRatio = latestAspect,
-                                            sourceRatio = latestSrcRatio
-                                        )
-                                        onCropChanged(updated)
+                                            val updated = computeResizedCropRect(
+                                                current = cur,
+                                                target = dragTarget,
+                                                dx = dx,
+                                                dy = dy,
+                                                minWFrac = minWFrac,
+                                                minHFrac = minHFrac,
+                                                lockedRatio = latestAspect,
+                                                sourceRatio = latestSrcRatio
+                                            )
+                                            onCropChanged(updated)
+                                        }
                                     }
                                 }
+                            }
+                        } finally {
+                            if (isEditableTarget) {
+                                onCropGestureEnd()
                             }
                         }
                     }
                 }
         ) {
-            // Single zoomed viewport containing both media + crop overlay so media NEVER shifts independently.
+            // Single Canvas Viewport transformed ONLY by Zoom & Pan during editing (never in Preview Mode).
+            val viewportScale = if (isPreviewMode) 1f else zoom
+            val viewportPan = if (isPreviewMode) Offset.Zero else clampedPan
+
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer {
-                        scaleX = zoom
-                        scaleY = zoom
-                        translationX = clampedPan.x
-                        translationY = clampedPan.y
+                        scaleX = viewportScale
+                        scaleY = viewportScale
+                        translationX = viewportPan.x
+                        translationY = viewportPan.y
                     }
             ) {
+                // Locked Imported Media Object: cannot be dragged independently.
                 Box(
                     modifier = Modifier
-                        .offset { IntOffset(baseMediaLeft.roundToInt(), baseMediaTop.roundToInt()) }
+                        .offset { IntOffset(activeMediaLeft.roundToInt(), activeMediaTop.roundToInt()) }
                         .size(mediaWidthDp, mediaHeightDp)
                 ) {
                     if (media.mediaType == CropMediaType.IMAGE && previewBitmap != null) {
@@ -335,140 +399,177 @@ fun CropWorkspaceCanvas(
                     }
                 }
 
-                val cropCanvasRect = Rect(
-                    left = baseMediaLeft + cropRect.left * baseW,
-                    top = baseMediaTop + cropRect.top * baseH,
-                    right = baseMediaLeft + cropRect.right * baseW,
-                    bottom = baseMediaTop + cropRect.bottom * baseH
-                )
+                // Crop Selection Overlay (hidden completely in Live Crop Preview Mode)
+                if (!isPreviewMode) {
+                    val cropCanvasRect = Rect(
+                        left = editMediaLeft + cropRect.left * editMediaW,
+                        top = editMediaTop + cropRect.top * editMediaH,
+                        right = editMediaLeft + cropRect.right * editMediaW,
+                        bottom = editMediaTop + cropRect.bottom * editMediaH
+                    )
 
-                Canvas(modifier = Modifier.fillMaxSize()) {
-                    val scrimColor = Color.Black.copy(alpha = 0.56f)
-                    val cLeft = cropCanvasRect.left.coerceIn(0f, size.width)
-                    val cTop = cropCanvasRect.top.coerceIn(0f, size.height)
-                    val cRight = cropCanvasRect.right.coerceIn(cLeft, size.width)
-                    val cBottom = cropCanvasRect.bottom.coerceIn(cTop, size.height)
-                    val cWidth = (cRight - cLeft).coerceAtLeast(0f)
-                    val cHeight = (cBottom - cTop).coerceAtLeast(0f)
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        val scrimColor = Color.Black.copy(alpha = 0.58f)
+                        val cLeft = cropCanvasRect.left.coerceIn(0f, size.width)
+                        val cTop = cropCanvasRect.top.coerceIn(0f, size.height)
+                        val cRight = cropCanvasRect.right.coerceIn(cLeft, size.width)
+                        val cBottom = cropCanvasRect.bottom.coerceIn(cTop, size.height)
+                        val cWidth = (cRight - cLeft).coerceAtLeast(0f)
+                        val cHeight = (cBottom - cTop).coerceAtLeast(0f)
 
-                    if (cTop > 0f) {
-                        drawRect(scrimColor, Offset.Zero, Size(size.width, cTop))
-                    }
-                    if (cBottom < size.height) {
-                        drawRect(scrimColor, Offset(0f, cBottom), Size(size.width, size.height - cBottom))
-                    }
-                    if (cLeft > 0f && cHeight > 0f) {
-                        drawRect(scrimColor, Offset(0f, cTop), Size(cLeft, cHeight))
-                    }
-                    if (cRight < size.width && cHeight > 0f) {
-                        drawRect(scrimColor, Offset(cRight, cTop), Size(size.width - cRight, cHeight))
-                    }
-
-                    if (cWidth > 2f && cHeight > 2f) {
-                        val invZoom = 1f / zoom.coerceAtLeast(1f)
-                        val guideColor = Color.White.copy(alpha = 0.28f)
-                        val thirdW = cWidth / 3f
-                        val thirdH = cHeight / 3f
-                        for (i in 1..2) {
-                            drawLine(
-                                color = guideColor,
-                                start = Offset(cLeft + thirdW * i, cTop),
-                                end = Offset(cLeft + thirdW * i, cBottom),
-                                strokeWidth = 1.dp.toPx() * invZoom
-                            )
-                            drawLine(
-                                color = guideColor,
-                                start = Offset(cLeft, cTop + thirdH * i),
-                                end = Offset(cRight, cTop + thirdH * i),
-                                strokeWidth = 1.dp.toPx() * invZoom
-                            )
+                        if (cTop > 0f) {
+                            drawRect(scrimColor, Offset.Zero, Size(size.width, cTop))
+                        }
+                        if (cBottom < size.height) {
+                            drawRect(scrimColor, Offset(0f, cBottom), Size(size.width, size.height - cBottom))
+                        }
+                        if (cLeft > 0f && cHeight > 0f) {
+                            drawRect(scrimColor, Offset(0f, cTop), Size(cLeft, cHeight))
+                        }
+                        if (cRight < size.width && cHeight > 0f) {
+                            drawRect(scrimColor, Offset(cRight, cTop), Size(size.width - cRight, cHeight))
                         }
 
-                        drawRect(
-                            color = FrameScopeColors.SelectionBlue,
-                            topLeft = Offset(cLeft, cTop),
-                            size = Size(cWidth, cHeight),
-                            style = Stroke(width = 2.dp.toPx() * invZoom)
-                        )
+                        if (cWidth > 2f && cHeight > 2f) {
+                            val invZoom = 1f / zoom.coerceAtLeast(1f)
+                            val overlayAlpha = if (isZoomEnabled) 0.55f else 1f
+                            val guideColor = Color.White.copy(alpha = 0.42f * overlayAlpha)
+                            val thirdW = cWidth / 3f
+                            val thirdH = cHeight / 3f
+                            for (i in 1..2) {
+                                drawLine(
+                                    color = guideColor,
+                                    start = Offset(cLeft + thirdW * i, cTop),
+                                    end = Offset(cLeft + thirdW * i, cBottom),
+                                    strokeWidth = 0.9.dp.toPx() * invZoom
+                                )
+                                drawLine(
+                                    color = guideColor,
+                                    start = Offset(cLeft, cTop + thirdH * i),
+                                    end = Offset(cRight, cTop + thirdH * i),
+                                    strokeWidth = 0.9.dp.toPx() * invZoom
+                                )
+                            }
 
-                        val bracketLen = minOf(22.dp.toPx() * invZoom, cWidth * 0.32f, cHeight * 0.32f)
-                        val cornerStroke = 4.dp.toPx() * invZoom
-                        val bracketPath = Path().apply {
-                            moveTo(cLeft, cTop + bracketLen)
-                            lineTo(cLeft, cTop)
-                            lineTo(cLeft + bracketLen, cTop)
-
-                            moveTo(cRight - bracketLen, cTop)
-                            lineTo(cRight, cTop)
-                            lineTo(cRight, cTop + bracketLen)
-
-                            moveTo(cLeft, cBottom - bracketLen)
-                            lineTo(cLeft, cBottom)
-                            lineTo(cLeft + bracketLen, cBottom)
-
-                            moveTo(cRight - bracketLen, cBottom)
-                            lineTo(cRight, cBottom)
-                            lineTo(cRight, cBottom - bracketLen)
-                        }
-                        drawPath(
-                            path = bracketPath,
-                            color = Color.White,
-                            style = Stroke(width = cornerStroke, cap = StrokeCap.Round)
-                        )
-
-                        val dotRadius = 5.dp.toPx() * invZoom
-                        listOf(
-                            Offset(cLeft, cTop),
-                            Offset(cRight, cTop),
-                            Offset(cLeft, cBottom),
-                            Offset(cRight, cBottom)
-                        ).forEach { corner ->
-                            drawCircle(
-                                color = FrameScopeColors.SelectionBlue,
-                                radius = dotRadius,
-                                center = corner
+                            val borderColor = FrameScopeColors.SelectionBlue.copy(alpha = overlayAlpha)
+                            drawRect(
+                                color = borderColor,
+                                topLeft = Offset(cLeft, cTop),
+                                size = Size(cWidth, cHeight),
+                                style = Stroke(width = 2.dp.toPx() * invZoom)
                             )
-                            drawCircle(
-                                color = Color.White,
-                                radius = dotRadius,
-                                center = corner,
-                                style = Stroke(width = 1.5.dp.toPx() * invZoom)
+
+                            // 4 Corner Circle Handles matching reference
+                            val cornerRadius = 7.dp.toPx() * invZoom
+                            val handleFill = Color.White.copy(alpha = overlayAlpha)
+                            val handleStroke = FrameScopeColors.SelectionBlue.copy(alpha = 0.85f * overlayAlpha)
+                            listOf(
+                                Offset(cLeft, cTop),
+                                Offset(cRight, cTop),
+                                Offset(cLeft, cBottom),
+                                Offset(cRight, cBottom)
+                            ).forEach { corner ->
+                                drawCircle(
+                                    color = handleFill,
+                                    radius = cornerRadius,
+                                    center = corner
+                                )
+                                drawCircle(
+                                    color = handleStroke,
+                                    radius = cornerRadius,
+                                    center = corner,
+                                    style = Stroke(width = 1.5.dp.toPx() * invZoom)
+                                )
+                            }
+
+                            // 4 Side-Edge Pill Handles matching reference
+                            val pillLong = minOf(22.dp.toPx() * invZoom, cWidth * 0.3f, cHeight * 0.3f)
+                            val pillShort = 5.5.dp.toPx() * invZoom
+                            val pillCorner = CornerRadius(pillShort / 2f, pillShort / 2f)
+                            val midX = (cLeft + cRight) * 0.5f
+                            val midY = (cTop + cBottom) * 0.5f
+
+                            // Top pill
+                            drawRoundRect(
+                                color = handleFill,
+                                topLeft = Offset(midX - pillLong * 0.5f, cTop - pillShort * 0.5f),
+                                size = Size(pillLong, pillShort),
+                                cornerRadius = pillCorner
+                            )
+                            drawRoundRect(
+                                color = handleStroke,
+                                topLeft = Offset(midX - pillLong * 0.5f, cTop - pillShort * 0.5f),
+                                size = Size(pillLong, pillShort),
+                                cornerRadius = pillCorner,
+                                style = Stroke(width = 1.dp.toPx() * invZoom)
+                            )
+
+                            // Bottom pill
+                            drawRoundRect(
+                                color = handleFill,
+                                topLeft = Offset(midX - pillLong * 0.5f, cBottom - pillShort * 0.5f),
+                                size = Size(pillLong, pillShort),
+                                cornerRadius = pillCorner
+                            )
+                            drawRoundRect(
+                                color = handleStroke,
+                                topLeft = Offset(midX - pillLong * 0.5f, cBottom - pillShort * 0.5f),
+                                size = Size(pillLong, pillShort),
+                                cornerRadius = pillCorner,
+                                style = Stroke(width = 1.dp.toPx() * invZoom)
+                            )
+
+                            // Left pill
+                            drawRoundRect(
+                                color = handleFill,
+                                topLeft = Offset(cLeft - pillShort * 0.5f, midY - pillLong * 0.5f),
+                                size = Size(pillShort, pillLong),
+                                cornerRadius = pillCorner
+                            )
+                            drawRoundRect(
+                                color = handleStroke,
+                                topLeft = Offset(cLeft - pillShort * 0.5f, midY - pillLong * 0.5f),
+                                size = Size(pillShort, pillLong),
+                                cornerRadius = pillCorner,
+                                style = Stroke(width = 1.dp.toPx() * invZoom)
+                            )
+
+                            // Right pill
+                            drawRoundRect(
+                                color = handleFill,
+                                topLeft = Offset(cRight - pillShort * 0.5f, midY - pillLong * 0.5f),
+                                size = Size(pillShort, pillLong),
+                                cornerRadius = pillCorner
+                            )
+                            drawRoundRect(
+                                color = handleStroke,
+                                topLeft = Offset(cRight - pillShort * 0.5f, midY - pillLong * 0.5f),
+                                size = Size(pillShort, pillLong),
+                                cornerRadius = pillCorner,
+                                style = Stroke(width = 1.dp.toPx() * invZoom)
                             )
                         }
-
-                        val edgeHandleLen = minOf(24.dp.toPx() * invZoom, cWidth * 0.28f, cHeight * 0.28f)
-                        val edgeStroke = 3.2.dp.toPx() * invZoom
-                        val midX = (cLeft + cRight) / 2f
-                        val midY = (cTop + cBottom) / 2f
-                        drawLine(
-                            color = Color.White,
-                            start = Offset(midX - edgeHandleLen / 2f, cTop),
-                            end = Offset(midX + edgeHandleLen / 2f, cTop),
-                            strokeWidth = edgeStroke,
-                            cap = StrokeCap.Round
-                        )
-                        drawLine(
-                            color = Color.White,
-                            start = Offset(midX - edgeHandleLen / 2f, cBottom),
-                            end = Offset(midX + edgeHandleLen / 2f, cBottom),
-                            strokeWidth = edgeStroke,
-                            cap = StrokeCap.Round
-                        )
-                        drawLine(
-                            color = Color.White,
-                            start = Offset(cLeft, midY - edgeHandleLen / 2f),
-                            end = Offset(cLeft, midY + edgeHandleLen / 2f),
-                            strokeWidth = edgeStroke,
-                            cap = StrokeCap.Round
-                        )
-                        drawLine(
-                            color = Color.White,
-                            start = Offset(cRight, midY - edgeHandleLen / 2f),
-                            end = Offset(cRight, midY + edgeHandleLen / 2f),
-                            strokeWidth = edgeStroke,
-                            cap = StrokeCap.Round
-                        )
                     }
+                }
+            }
+
+            if (isZoomEnabled && !isPreviewMode) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = Color(0xCC0B1220),
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(8.dp)
+                ) {
+                    Text(
+                        text = "Canvas Zoom ${String.format(java.util.Locale.US, "%.1fx", zoom)} • Crop Locked",
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold
+                        ),
+                        color = Color(0xFF38BDF8),
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
                 }
             }
         }
@@ -532,7 +633,7 @@ private fun CropVideoTexturePreview(
                 runCatching { player.seekTo(trimStartMs, MediaPlayer.SEEK_CLOSEST) }
                 onPositionChanged(trimStartMs)
             }
-            delay(60L)
+            delay(50L)
         }
     }
 
@@ -688,29 +789,33 @@ private fun computeResizedCropRect(
 
     when (target) {
         CropDragTarget.BOTTOM_RIGHT -> {
+            val deltaW = if (abs(dx) >= abs(dy * normRatio)) dx else dy * normRatio
             val maxW = minOf(1f - l, (1f - t) * normRatio)
-            val newW = (r - l + dx).coerceIn(effectiveMinW, maxW.coerceAtLeast(effectiveMinW))
+            val newW = (r - l + deltaW).coerceIn(effectiveMinW, maxW.coerceAtLeast(effectiveMinW))
             val newH = newW / normRatio
             r = l + newW
             b = t + newH
         }
         CropDragTarget.TOP_LEFT -> {
+            val deltaW = if (abs(dx) >= abs(dy * normRatio)) -dx else -dy * normRatio
             val maxW = minOf(r, b * normRatio)
-            val newW = (r - l - dx).coerceIn(effectiveMinW, maxW.coerceAtLeast(effectiveMinW))
+            val newW = (r - l + deltaW).coerceIn(effectiveMinW, maxW.coerceAtLeast(effectiveMinW))
             val newH = newW / normRatio
             l = r - newW
             t = b - newH
         }
         CropDragTarget.TOP_RIGHT -> {
+            val deltaW = if (abs(dx) >= abs(dy * normRatio)) dx else -dy * normRatio
             val maxW = minOf(1f - l, b * normRatio)
-            val newW = (r - l + dx).coerceIn(effectiveMinW, maxW.coerceAtLeast(effectiveMinW))
+            val newW = (r - l + deltaW).coerceIn(effectiveMinW, maxW.coerceAtLeast(effectiveMinW))
             val newH = newW / normRatio
             r = l + newW
             t = b - newH
         }
         CropDragTarget.BOTTOM_LEFT -> {
+            val deltaW = if (abs(dx) >= abs(dy * normRatio)) -dx else dy * normRatio
             val maxW = minOf(r, (1f - t) * normRatio)
-            val newW = (r - l - dx).coerceIn(effectiveMinW, maxW.coerceAtLeast(effectiveMinW))
+            val newW = (r - l + deltaW).coerceIn(effectiveMinW, maxW.coerceAtLeast(effectiveMinW))
             val newH = newW / normRatio
             l = r - newW
             b = t + newH

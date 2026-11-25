@@ -12,6 +12,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -31,6 +33,8 @@ import androidx.compose.material.icons.rounded.Collections
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Image
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.PlayCircleOutline
 import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material3.ButtonDefaults
@@ -52,12 +56,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
@@ -218,11 +225,10 @@ private fun ImportTileButton(
 
 @Composable
 internal fun CanvasAspectOptionsBar(
-    selectedMode: CanvasAspectMode,
     customWidth: String,
     customHeight: String,
-    onSelectMode: (CanvasAspectMode) -> Unit,
-    onCustomChanged: (String, String) -> Unit
+    onCustomChanged: (String, String) -> Unit,
+    onClose: () -> Unit
 ) {
     Surface(
         modifier = Modifier
@@ -230,93 +236,53 @@ internal fun CanvasAspectOptionsBar(
             .testTag("crop_canvas_options_bar"),
         shape = RoundedCornerShape(12.dp),
         color = FrameScopeColors.CardSurface,
-        border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle)
+        border = BorderStroke(1.dp, FrameScopeColors.SelectionBlue.copy(alpha = 0.5f))
     ) {
-        Column(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 10.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Row(
+            OutlinedTextField(
+                value = customWidth,
+                onValueChange = { onCustomChanged(it, customHeight) },
+                singleLine = true,
+                label = { Text("Canvas W") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = FrameScopeColors.SelectionBlue,
+                    unfocusedBorderColor = FrameScopeColors.BorderSubtle,
+                    focusedTextColor = FrameScopeColors.TextPrimary,
+                    unfocusedTextColor = FrameScopeColors.TextPrimary
+                ),
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    .weight(1f)
+                    .testTag("custom_canvas_width")
+            )
+            Text(":", color = FrameScopeColors.TextSecondary, fontWeight = FontWeight.Bold)
+            OutlinedTextField(
+                value = customHeight,
+                onValueChange = { onCustomChanged(customWidth, it) },
+                singleLine = true,
+                label = { Text("Canvas H") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = FrameScopeColors.SelectionBlue,
+                    unfocusedBorderColor = FrameScopeColors.BorderSubtle,
+                    focusedTextColor = FrameScopeColors.TextPrimary,
+                    unfocusedTextColor = FrameScopeColors.TextPrimary
+                ),
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("custom_canvas_height")
+            )
+            TextButton(
+                onClick = onClose,
+                modifier = Modifier.minimumInteractiveComponentSize()
             ) {
-                CanvasAspectMode.entries.forEach { mode ->
-                    val isSelected = selectedMode == mode
-                    val chipShape = RoundedCornerShape(9.dp)
-                    Surface(
-                        modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .clip(chipShape)
-                            .clickable { onSelectMode(mode) }
-                            .testTag("canvas_ratio_${mode.name.lowercase()}"),
-                        shape = chipShape,
-                        color = if (isSelected) FrameScopeColors.SelectionBlueTint else FrameScopeColors.InnerSurface,
-                        border = BorderStroke(
-                            if (isSelected) 1.5.dp else 1.dp,
-                            if (isSelected) FrameScopeColors.SelectionBlue else FrameScopeColors.BorderSubtle
-                        )
-                    ) {
-                        Box(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = mode.label,
-                                style = MaterialTheme.typography.labelMedium.copy(
-                                    fontWeight = FontWeight.SemiBold,
-                                    fontSize = 12.sp
-                                ),
-                                color = if (isSelected) FrameScopeColors.SelectionBlue else FrameScopeColors.TextPrimary
-                            )
-                        }
-                    }
-                }
-            }
-
-            if (selectedMode == CanvasAspectMode.CUSTOM) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedTextField(
-                        value = customWidth,
-                        onValueChange = { onCustomChanged(it, customHeight) },
-                        singleLine = true,
-                        label = { Text("Canvas W") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = FrameScopeColors.SelectionBlue,
-                            unfocusedBorderColor = FrameScopeColors.BorderSubtle,
-                            focusedTextColor = FrameScopeColors.TextPrimary,
-                            unfocusedTextColor = FrameScopeColors.TextPrimary
-                        ),
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("custom_canvas_width")
-                    )
-                    Text(":", color = FrameScopeColors.TextSecondary, fontWeight = FontWeight.Bold)
-                    OutlinedTextField(
-                        value = customHeight,
-                        onValueChange = { onCustomChanged(customWidth, it) },
-                        singleLine = true,
-                        label = { Text("Canvas H") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = FrameScopeColors.SelectionBlue,
-                            unfocusedBorderColor = FrameScopeColors.BorderSubtle,
-                            focusedTextColor = FrameScopeColors.TextPrimary,
-                            unfocusedTextColor = FrameScopeColors.TextPrimary
-                        ),
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("custom_canvas_height")
-                    )
-                }
+                Text("Done", color = FrameScopeColors.SelectionBlue, fontWeight = FontWeight.SemiBold)
             }
         }
     }
@@ -328,6 +294,8 @@ internal fun VideoTimelineSection(
     trimStartMs: Long,
     trimEndMs: Long,
     currentPositionMs: Long,
+    isVideoPlaying: Boolean = false,
+    onTogglePlayPause: (() -> Unit)? = null,
     onSeek: (Long, Boolean) -> Unit,
     onTrimRangeChanged: (Long, Long) -> Unit
 ) {
@@ -375,14 +343,43 @@ internal fun VideoTimelineSection(
                     ),
                     color = FrameScopeColors.TextSecondary
                 )
-                Text(
-                    text = formatTimelineMs(safePos),
-                    style = MaterialTheme.typography.labelMedium.copy(
-                        fontFamily = FontFamily.Monospace,
-                        fontWeight = FontWeight.Bold
-                    ),
-                    color = FrameScopeColors.SelectionBlue
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    if (onTogglePlayPause != null) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (isVideoPlaying) FrameScopeColors.SelectionBlueTint else FrameScopeColors.InnerSurface,
+                            border = BorderStroke(
+                                1.dp,
+                                if (isVideoPlaying) FrameScopeColors.SelectionBlue else FrameScopeColors.BorderSubtle
+                            ),
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable(onClick = onTogglePlayPause)
+                                .testTag("crop_video_play_pause_button")
+                        ) {
+                            Icon(
+                                imageVector = if (isVideoPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                                contentDescription = if (isVideoPlaying) "Pause" else "Play",
+                                tint = if (isVideoPlaying) FrameScopeColors.SelectionBlue else FrameScopeColors.TextPrimary,
+                                modifier = Modifier
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    .size(18.dp)
+                            )
+                        }
+                    }
+                    Text(
+                        text = formatTimelineMs(safePos),
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold
+                        ),
+                        color = FrameScopeColors.SelectionBlue
+                    )
+                }
                 Text(
                     text = "End ${formatTimelineMs(safeEnd)}",
                     style = MaterialTheme.typography.labelMedium.copy(
@@ -567,46 +564,90 @@ internal fun AspectRatioSection(
     customWidth: String,
     customHeight: String,
     customError: String?,
+    enabled: Boolean = true,
     onSelectRatio: (CropAspectRatio) -> Unit,
     onCustomChanged: (String, String) -> Unit
 ) {
-    SectionCard(title = "Aspect Ratio") {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .alpha(if (enabled) 1f else 0.55f)
+            .testTag("selection_aspect_ratio_section"),
+        shape = RoundedCornerShape(16.dp),
+        color = FrameScopeColors.CardSurface,
+        border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            // Reference-style centered pill header with horizontal blue wing lines
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                CropAspectRatio.entries.forEach { ratio ->
-                    val isSelected = selected == ratio
-                    val chipShape = RoundedCornerShape(10.dp)
-                    Surface(
-                        modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .clip(chipShape)
-                            .clickable { onSelectRatio(ratio) }
-                            .testTag("aspect_chip_${ratio.name.lowercase()}"),
-                        shape = chipShape,
-                        color = if (isSelected) FrameScopeColors.SelectionBlueTint else FrameScopeColors.InnerSurface,
-                        border = BorderStroke(
-                            if (isSelected) 1.5.dp else 1.dp,
-                            if (isSelected) FrameScopeColors.SelectionBlue else FrameScopeColors.BorderSubtle
-                        )
-                    ) {
-                        Box(
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = ratio.label,
-                                style = MaterialTheme.typography.labelMedium.copy(
-                                    fontWeight = FontWeight.SemiBold,
-                                    fontSize = 13.sp
-                                ),
-                                color = if (isSelected) FrameScopeColors.SelectionBlue else FrameScopeColors.TextPrimary
-                            )
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(1.5.dp)
+                        .background(FrameScopeColors.SelectionBlue.copy(alpha = 0.65f))
+                )
+                Surface(
+                    shape = RoundedCornerShape(50),
+                    color = FrameScopeColors.SelectionBlueTint,
+                    border = BorderStroke(1.25.dp, FrameScopeColors.SelectionBlue)
+                ) {
+                    Text(
+                        text = "Selection Area Aspect Ratio",
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 12.5.sp
+                        ),
+                        color = FrameScopeColors.TextPrimary,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 5.dp)
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(1.5.dp)
+                        .background(FrameScopeColors.SelectionBlue.copy(alpha = 0.65f))
+                )
+            }
+
+            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                val tileCount = CropAspectRatio.entries.size
+                val spacing = 5.dp
+                val fitWidth = (maxWidth - spacing * (tileCount - 1)) / tileCount
+                val useEvenRow = fitWidth >= 46.dp
+
+                Row(
+                    modifier = if (useEvenRow) {
+                        Modifier.fillMaxWidth()
+                    } else {
+                        Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                    },
+                    horizontalArrangement = Arrangement.spacedBy(spacing)
+                ) {
+                    CropAspectRatio.entries.forEach { ratio ->
+                        val isSelected = selected == ratio
+                        val tileModifier = if (useEvenRow) {
+                            Modifier.weight(1f)
+                        } else {
+                            Modifier.widthIn(min = 50.dp)
                         }
+                        AspectRatioTile(
+                            ratio = ratio,
+                            selected = isSelected,
+                            enabled = enabled,
+                            onClick = { onSelectRatio(ratio) },
+                            modifier = tileModifier
+                        )
                     }
                 }
             }
@@ -619,7 +660,8 @@ internal fun AspectRatioSection(
                 ) {
                     OutlinedTextField(
                         value = customWidth,
-                        onValueChange = { onCustomChanged(it, customHeight) },
+                        onValueChange = { if (enabled) onCustomChanged(it, customHeight) },
+                        enabled = enabled,
                         singleLine = true,
                         label = { Text("W") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
@@ -636,7 +678,8 @@ internal fun AspectRatioSection(
                     Text(":", color = FrameScopeColors.TextSecondary, fontWeight = FontWeight.Bold)
                     OutlinedTextField(
                         value = customHeight,
-                        onValueChange = { onCustomChanged(customWidth, it) },
+                        onValueChange = { if (enabled) onCustomChanged(customWidth, it) },
+                        enabled = enabled,
                         singleLine = true,
                         label = { Text("H") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
@@ -658,6 +701,128 @@ internal fun AspectRatioSection(
                         color = FrameScopeColors.SpecRedText
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AspectRatioTile(
+    ratio: CropAspectRatio,
+    selected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val shape = RoundedCornerShape(11.dp)
+    val tintColor = if (selected) Color.White else FrameScopeColors.TextSecondary
+    Surface(
+        modifier = modifier
+            .minimumInteractiveComponentSize()
+            .clip(shape)
+            .clickable(enabled = enabled, onClick = onClick)
+            .testTag("aspect_chip_${ratio.name.lowercase()}"),
+        shape = shape,
+        color = if (selected) FrameScopeColors.SelectionBlueTint else FrameScopeColors.InnerSurface,
+        border = BorderStroke(
+            width = if (selected) 1.75.dp else 1.dp,
+            color = if (selected) FrameScopeColors.SelectionBlue else FrameScopeColors.BorderSubtle
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 3.dp, vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            AspectRatioGlyph(
+                ratio = ratio,
+                tint = tintColor,
+                modifier = Modifier.size(20.dp)
+            )
+            Text(
+                text = ratio.label,
+                style = MaterialTheme.typography.labelMedium.copy(
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold,
+                    fontSize = 11.sp
+                ),
+                color = if (selected) FrameScopeColors.TextPrimary else FrameScopeColors.TextSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Clip
+            )
+        }
+    }
+}
+
+@Composable
+private fun AspectRatioGlyph(
+    ratio: CropAspectRatio,
+    tint: Color,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier) {
+        val strokePx = 1.6.dp.toPx()
+        val pad = 2.dp.toPx()
+        val availW = (size.width - pad * 2f).coerceAtLeast(4f)
+        val availH = (size.height - pad * 2f).coerceAtLeast(4f)
+
+        when (ratio) {
+            CropAspectRatio.FREE -> {
+                val l = pad
+                val t = pad
+                val r = size.width - pad
+                val b = size.height - pad
+                val seg = availW * 0.3f
+                // Top-left bracket
+                drawLine(tint, Offset(l, t + seg), Offset(l, t), strokePx, StrokeCap.Round)
+                drawLine(tint, Offset(l, t), Offset(l + seg, t), strokePx, StrokeCap.Round)
+                // Top-right bracket
+                drawLine(tint, Offset(r - seg, t), Offset(r, t), strokePx, StrokeCap.Round)
+                drawLine(tint, Offset(r, t), Offset(r, t + seg), strokePx, StrokeCap.Round)
+                // Bottom-left bracket
+                drawLine(tint, Offset(l, b - seg), Offset(l, b), strokePx, StrokeCap.Round)
+                drawLine(tint, Offset(l, b), Offset(l + seg, b), strokePx, StrokeCap.Round)
+                // Bottom-right bracket
+                drawLine(tint, Offset(r - seg, b), Offset(r, b), strokePx, StrokeCap.Round)
+                drawLine(tint, Offset(r, b), Offset(r, b - seg), strokePx, StrokeCap.Round)
+            }
+
+            CropAspectRatio.CUSTOM -> {
+                val l = pad
+                val t = pad
+                val w = availW
+                val h = availH
+                drawRoundRect(
+                    color = tint,
+                    topLeft = Offset(l, t),
+                    size = Size(w, h),
+                    cornerRadius = CornerRadius(3.dp.toPx(), 3.dp.toPx()),
+                    style = Stroke(width = strokePx)
+                )
+                val cx = size.width * 0.5f
+                val cy = size.height * 0.5f
+                val cross = 2.8.dp.toPx()
+                drawLine(tint, Offset(cx - cross, cy), Offset(cx + cross, cy), strokePx, StrokeCap.Round)
+                drawLine(tint, Offset(cx, cy - cross), Offset(cx, cy + cross), strokePx, StrokeCap.Round)
+            }
+
+            else -> {
+                val target = ratio.ratio ?: 1f
+                val (rw, rh) = if (target >= 1f) {
+                    availW to (availW / target).coerceAtLeast(5f)
+                } else {
+                    (availH * target).coerceAtLeast(5f) to availH
+                }
+                val l = (size.width - rw) * 0.5f
+                val t = (size.height - rh) * 0.5f
+                drawRoundRect(
+                    color = tint,
+                    topLeft = Offset(l, t),
+                    size = Size(rw, rh),
+                    cornerRadius = CornerRadius(2.5.dp.toPx(), 2.5.dp.toPx()),
+                    style = Stroke(width = strokePx)
+                )
             }
         }
     }

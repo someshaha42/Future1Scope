@@ -10,6 +10,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.framescope.crop.CanvasAspectMode
 import com.example.framescope.crop.CodecPipelineSupport
 import com.example.framescope.crop.CropAspectRatio
+import com.example.framescope.crop.CropEditSnapshot
 import com.example.framescope.crop.CropExportState
 import com.example.framescope.crop.CropExportedItem
 import com.example.framescope.crop.CropExportsRepository
@@ -41,14 +42,18 @@ data class CropToolUiState(
     val zoom: Float = 1f,
     val panOffset: Offset = Offset.Zero,
     val isZoomEnabled: Boolean = false,
+    val isPreviewMode: Boolean = false,
     val canvasAspectMode: CanvasAspectMode = CanvasAspectMode.ORIGINAL,
     val showCanvasOptions: Boolean = false,
     val customCanvasWidth: String = "4",
     val customCanvasHeight: String = "3",
-    val aspectRatio: CropAspectRatio = CropAspectRatio.ORIGINAL,
+    val aspectRatio: CropAspectRatio = CropAspectRatio.FREE,
     val customAspectWidth: String = "4",
     val customAspectHeight: String = "3",
     val customAspectError: String? = null,
+    val canUndo: Boolean = false,
+    val canRedo: Boolean = false,
+    val canReset: Boolean = false,
     val isVideoPlaying: Boolean = false,
     val trimStartMs: Long = 0L,
     val trimEndMs: Long = 0L,
@@ -90,7 +95,7 @@ data class CropToolUiState(
 
     val activeAspectRatioValue: Float?
         get() = when (aspectRatio) {
-            CropAspectRatio.ORIGINAL -> null
+            CropAspectRatio.FREE -> null
             CropAspectRatio.CUSTOM -> {
                 val w = customAspectWidth.toFloatOrNull()
                 val h = customAspectHeight.toFloatOrNull()
@@ -118,6 +123,18 @@ data class CropToolUiState(
                 else -> canvasAspectMode.ratio ?: 1f
             }
         }
+
+    val cropCompositionAspectRatio: Float
+        get() {
+            val info = media ?: return 1f
+            val locked = activeAspectRatioValue
+            if (locked != null && locked > 0f) {
+                return locked.coerceIn(0.2f, 5f)
+            }
+            val cropW = (cropRect.widthFraction * info.displayWidth).coerceAtLeast(1f)
+            val cropH = (cropRect.heightFraction * info.displayHeight).coerceAtLeast(1f)
+            return (cropW / cropH).coerceIn(0.2f, 5f)
+        }
 }
 
 class CropToolViewModel(
@@ -130,8 +147,136 @@ class CropToolViewModel(
 
     private var exportJob: Job? = null
 
+    private val initialSnapshot = CropEditSnapshot()
+    private val undoStack = ArrayDeque<CropEditSnapshot>()
+    private val redoStack = ArrayDeque<CropEditSnapshot>()
+    private var pendingGestureStartSnapshot: CropEditSnapshot? = null
+
     init {
         refreshRecentExports()
+    }
+
+    private fun CropToolUiState.toSnapshot(): CropEditSnapshot = CropEditSnapshot(
+        cropRect = cropRect,
+        aspectRatio = aspectRatio,
+        customAspectWidth = customAspectWidth,
+        customAspectHeight = customAspectHeight
+    )
+
+    private fun pushHistory(previous: CropEditSnapshot, current: CropEditSnapshot) {
+        if (previous == current) return
+        if (undoStack.size >= MAX_HISTORY_ENTRIES) {
+            undoStack.removeFirst()
+        }
+        undoStack.addLast(previous)
+        redoStack.clear()
+    }
+
+    private fun CropToolUiState.withHistoryFlags(): CropToolUiState = copy(
+        canUndo = undoStack.isNotEmpty(),
+        canRedo = redoStack.isNotEmpty(),
+        canReset = toSnapshot() != initialSnapshot
+    )
+
+    fun beginCropGesture() {
+        if (pendingGestureStartSnapshot == null) {
+            pendingGestureStartSnapshot = _uiState.value.toSnapshot()
+        }
+    }
+
+    fun commitCropGesture() {
+        val startSnap = pendingGestureStartSnapshot ?: return
+        pendingGestureStartSnapshot = null
+        val curSnap = _uiState.value.toSnapshot()
+        if (startSnap != curSnap) {
+            pushHistory(startSnap, curSnap)
+            _uiState.update { it.withHistoryFlags() }
+        }
+    }
+
+    fun undo() {
+        if (_uiState.value.isPreviewMode || undoStack.isEmpty()) return
+        pendingGestureStartSnapshot = null
+        val prevSnap = undoStack.removeLast()
+        val curSnap = _uiState.value.toSnapshot()
+        redoStack.addLast(curSnap)
+        _uiState.update { state ->
+            recalculateAutoBitrateIfNeeded(
+                state.copy(
+                    cropRect = prevSnap.cropRect,
+                    aspectRatio = prevSnap.aspectRatio,
+                    customAspectWidth = prevSnap.customAspectWidth,
+                    customAspectHeight = prevSnap.customAspectHeight,
+                    customAspectError = null
+                )
+            ).withHistoryFlags()
+        }
+    }
+
+    fun redo() {
+        if (_uiState.value.isPreviewMode || redoStack.isEmpty()) return
+        pendingGestureStartSnapshot = null
+        val nextSnap = redoStack.removeLast()
+        val curSnap = _uiState.value.toSnapshot()
+        undoStack.addLast(curSnap)
+        _uiState.update { state ->
+            recalculateAutoBitrateIfNeeded(
+                state.copy(
+                    cropRect = nextSnap.cropRect,
+                    aspectRatio = nextSnap.aspectRatio,
+                    customAspectWidth = nextSnap.customAspectWidth,
+                    customAspectHeight = nextSnap.customAspectHeight,
+                    customAspectError = null
+                )
+            ).withHistoryFlags()
+        }
+    }
+
+    fun resetCropSelection() {
+        if (_uiState.value.isPreviewMode) return
+        pendingGestureStartSnapshot = null
+        val curSnap = _uiState.value.toSnapshot()
+        if (curSnap == initialSnapshot) return
+        pushHistory(curSnap, initialSnapshot)
+        _uiState.update { state ->
+            recalculateAutoBitrateIfNeeded(
+                state.copy(
+                    cropRect = initialSnapshot.cropRect,
+                    aspectRatio = initialSnapshot.aspectRatio,
+                    customAspectWidth = initialSnapshot.customAspectWidth,
+                    customAspectHeight = initialSnapshot.customAspectHeight,
+                    customAspectError = null
+                )
+            ).withHistoryFlags()
+        }
+    }
+
+    fun enterPreviewMode() {
+        val state = _uiState.value
+        val media = state.media ?: return
+        if (state.isPreviewMode) return
+        val start = state.trimStartMs
+        val end = if (state.trimEndMs > start) state.trimEndMs else media.durationMs
+        val needsSeek = media.mediaType == CropMediaType.VIDEO &&
+            (state.currentVideoPositionMs < start || (end > 0L && state.currentVideoPositionMs >= end))
+        _uiState.update { prev ->
+            prev.copy(
+                isPreviewMode = true,
+                showCanvasOptions = false,
+                isVideoPlaying = media.mediaType == CropMediaType.VIDEO,
+                seekRequestMs = if (needsSeek) start else prev.seekRequestMs
+            )
+        }
+    }
+
+    fun exitPreviewMode() {
+        if (!_uiState.value.isPreviewMode) return
+        _uiState.update { prev ->
+            prev.copy(
+                isPreviewMode = false,
+                isVideoPlaying = false
+            )
+        }
     }
 
     fun refreshRecentExports() {
@@ -165,7 +310,13 @@ class CropToolViewModel(
     }
 
     fun openImportPanel() {
-        _uiState.update { it.copy(showImportPanel = true, isVideoPlaying = false) }
+        _uiState.update {
+            it.copy(
+                showImportPanel = true,
+                isVideoPlaying = false,
+                isPreviewMode = false
+            )
+        }
         refreshRecentExports()
     }
 
@@ -177,11 +328,15 @@ class CropToolViewModel(
 
     fun importMedia(uri: Uri) {
         exportJob?.cancel()
+        undoStack.clear()
+        redoStack.clear()
+        pendingGestureStartSnapshot = null
         viewModelScope.launch {
             _uiState.update {
                 it.copy(
                     isLoadingMedia = true,
                     isVideoPlaying = false,
+                    isPreviewMode = false,
                     exportState = CropExportState.Idle,
                     message = null
                 )
@@ -256,9 +411,16 @@ class CropToolViewModel(
                         zoom = 1f,
                         panOffset = Offset.Zero,
                         isZoomEnabled = false,
+                        isPreviewMode = false,
                         canvasAspectMode = CanvasAspectMode.ORIGINAL,
                         showCanvasOptions = false,
-                        aspectRatio = CropAspectRatio.ORIGINAL,
+                        aspectRatio = CropAspectRatio.FREE,
+                        customAspectWidth = "4",
+                        customAspectHeight = "3",
+                        customAspectError = null,
+                        canUndo = false,
+                        canRedo = false,
+                        canReset = false,
                         isVideoPlaying = false,
                         trimStartMs = 0L,
                         trimEndMs = info.durationMs,
@@ -279,6 +441,7 @@ class CropToolViewModel(
     }
 
     fun toggleZoomMode() {
+        if (_uiState.value.isPreviewMode) return
         _uiState.update { state ->
             val nextEnabled = !state.isZoomEnabled
             state.copy(
@@ -289,17 +452,23 @@ class CropToolViewModel(
     }
 
     fun toggleCanvasOptions() {
+        if (_uiState.value.isPreviewMode) return
         _uiState.update { state ->
             state.copy(showCanvasOptions = !state.showCanvasOptions)
         }
+    }
+
+    fun closeCanvasOptions() {
+        _uiState.update { it.copy(showCanvasOptions = false) }
     }
 
     fun selectCanvasAspectMode(mode: CanvasAspectMode) {
         _uiState.update { state ->
             state.copy(
                 canvasAspectMode = mode,
-                customCanvasWidth = if (mode == CanvasAspectMode.CUSTOM) state.customAspectWidth else state.customCanvasWidth,
-                customCanvasHeight = if (mode == CanvasAspectMode.CUSTOM) state.customAspectHeight else state.customCanvasHeight
+                showCanvasOptions = if (mode == CanvasAspectMode.CUSTOM) true else false,
+                customCanvasWidth = if (mode == CanvasAspectMode.CUSTOM) state.customCanvasWidth else state.customCanvasWidth,
+                customCanvasHeight = if (mode == CanvasAspectMode.CUSTOM) state.customCanvasHeight else state.customCanvasHeight
             )
         }
     }
@@ -397,55 +566,62 @@ class CropToolViewModel(
                 bottom = newCrop.bottom.coerceIn(0.04f, 1f)
             )
             recalculateAutoBitrateIfNeeded(state.copy(cropRect = sanitized))
+                .withHistoryFlags()
         }
     }
 
     fun selectAspectRatio(ratio: CropAspectRatio) {
-        val info = _uiState.value.media ?: return
+        val stateBefore = _uiState.value
+        val info = stateBefore.media ?: return
+        if (stateBefore.isPreviewMode) return
+
+        val prevSnap = stateBefore.toSnapshot()
         if (ratio == CropAspectRatio.CUSTOM) {
-            val parsedW = _uiState.value.customAspectWidth.toFloatOrNull()
-            val parsedH = _uiState.value.customAspectHeight.toFloatOrNull()
+            val parsedW = stateBefore.customAspectWidth.toFloatOrNull()
+            val parsedH = stateBefore.customAspectHeight.toFloatOrNull()
             val targetRatio = if (parsedW != null && parsedH != null && parsedW > 0f && parsedH > 0f) {
                 parsedW / parsedH
             } else {
                 1f
             }
             val centered = computeCenteredCropRect(info.displayWidth, info.displayHeight, targetRatio)
-            _uiState.update { state ->
-                recalculateAutoBitrateIfNeeded(
-                    state.copy(
-                        aspectRatio = CropAspectRatio.CUSTOM,
-                        cropRect = centered,
-                        customAspectError = null
-                    )
-                )
-            }
-            return
-        }
-
-        val centered = if (ratio == CropAspectRatio.ORIGINAL) {
-            NormalizedCropRect(0f, 0f, 1f, 1f)
-        } else {
-            computeCenteredCropRect(info.displayWidth, info.displayHeight, ratio.ratio!!)
-        }
-
-        _uiState.update { state ->
-            recalculateAutoBitrateIfNeeded(
-                state.copy(
-                    aspectRatio = ratio,
+            val nextState = recalculateAutoBitrateIfNeeded(
+                stateBefore.copy(
+                    aspectRatio = CropAspectRatio.CUSTOM,
                     cropRect = centered,
                     customAspectError = null
                 )
             )
+            pushHistory(prevSnap, nextState.toSnapshot())
+            _uiState.value = nextState.withHistoryFlags()
+            return
         }
+
+        val centered = if (ratio == CropAspectRatio.FREE) {
+            stateBefore.cropRect
+        } else {
+            computeCenteredCropRect(info.displayWidth, info.displayHeight, ratio.ratio!!)
+        }
+
+        val nextState = recalculateAutoBitrateIfNeeded(
+            stateBefore.copy(
+                aspectRatio = ratio,
+                cropRect = centered,
+                customAspectError = null
+            )
+        )
+        pushHistory(prevSnap, nextState.toSnapshot())
+        _uiState.value = nextState.withHistoryFlags()
     }
 
     fun updateCustomAspectRatio(widthStr: String, heightStr: String) {
+        val stateBefore = _uiState.value
+        if (stateBefore.isPreviewMode) return
         val cleanW = widthStr.filter { it.isDigit() || it == '.' }
         val cleanH = heightStr.filter { it.isDigit() || it == '.' }
         val wVal = cleanW.toFloatOrNull()
         val hVal = cleanH.toFloatOrNull()
-        val info = _uiState.value.media
+        val info = stateBefore.media
 
         if (wVal == null || hVal == null || wVal <= 0f || hVal <= 0f) {
             _uiState.update {
@@ -459,6 +635,7 @@ class CropToolViewModel(
             return
         }
 
+        val prevSnap = stateBefore.toSnapshot()
         val targetRatio = (wVal / hVal).coerceIn(0.05f, 20f)
         val centered = if (info != null) {
             computeCenteredCropRect(info.displayWidth, info.displayHeight, targetRatio)
@@ -466,17 +643,17 @@ class CropToolViewModel(
             NormalizedCropRect()
         }
 
-        _uiState.update { state ->
-            recalculateAutoBitrateIfNeeded(
-                state.copy(
-                    aspectRatio = CropAspectRatio.CUSTOM,
-                    customAspectWidth = cleanW,
-                    customAspectHeight = cleanH,
-                    customAspectError = null,
-                    cropRect = centered
-                )
+        val nextState = recalculateAutoBitrateIfNeeded(
+            stateBefore.copy(
+                aspectRatio = CropAspectRatio.CUSTOM,
+                customAspectWidth = cleanW,
+                customAspectHeight = cleanH,
+                customAspectError = null,
+                cropRect = centered
             )
-        }
+        )
+        pushHistory(prevSnap, nextState.toSnapshot())
+        _uiState.value = nextState.withHistoryFlags()
     }
 
     fun selectBitrateMode(mode: VideoBitrateMode) {
@@ -675,5 +852,9 @@ class CropToolViewModel(
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
             return CropToolViewModel(appContext.applicationContext) as T
         }
+    }
+
+    private companion object {
+        const val MAX_HISTORY_ENTRIES = 60
     }
 }
