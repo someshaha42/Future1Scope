@@ -1,0 +1,75 @@
+PROJECT CUSTOM INSTRUCTIONS
+============================
+
+1. DEVELOPMENT FRAMEWORK
+------------------------
+- Use Native Android development.
+- Use Kotlin as the primary and exclusive application programming language.
+- Use Jetpack Compose for the complete UI.
+- Do not use React, Next.js, Angular, Flutter, or WebView.
+- Do not use XML layouts.
+
+2. FIXED PROJECT CONFIGURATION
+-----------------------------
+- CPU Architecture: ARM64 (arm64-v8a) only.
+- Device Support: Mobile and Tablet.
+- Minimum Android Version: Android 16 (API 36).
+- Maximum Android Version: Android 17 (API 37).
+- Target SDK: 37.
+- JVM Target: 17.
+
+3. UI DEVELOPMENT
+-----------------
+- Build all screens, buttons, menus, dialogs, settings, and navigation
+  using Kotlin and Jetpack Compose.
+- Use native Android components.
+- Maintain responsive layouts for mobile and tablet.
+- Use emojis instead of SVG icons.
+- Avoid gradients.
+- Prefer clean, simple, native Android UI.
+
+4. CODE PRESERVATION RULES
+--------------------------
+- Never change existing model strings found in code.
+- Never rename existing screens, labels, IDs, or custom names.
+- Never modify existing click/touch interaction logic unless explicitly
+  requested.
+- Never modify fragment-related code unless explicitly requested.
+- Preserve existing application behavior when modifying code.
+
+5. BACKEND DEVELOPMENT
+----------------------
+- Use Kotlin for application logic and backend modules.
+- Use Kotlin Coroutines for asynchronous operations.
+- Use ViewModel for UI state management.
+- Use DataStore for application preferences when needed.
+- Use Android SDK APIs for native system integration.
+
+6. DEPENDENCIES
+---------------
+- Avoid unnecessary external libraries.
+- Prefer official AndroidX and Jetpack libraries.
+- Do not introduce additional frameworks without explicit approval.
+
+7. CODE QUALITY
+---------------
+- Keep code modular and maintainable.
+- Avoid duplicate implementations.
+- Preserve the existing Android Studio project structure.
+- Ensure compatibility with the specified Android SDK range.
+- Do not add features that were not requested.
+
+8. BUILD REQUIREMENTS
+---------------------
+- Generate a native Android APK.
+- Restrict native ABI packaging to arm64-v8a.
+- Maintain the specified SDK and JVM configuration.
+- Keep the project compatible with Android Studio and Gradle.
+
+9. MODIFICATION POLICY
+----------------------
+- Before modifying existing code, inspect the relevant files.
+- Make only the requested changes.
+- Preserve existing names, strings, and interactive behavior.
+- Do not silently remove existing functionality.
+- Explain any unavoidable compatibility changes before applying them.

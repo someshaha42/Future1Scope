@@ -1,0 +1,208 @@
+KOTLIN NATIVE ANDROID PROJECT — FIXED CONFIGURATION
+===================================================
+
+This is a standalone Kotlin Native Android project configuration.
+It does not depend on any previous project or code.
+
+FIXED REQUIREMENTS
+------------------
+Language: Kotlin
+Framework: Native Android
+CPU ABI: arm64-v8a only
+Device categories: Mobile and Tablet
+Minimum Android version: Android 16 (API 36)
+Maximum Android version: Android 17 (API 37)
+No additional application features or external libraries are included.
+
+PROJECT FILE STRUCTURE
+----------------------
+KotlinNativeProject/
+|-- settings.gradle.kts
+|-- build.gradle.kts
+|-- gradle.properties
+|-- app/
+    |-- build.gradle.kts
+    |-- src/
+        |-- main/
+            |-- AndroidManifest.xml
+            |-- java/com/example/arm64native/MainActivity.kt
+            |-- res/values/strings.xml
+
+
+FILE: settings.gradle.kts
+-------------------------
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.name = "KotlinNativeProject"
+include(":app")
+
+
+FILE: build.gradle.kts
+----------------------
+plugins {
+    id("com.android.application") version "8.13.2" apply false
+    id("org.jetbrains.kotlin.android") version "2.2.21" apply false
+}
+
+
+FILE: gradle.properties
+-----------------------
+org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+org.gradle.parallel=true
+android.useAndroidX=true
+kotlin.code.style=official
+
+
+FILE: app/build.gradle.kts
+--------------------------
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+}
+
+android {
+    namespace = "com.example.arm64native"
+    compileSdk = 37
+
+    defaultConfig {
+        applicationId = "com.example.arm64native"
+        minSdk = 36
+        targetSdk = 37
+
+        // Package native libraries for ARM64 devices only.
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
+
+        versionCode = 1
+        versionName = "1.0"
+    }
+
+    // Keep the project limited to the requested ARM64 ABI.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a")
+            isUniversalApk = false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+        }
+    }
+}
+
+dependencies {
+    // No additional dependencies.
+}
+
+
+FILE: app/src/main/AndroidManifest.xml
+--------------------------------------
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Do not offer installation on Android versions newer than API 37. -->
+    <uses-sdk
+        android:minSdkVersion="36"
+        android:targetSdkVersion="37"
+        android:maxSdkVersion="37" />
+
+    <application
+        android:allowBackup="false"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+        </activity>
+    </application>
+</manifest>
+
+
+FILE: app/src/main/java/com/example/arm64native/MainActivity.kt
+---------------------------------------------------------------
+package com.example.arm64native
+
+import android.app.Activity
+import android.os.Build
+import android.os.Bundle
+
+/**
+ * Minimal native Kotlin entry point.
+ *
+ * Supported Android API range: 36 through 37.
+ * The Gradle configuration packages ARM64 (arm64-v8a) only.
+ */
+class MainActivity : Activity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        // Enforce the requested Android 16–17 runtime range.
+        if (Build.VERSION.SDK_INT < 36 || Build.VERSION.SDK_INT > 37) {
+            finish()
+            return
+        }
+
+        // No additional application feature or UI is implemented.
+    }
+}
+
+
+FILE: app/src/main/res/values/strings.xml
+-----------------------------------------
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Kotlin Native Project</string>
+</resources>
+
+
+IMPORTANT BUILD NOTES
+---------------------
+1. Install Android SDK Platform 37 and the Android SDK Build-Tools required by
+   the selected Android Gradle Plugin in Android Studio.
+2. Use JDK 17 for this project configuration.
+3. The ABI filter and ABI split restrict packaged native ABI output to
+   arm64-v8a. This does not itself restrict the physical device form factor.
+4. AndroidManifest.xml declares maxSdkVersion 37 as an installation limit.
+   Android tooling may warn that maxSdkVersion is generally discouraged;
+   the Kotlin runtime check also exits on API levels outside 36–37.
+5. Mobile and tablet support is left to Android's normal compatibility
+   behavior. No TV, Wear OS, or other device-specific feature is declared.
+6. This text file contains the project source/configuration files. It is not
+   itself an APK and does not include the Gradle wrapper JAR or SDK binaries.

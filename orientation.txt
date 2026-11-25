@@ -1,0 +1,203 @@
+Kotlin Backend: দুটি আলাদা Orientation Policy
+প্রথমে একটি সাধারণ Enum থাকবে, যাতে নির্বাচিত Mode পরিবর্তন হলে Backend বুঝতে পারে কোন Orientation-এ ভিডিও তৈরি করতে হবে।
+
+
+enum class RecordingOrientation {
+    PORTRAIT,
+    LANDSCAPE
+}
+
+data class VideoDimensions(
+    val width: Int,
+    val height: Int
+)
+
+fun getPortraitDimensions(
+    screenWidth: Int,
+    screenHeight: Int
+): VideoDimensions {
+    return VideoDimensions(
+        width = minOf(screenWidth, screenHeight),
+        height = maxOf(screenWidth, screenHeight)
+    )
+}
+
+fun getLandscapeDimensions(
+    screenWidth: Int,
+    screenHeight: Int
+): VideoDimensions {
+    return VideoDimensions(
+        width = maxOf(screenWidth, screenHeight),
+        height = minOf(screenWidth, screenHeight)
+    )
+}
+
+fun getOutputDimensions(
+    mode: RecordingOrientation,
+    screenWidth: Int,
+    screenHeight: Int
+): VideoDimensions {
+    return when (mode) {
+        RecordingOrientation.PORTRAIT ->
+            getPortraitDimensions(screenWidth, screenHeight)
+
+        RecordingOrientation.LANDSCAPE ->
+            getLandscapeDimensions(screenWidth, screenHeight)
+    }
+}
+
+Portrait Mode-এর Backend
+
+class PortraitCapturePolicy {
+
+    fun resolveOutputSize(
+        screenWidth: Int,
+        screenHeight: Int
+    ): VideoDimensions {
+        return getPortraitDimensions(
+            screenWidth,
+            screenHeight
+        )
+    }
+
+    fun getRotationTransform(
+        screenWidth: Int,
+        screenHeight: Int
+    ): Int {
+        return if (screenWidth > screenHeight) {
+            90 // Landscape input: rotate into Portrait output
+        } else {
+            0
+        }
+    }
+}
+
+Landscape Mode-এর Backend
+
+
+class LandscapeCapturePolicy {
+
+    fun resolveOutputSize(
+        screenWidth: Int,
+        screenHeight: Int
+    ): VideoDimensions {
+        return getLandscapeDimensions(
+            screenWidth,
+            screenHeight
+        )
+    }
+
+    fun getRotationTransform(
+        screenWidth: Int,
+        screenHeight: Int
+    ): Int {
+        return if (screenHeight > screenWidth) {
+            90 // Portrait input: rotate into Landscape output
+        } else {
+            0
+        }
+    }
+}
+
+Automatic Rotation Detection — মূল Backend
+
+
+class CaptureResizeHandler(
+    private val mode: RecordingOrientation,
+    private val virtualDisplay: VirtualDisplay,
+    private val densityDpi: Int,
+    private val renderer: RotationRenderer
+) {
+
+    fun onCaptureSizeChanged(
+        captureWidth: Int,
+        captureHeight: Int
+    ) {
+        // Update actual captured display dimensions
+        virtualDisplay.resize(
+            captureWidth,
+            captureHeight,
+            densityDpi
+        )
+
+        // Determine fixed output orientation
+        val outputSize = getOutputDimensions(
+            mode,
+            captureWidth,
+            captureHeight
+        )
+
+        // Update the rendering pipeline
+        renderer.updateInputSize(
+            captureWidth,
+            captureHeight
+        )
+
+        renderer.updateOutputSize(
+            outputSize.width,
+            outputSize.height
+        )
+
+        // Apply rotation using the actual display rotation
+        renderer.updateOrientation(mode)
+    }
+}
+
+MediaProjection Callback
+
+val projectionCallback =
+    object : MediaProjection.Callback() {
+
+        override fun onCapturedContentResize(
+            width: Int,
+            height: Int
+        ) {
+            captureHandler.onCaptureSizeChanged(
+                width,
+                height
+            )
+        }
+
+        override fun onStop() {
+            // Release recording resources safely
+            recordingEngine.stopAndRelease()
+        }
+    }
+
+mediaProjection.registerCallback(
+    projectionCallback,
+    Handler(Looper.getMainLooper())
+)
+
+Encoder Configuration
+
+fun createVideoFormat(
+    dimensions: VideoDimensions,
+    bitrate: Int
+): MediaFormat {
+
+    return MediaFormat.createVideoFormat(
+        MediaFormat.MIMETYPE_VIDEO_AVC,
+        dimensions.width,
+        dimensions.height
+    ).apply {
+        setInteger(
+            MediaFormat.KEY_BIT_RATE,
+            bitrate
+        )
+
+        setInteger(
+            MediaFormat.KEY_FRAME_RATE,
+            60
+        )
+
+        setInteger(
+            MediaFormat.KEY_I_FRAME_INTERVAL,
+            1
+        )
+    }
+}
+
+
+MediaProjection + VirtualDisplay + EGL Rotation Renderer + MediaCodec Hardware Encoder
+
