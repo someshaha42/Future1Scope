@@ -38,44 +38,29 @@ class NativeVideoEncoder(
         private set
 
     fun start() {
+        val resolved = EncodingSpec.resolveCompatibleVideoConfig(
+            tab = tab,
+            requestedWidth = width,
+            requestedHeight = height,
+            requestedBitrateBps = existingProjectVideoBitrate,
+            preferredFrameRate = preferredFrameRate
+        )
+
         val thread = HandlerThread("VideoEncoderThread").apply { start() }
         encoderThread = thread
         val handler = Handler(thread.looper)
         callbackHandler = handler
 
-        val tabsToTry = if (tab == EncodingTab.H265) {
-            listOf(EncodingTab.H265, EncodingTab.H264)
-        } else {
-            listOf(tab)
-        }
-
-        var lastFailure: Throwable? = null
-        for (candidateTab in tabsToTry) {
-            val resolved = EncodingSpec.resolveCompatibleVideoConfig(
-                tab = candidateTab,
-                requestedWidth = width,
-                requestedHeight = height,
-                requestedBitrateBps = existingProjectVideoBitrate,
-                preferredFrameRate = preferredFrameRate
-            )
-
-            val result = runCatching {
-                val mediaCodec = createCodec(candidateTab, resolved.codecName)
-                attachCallback(mediaCodec, handler)
-                configureCodecWithFallback(mediaCodec, resolved)
-                inputSurface = mediaCodec.createInputSurface()
-                codec = mediaCodec
-                activeTab = candidateTab
-                configuredWidth = resolved.width
-                configuredHeight = resolved.height
-                configuredBitrateBps = resolved.bitrateBps
-                mediaCodec.start()
-            }
-            if (result.isSuccess) return
-            lastFailure = result.exceptionOrNull()
-        }
-
-        throw lastFailure ?: IllegalStateException("Unable to configure ${tab.displayName} encoder.")
+        val mediaCodec = MediaCodec.createByCodecName(resolved.codecName)
+        attachCallback(mediaCodec, handler)
+        configureCodecWithFallback(mediaCodec, resolved)
+        inputSurface = mediaCodec.createInputSurface()
+        codec = mediaCodec
+        activeTab = resolved.tab
+        configuredWidth = resolved.width
+        configuredHeight = resolved.height
+        configuredBitrateBps = resolved.bitrateBps
+        mediaCodec.start()
     }
 
     private fun attachCallback(mediaCodec: MediaCodec, handler: Handler) {
@@ -131,14 +116,6 @@ class NativeVideoEncoder(
             },
             handler
         )
-    }
-
-    private fun createCodec(candidateTab: EncodingTab, codecName: String?): MediaCodec {
-        if (!codecName.isNullOrBlank()) {
-            val byName = runCatching { MediaCodec.createByCodecName(codecName) }.getOrNull()
-            if (byName != null) return byName
-        }
-        return MediaCodec.createEncoderByType(candidateTab.mimeType)
     }
 
     private fun configureCodecWithFallback(

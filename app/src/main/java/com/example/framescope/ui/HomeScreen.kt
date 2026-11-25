@@ -12,6 +12,7 @@ import android.view.Display
 import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -48,6 +49,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.WbSunny
 import androidx.compose.material.icons.rounded.Fullscreen
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.StayCurrentLandscape
@@ -75,12 +77,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -101,8 +102,11 @@ import com.example.framescope.data.AudioSourceMode
 import com.example.framescope.data.RecordingMode
 import com.example.framescope.encoding.EncodingForegroundService
 import com.example.framescope.encoding.EncodingTab
+import com.example.framescope.encoding.GpuApiSupport
+import com.example.framescope.encoding.GpuRenderingApi
 import com.example.framescope.encoding.RecordingOrientation
 import com.example.framescope.encoding.RecordingSessionState
+import com.example.framescope.encoding.VideoCodecCapability
 import com.example.framescope.ui.components.SectionCard
 import com.example.framescope.ui.components.SelectableOptionCard
 import com.example.framescope.ui.theme.FrameScopeColors
@@ -120,6 +124,9 @@ fun HomeScreen(
     val sessionState by viewModel.sessionState.collectAsStateWithLifecycle()
     val recordings by viewModel.recordings.collectAsStateWithLifecycle()
     val bitrateError by viewModel.bitrateError.collectAsStateWithLifecycle()
+    val gpuSupport by viewModel.gpuSupport.collectAsStateWithLifecycle()
+    val codecCapabilities by viewModel.codecCapabilities.collectAsStateWithLifecycle()
+    val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
@@ -140,6 +147,12 @@ fun HomeScreen(
     val isStopping = sessionState is RecordingSessionState.Stopping
     val controlsEnabled = !isRecording && !isStopping
 
+    LaunchedEffect(statusMessage) {
+        val msg = statusMessage ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(msg)
+        viewModel.clearStatusMessage()
+    }
+
     DisposableEffect(settings.keepScreenAwake) {
         view.keepScreenOn = settings.keepScreenAwake
         onDispose { view.keepScreenOn = false }
@@ -154,7 +167,8 @@ fun HomeScreen(
                 action = EncodingForegroundService.ACTION_START
                 putExtra(EncodingForegroundService.EXTRA_RESULT_CODE, result.resultCode)
                 putExtra(EncodingForegroundService.EXTRA_RESULT_DATA, result.data)
-                putExtra(EncodingForegroundService.EXTRA_TAB, EncodingTab.H265.name)
+                putExtra(EncodingForegroundService.EXTRA_TAB, settings.videoCodec.name)
+                putExtra(EncodingForegroundService.EXTRA_GPU_API, settings.gpuRenderingApi.name)
                 putExtra(EncodingForegroundService.EXTRA_WIDTH, targetDimensions.width)
                 putExtra(EncodingForegroundService.EXTRA_HEIGHT, targetDimensions.height)
                 putExtra(EncodingForegroundService.EXTRA_DENSITY, displayInfo.densityDpi)
@@ -339,22 +353,34 @@ fun HomeScreen(
                                 modifier = Modifier.weight(1f),
                                 verticalArrangement = Arrangement.spacedBy(14.dp)
                             ) {
+                                GpuRenderingSection(
+                                    selected = settings.gpuRenderingApi,
+                                    supportMap = gpuSupport,
+                                    enabled = controlsEnabled,
+                                    onSelect = viewModel::selectGpuRenderingApi
+                                )
+                                VideoEncoderSection(
+                                    selected = settings.videoCodec,
+                                    capabilities = codecCapabilities,
+                                    enabled = controlsEnabled,
+                                    onSelect = viewModel::selectVideoCodec
+                                )
                                 RecordingModeSection(
                                     enabled = controlsEnabled,
                                     onSelectFullScreen = {
                                         viewModel.setRecordingMode(RecordingMode.FULL_SCREEN)
                                     }
                                 )
-                                OrientationSection(
-                                    selected = settings.orientation,
-                                    enabled = controlsEnabled,
-                                    onSelect = viewModel::setOrientation
-                                )
                             }
                             Column(
                                 modifier = Modifier.weight(1f),
                                 verticalArrangement = Arrangement.spacedBy(14.dp)
                             ) {
+                                OrientationSection(
+                                    selected = settings.orientation,
+                                    enabled = controlsEnabled,
+                                    onSelect = viewModel::setOrientation
+                                )
                                 AudioSourceSection(
                                     selected = settings.audioSource,
                                     enabled = controlsEnabled,
@@ -371,6 +397,18 @@ fun HomeScreen(
                             }
                         }
                     } else {
+                        GpuRenderingSection(
+                            selected = settings.gpuRenderingApi,
+                            supportMap = gpuSupport,
+                            enabled = controlsEnabled,
+                            onSelect = viewModel::selectGpuRenderingApi
+                        )
+                        VideoEncoderSection(
+                            selected = settings.videoCodec,
+                            capabilities = codecCapabilities,
+                            enabled = controlsEnabled,
+                            onSelect = viewModel::selectVideoCodec
+                        )
                         RecordingModeSection(
                             enabled = controlsEnabled,
                             onSelectFullScreen = {
@@ -401,6 +439,268 @@ fun HomeScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun GpuRenderingSection(
+    selected: GpuRenderingApi,
+    supportMap: Map<GpuRenderingApi, GpuApiSupport>,
+    enabled: Boolean,
+    onSelect: (GpuRenderingApi) -> Unit
+) {
+    SectionCard(
+        title = stringResource(R.string.section_gpu_rendering_api),
+        trailing = {
+            Text(
+                text = selected.displayName,
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = FrameScopeColors.SelectionBlue
+            )
+        }
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            GpuRenderingApi.entries.forEach { api ->
+                val support = supportMap[api]
+                val isSupported = support?.isSupported == true
+                val isSelected = selected == api && isSupported
+                GpuApiCard(
+                    api = api,
+                    support = support,
+                    selected = isSelected,
+                    enabled = enabled && isSupported,
+                    onClick = { onSelect(api) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun GpuApiCard(
+    api: GpuRenderingApi,
+    support: GpuApiSupport?,
+    selected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val isSupported = support?.isSupported == true
+    val borderColor by animateColorAsState(
+        targetValue = if (selected) FrameScopeColors.SelectionBlue else FrameScopeColors.BorderSubtle,
+        label = "gpu_border"
+    )
+    val containerColor by animateColorAsState(
+        targetValue = if (selected) FrameScopeColors.SelectionBlueTint else FrameScopeColors.InnerSurface,
+        label = "gpu_bg"
+    )
+    val iconBg by animateColorAsState(
+        targetValue = if (selected) FrameScopeColors.SelectionBlueIconBg else FrameScopeColors.ElevatedSurface,
+        label = "gpu_icon_bg"
+    )
+
+    val shape = RoundedCornerShape(14.dp)
+
+    Surface(
+        modifier = modifier
+            .minimumInteractiveComponentSize()
+            .alpha(if (isSupported) 1f else 0.55f)
+            .clip(shape)
+            .clickable(enabled = enabled, onClick = onClick)
+            .testTag("gpu_api_card_${api.name.lowercase()}"),
+        shape = shape,
+        color = containerColor,
+        border = BorderStroke(if (selected) 1.5.dp else 1.dp, borderColor)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(iconBg),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Memory,
+                        contentDescription = api.displayName,
+                        tint = if (selected) FrameScopeColors.TextPrimary else FrameScopeColors.TextSecondary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+
+                if (selected) {
+                    ActiveCheckBadge()
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Text(
+                text = api.displayName,
+                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                color = FrameScopeColors.TextPrimary
+            )
+
+            Spacer(modifier = Modifier.height(2.dp))
+
+            Text(
+                text = "${api.apiLabel} ${api.versionLabel} • GPU",
+                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 12.sp),
+                color = FrameScopeColors.TextSecondary
+            )
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            Text(
+                text = support?.statusText ?: "Checking…",
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = when {
+                    support == null -> FrameScopeColors.TextMuted
+                    isSupported -> FrameScopeColors.ReadyGreen
+                    else -> FrameScopeColors.SpecRedText
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun VideoEncoderSection(
+    selected: EncodingTab,
+    capabilities: Map<EncodingTab, VideoCodecCapability>,
+    enabled: Boolean,
+    onSelect: (EncodingTab) -> Unit
+) {
+    SectionCard(
+        title = stringResource(R.string.section_video_encoder),
+        trailing = {
+            Text(
+                text = selected.shortName,
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = FrameScopeColors.SelectionBlue
+            )
+        }
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            EncodingTab.entries.forEach { tab ->
+                val cap = capabilities[tab]
+                val isSupported = cap?.isSupported == true
+                val isSelected = selected == tab && isSupported
+                VideoEncoderOptionCard(
+                    tab = tab,
+                    capability = cap,
+                    selected = isSelected,
+                    enabled = enabled && isSupported,
+                    onClick = { onSelect(tab) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun VideoEncoderOptionCard(
+    tab: EncodingTab,
+    capability: VideoCodecCapability?,
+    selected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    val isSupported = capability?.isSupported == true
+    val borderColor by animateColorAsState(
+        targetValue = if (selected) FrameScopeColors.SelectionBlue else FrameScopeColors.BorderSubtle,
+        label = "codec_border"
+    )
+    val containerColor by animateColorAsState(
+        targetValue = if (selected) FrameScopeColors.SelectionBlueTint else FrameScopeColors.InnerSurface,
+        label = "codec_bg"
+    )
+    val shape = RoundedCornerShape(14.dp)
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .minimumInteractiveComponentSize()
+            .alpha(if (isSupported) 1f else 0.55f)
+            .clip(shape)
+            .clickable(enabled = enabled, onClick = onClick)
+            .testTag("encoder_card_${tab.name.lowercase()}"),
+        shape = shape,
+        color = containerColor,
+        border = BorderStroke(if (selected) 1.5.dp else 1.dp, borderColor)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                Text(
+                    text = tab.displayName,
+                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                    color = FrameScopeColors.TextPrimary
+                )
+                Text(
+                    text = "${tab.defaultBitrateMbps} Mbps",
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Medium
+                    ),
+                    color = FrameScopeColors.SelectionBlue
+                )
+                Text(
+                    text = capability?.statusText ?: "Checking encoder…",
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = when {
+                        capability == null -> FrameScopeColors.TextMuted
+                        isSupported -> FrameScopeColors.ReadyGreen
+                        else -> FrameScopeColors.SpecRedText
+                    }
+                )
+            }
+
+            if (selected) {
+                ActiveCheckBadge()
+            }
+        }
+    }
+}
+
+@Composable
+private fun ActiveCheckBadge() {
+    Box(
+        modifier = Modifier
+            .size(24.dp)
+            .clip(CircleShape)
+            .background(FrameScopeColors.SelectionBlue),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = "✓",
+            style = MaterialTheme.typography.labelMedium.copy(
+                fontWeight = FontWeight.Bold,
+                fontSize = 13.sp
+            ),
+            color = Color.White
+        )
     }
 }
 

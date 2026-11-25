@@ -28,10 +28,12 @@
     <string name="border_show_desc">Animated red capture frame</string>
     <string name="border_hide">Hide</string>
     <string name="border_hide_desc">Clean borderless capture</string>
+    <string name="section_gpu_rendering_api">GPU Rendering API</string>
+    <string name="section_video_encoder">Video Encoder</string>
     <string name="encoding_settings_title">Encoding Settings</string>
     <string name="recorded_videos_title">Recorded Videos</string>
     <string name="notification_channel_name">Screen Recording</string>
     <string name="notification_title">FrameScope Recording</string>
-    <string name="notification_text">H.265 native encoding is active</string>
+    <string name="notification_text">Native GPU screen encoding is active</string>
     <string name="notification_action_stop">Stop</string>
 </resources>

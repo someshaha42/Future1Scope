@@ -31,6 +31,7 @@ fun FrameScopeNavHost(application: FrameScopeApplication) {
     val navController = rememberNavController()
     val homeViewModel: HomeViewModel = viewModel(
         factory = HomeViewModel.Factory(
+            appContext = application.applicationContext,
             settingsRepository = application.settingsRepository,
             recordingsRepository = application.recordingsRepository
         )

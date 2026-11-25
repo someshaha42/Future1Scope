@@ -40,6 +40,7 @@ class EncodingForegroundService : Service() {
         const val EXTRA_RESULT_CODE = "projection_result_code"
         const val EXTRA_RESULT_DATA = "projection_result_data"
         const val EXTRA_TAB = "encoding_tab"
+        const val EXTRA_GPU_API = "gpu_rendering_api"
         const val EXTRA_WIDTH = "width"
         const val EXTRA_HEIGHT = "height"
         const val EXTRA_DENSITY = "density_dpi"
@@ -114,11 +115,26 @@ class EncodingForegroundService : Service() {
                 ?: error("MediaProjection could not be initialized.")
             projection = mediaProjection
 
-            val tab = when (intent.getStringExtra(EXTRA_TAB)) {
-                EncodingTab.H265.name -> EncodingTab.H265
-                EncodingTab.H264.name -> EncodingTab.H264
-                else -> EncodingTab.H265
+            val codecMap = EncodingSpec.detectAllVideoCodecs()
+            val requestedTab = intent.getStringExtra(EXTRA_TAB)?.let { raw ->
+                runCatching { EncodingTab.valueOf(raw) }.getOrNull()
             }
+            val tab = if (requestedTab != null && codecMap[requestedTab]?.isSupported == true) {
+                requestedTab
+            } else {
+                EncodingSpec.selectDefaultVideoCodec(codecMap)
+            }
+
+            val gpuSupportMap = GpuCapabilitiesDetector.detectAll(applicationContext)
+            val requestedGpu = intent.getStringExtra(EXTRA_GPU_API)?.let { raw ->
+                runCatching { GpuRenderingApi.valueOf(raw) }.getOrNull()
+            }
+            val gpuApi = if (requestedGpu != null && gpuSupportMap[requestedGpu]?.isSupported == true) {
+                requestedGpu
+            } else {
+                GpuCapabilitiesDetector.selectDefaultApi(gpuSupportMap)
+            }
+
             val orientation = intent.getStringExtra(EXTRA_ORIENTATION)?.let { raw ->
                 runCatching { RecordingOrientation.valueOf(raw) }.getOrNull()
             } ?: RecordingOrientation.PORTRAIT
@@ -211,13 +227,19 @@ class EncodingForegroundService : Service() {
                 height = targetHeight,
                 densityDpi = density,
                 encoderSurface = vEncoder.inputSurface,
+                gpuApi = gpuApi,
                 orientation = orientation,
-                renderer = rotationCoordinator
+                renderer = rotationCoordinator,
+                onFatalError = { err ->
+                    stopRecording(fatalError = err.message ?: "GPU rendering pipeline error")
+                }
             )
 
             val summary = buildActiveSummary(
                 width = targetWidth,
                 height = targetHeight,
+                tab = vEncoder.activeTab,
+                gpuApi = gpuApi,
                 orientation = orientation,
                 audioSource = audioSource,
                 fallbackSummary = intent.getStringExtra(EXTRA_SUMMARY)
@@ -233,6 +255,7 @@ class EncodingForegroundService : Service() {
                 )
             )
 
+            val notificationDesc = "${vEncoder.activeTab.shortName} • ${gpuApi.displayName}"
             timerJob?.cancel()
             timerJob = serviceScope.launch {
                 var elapsed = 0L
@@ -250,7 +273,10 @@ class EncodingForegroundService : Service() {
                         )
                     )
                     runCatching {
-                        nm.notify(NOTIFICATION_ID, createNotification(formatElapsed(elapsed)))
+                        nm.notify(
+                            NOTIFICATION_ID,
+                            createNotification(formatElapsed(elapsed), notificationDesc)
+                        )
                     }
                 }
             }
@@ -275,6 +301,8 @@ class EncodingForegroundService : Service() {
     private fun buildActiveSummary(
         width: Int,
         height: Int,
+        tab: EncodingTab,
+        gpuApi: GpuRenderingApi,
         orientation: RecordingOrientation,
         audioSource: AudioSourceMode,
         fallbackSummary: String?
@@ -288,7 +316,7 @@ class EncodingForegroundService : Service() {
             AudioSourceMode.MICROPHONE -> "Microphone"
         }
         return if (width > 0 && height > 0) {
-            "Full Screen (${width}×${height}) • $orientationLabel • $audioLabel"
+            "${tab.shortName} (${width}×${height}) • ${gpuApi.displayName} • $orientationLabel • $audioLabel"
         } else {
             fallbackSummary ?: "${width}×${height}"
         }
@@ -400,7 +428,10 @@ class EncodingForegroundService : Service() {
         manager.createNotificationChannel(channel)
     }
 
-    private fun createNotification(elapsedFormatted: String): Notification {
+    private fun createNotification(
+        elapsedFormatted: String,
+        pipelineLabel: String = getString(R.string.notification_text)
+    ): Notification {
         val openIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
@@ -423,7 +454,7 @@ class EncodingForegroundService : Service() {
 
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.notification_title))
-            .setContentText("${getString(R.string.notification_text)} • $elapsedFormatted")
+            .setContentText("$pipelineLabel • $elapsedFormatted")
             .setSmallIcon(android.R.drawable.presence_video_online)
             .setContentIntent(openPending)
             .setOnlyAlertOnce(true)

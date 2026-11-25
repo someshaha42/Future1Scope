@@ -1,5 +1,7 @@
 package com.example.framescope.data
 
+import com.example.framescope.encoding.EncodingTab
+import com.example.framescope.encoding.GpuRenderingApi
 import com.example.framescope.encoding.RecordingOrientation
 
 enum class RecordingMode {
@@ -26,14 +28,16 @@ data class AppSettings(
     val recordingMode: RecordingMode = RecordingMode.FULL_SCREEN,
     val orientation: RecordingOrientation = RecordingOrientation.PORTRAIT,
     val audioSource: AudioSourceMode = AudioSourceMode.INTERNAL_AUDIO,
-    val bitrateMbps: Int = 150,
+    val gpuRenderingApi: GpuRenderingApi = GpuRenderingApi.VULKAN_1_3,
+    val videoCodec: EncodingTab = EncodingTab.AV1,
+    val bitrateMbps: Int = EncodingTab.AV1.defaultBitrateMbps,
     val customBitrateInput: String = "",
-    val showRegionBorder: Boolean = true,
+    val showRegionBorder: Boolean = false,
     val regionBounds: RegionBounds = RegionBounds(),
     val keepScreenAwake: Boolean = false
 ) {
     companion object {
-        val PRESET_BITRATES_MBPS = listOf(100, 150, 200, 250, 300, 350)
+        val PRESET_BITRATES_MBPS = listOf(25, 30, 45, 60, 100, 150)
         const val MIN_CUSTOM_BITRATE_MBPS = 1
         const val MAX_CUSTOM_BITRATE_MBPS = 500
     }

@@ -1,5 +1,6 @@
 package com.example.framescope.ui
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -8,14 +9,18 @@ import com.example.framescope.data.AudioSourceMode
 import com.example.framescope.data.RecordedVideo
 import com.example.framescope.data.RecordingMode
 import com.example.framescope.data.RecordingsRepository
-import com.example.framescope.data.RegionBounds
 import com.example.framescope.data.SettingsRepository
 import com.example.framescope.encoding.EncoderValidationReport
 import com.example.framescope.encoding.EncodingSpec
 import com.example.framescope.encoding.EncodingTab
+import com.example.framescope.encoding.GpuApiSupport
+import com.example.framescope.encoding.GpuBackendInitializer
+import com.example.framescope.encoding.GpuCapabilitiesDetector
+import com.example.framescope.encoding.GpuRenderingApi
 import com.example.framescope.encoding.RecordingOrientation
 import com.example.framescope.encoding.RecordingSessionManager
 import com.example.framescope.encoding.RecordingSessionState
+import com.example.framescope.encoding.VideoCodecCapability
 import com.example.framescope.encoding.VideoDimensions
 import com.example.framescope.encoding.getCaptureDimensions
 import kotlinx.coroutines.Dispatchers
@@ -23,11 +28,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class HomeViewModel(
+    private val appContext: Context,
     private val settingsRepository: SettingsRepository,
     private val recordingsRepository: RecordingsRepository
 ) : ViewModel() {
@@ -46,8 +53,17 @@ class HomeViewModel(
     private val _bitrateError = MutableStateFlow<String?>(null)
     val bitrateError: StateFlow<String?> = _bitrateError.asStateFlow()
 
+    private val _gpuSupport = MutableStateFlow<Map<GpuRenderingApi, GpuApiSupport>>(emptyMap())
+    val gpuSupport: StateFlow<Map<GpuRenderingApi, GpuApiSupport>> = _gpuSupport.asStateFlow()
+
+    private val _codecCapabilities = MutableStateFlow<Map<EncodingTab, VideoCodecCapability>>(emptyMap())
+    val codecCapabilities: StateFlow<Map<EncodingTab, VideoCodecCapability>> = _codecCapabilities.asStateFlow()
+
     private val _encoderReport = MutableStateFlow<EncoderValidationReport?>(null)
     val encoderReport: StateFlow<EncoderValidationReport?> = _encoderReport.asStateFlow()
+
+    private val _statusMessage = MutableStateFlow<String?>(null)
+    val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
 
     init {
         refreshRecordings()
@@ -59,9 +75,41 @@ class HomeViewModel(
             }
         }
         viewModelScope.launch {
+            val (detectedGpu, detectedCodecs) = withContext(Dispatchers.Default) {
+                val gpuMap = GpuCapabilitiesDetector.detectAll(appContext)
+                val codecMap = EncodingSpec.detectAllVideoCodecs()
+                gpuMap to codecMap
+            }
+            _gpuSupport.value = detectedGpu
+            _codecCapabilities.value = detectedCodecs
+
+            val current = settingsRepository.settings.first()
+
+            val activeGpu = if (detectedGpu[current.gpuRenderingApi]?.isSupported == true) {
+                current.gpuRenderingApi
+            } else {
+                val fallbackGpu = GpuCapabilitiesDetector.selectDefaultApi(detectedGpu)
+                if (fallbackGpu != current.gpuRenderingApi) {
+                    settingsRepository.setGpuRenderingApi(fallbackGpu)
+                }
+                fallbackGpu
+            }
+            withContext(Dispatchers.Default) {
+                GpuBackendInitializer.verifyBackendInitialization(appContext, activeGpu)
+            }
+
+            val activeCodec = if (detectedCodecs[current.videoCodec]?.isSupported == true) {
+                current.videoCodec
+            } else {
+                val fallbackCodec = EncodingSpec.selectDefaultVideoCodec(detectedCodecs)
+                if (fallbackCodec != current.videoCodec) {
+                    settingsRepository.setVideoCodec(fallbackCodec, applyDefaultBitrate = true)
+                }
+                fallbackCodec
+            }
+
             _encoderReport.value = withContext(Dispatchers.Default) {
-                val hevc = EncodingSpec.inspectHardwareEncoder(EncodingTab.H265)
-                if (hevc.isCompatible) hevc else EncodingSpec.inspectHardwareEncoder(EncodingTab.H264)
+                EncodingSpec.inspectHardwareEncoder(activeCodec)
             }
         }
     }
@@ -88,6 +136,43 @@ class HomeViewModel(
         viewModelScope.launch {
             settingsRepository.setAudioSource(source)
         }
+    }
+
+    fun selectGpuRenderingApi(api: GpuRenderingApi) {
+        val support = _gpuSupport.value[api]
+        if (support == null || !support.isSupported) {
+            _statusMessage.value = "${api.displayName} is unsupported on this device."
+            return
+        }
+        viewModelScope.launch {
+            val initialized = withContext(Dispatchers.Default) {
+                GpuBackendInitializer.verifyBackendInitialization(appContext, api)
+            }
+            if (initialized) {
+                settingsRepository.setGpuRenderingApi(api)
+            } else {
+                _statusMessage.value = "Failed to initialize ${api.displayName} backend."
+            }
+        }
+    }
+
+    fun selectVideoCodec(tab: EncodingTab) {
+        val capability = _codecCapabilities.value[tab]
+        if (capability == null || !capability.isSupported) {
+            _statusMessage.value = "${tab.displayName} is unsupported on this device."
+            return
+        }
+        _bitrateError.value = null
+        viewModelScope.launch {
+            settingsRepository.setVideoCodec(tab, applyDefaultBitrate = true)
+            _encoderReport.value = withContext(Dispatchers.Default) {
+                EncodingSpec.inspectHardwareEncoder(tab)
+            }
+        }
+    }
+
+    fun clearStatusMessage() {
+        _statusMessage.value = null
     }
 
     fun selectPresetBitrate(mbps: Int) {
@@ -122,18 +207,6 @@ class HomeViewModel(
             viewModelScope.launch {
                 settingsRepository.setCustomBitrate(digitsOnly, parsed)
             }
-        }
-    }
-
-    fun setShowRegionBorder(show: Boolean) {
-        viewModelScope.launch {
-            settingsRepository.setShowRegionBorder(show)
-        }
-    }
-
-    fun setRegionBounds(bounds: RegionBounds) {
-        viewModelScope.launch {
-            settingsRepository.setRegionBounds(bounds)
         }
     }
 
@@ -181,10 +254,6 @@ class HomeViewModel(
         currentSettings: AppSettings,
         dimensions: VideoDimensions
     ): String {
-        val modeLabel = when (currentSettings.recordingMode) {
-            RecordingMode.FULL_SCREEN -> "Full Screen"
-            RecordingMode.REGION_AREA -> "Region"
-        }
         val orientationLabel = when (currentSettings.orientation) {
             RecordingOrientation.PORTRAIT -> "Portrait"
             RecordingOrientation.LANDSCAPE -> "Landscape"
@@ -193,16 +262,17 @@ class HomeViewModel(
             AudioSourceMode.INTERNAL_AUDIO -> "Internal Audio"
             AudioSourceMode.MICROPHONE -> "Microphone"
         }
-        return "$modeLabel (${dimensions.width}×${dimensions.height}) • $orientationLabel • $audioLabel"
+        return "${currentSettings.videoCodec.shortName} (${dimensions.width}×${dimensions.height}) • ${currentSettings.gpuRenderingApi.displayName} • $orientationLabel • $audioLabel"
     }
 
     class Factory(
+        private val appContext: Context,
         private val settingsRepository: SettingsRepository,
         private val recordingsRepository: RecordingsRepository
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
-            return HomeViewModel(settingsRepository, recordingsRepository) as T
+            return HomeViewModel(appContext.applicationContext, settingsRepository, recordingsRepository) as T
         }
     }
 }

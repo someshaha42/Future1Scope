@@ -32,6 +32,7 @@ import androidx.compose.material.icons.rounded.GridOn
 import androidx.compose.material.icons.rounded.HdrOn
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.ListAlt
+import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Tune
@@ -55,6 +56,10 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.framescope.R
 import com.example.framescope.encoding.EncoderValidationReport
+import com.example.framescope.encoding.EncodingTab
+import com.example.framescope.encoding.GpuApiSupport
+import com.example.framescope.encoding.GpuRenderingApi
+import com.example.framescope.encoding.VideoCodecCapability
 import com.example.framescope.ui.theme.FrameScopeColors
 
 private data class FixedEncodingSpecItem(
@@ -64,7 +69,7 @@ private data class FixedEncodingSpecItem(
     val icon: ImageVector
 )
 
-private val H265_SPEC_ITEMS = listOf(
+private val COMMON_SPEC_ITEMS = listOf(
     FixedEncodingSpecItem(
         title = "Bitrate Mode",
         value = "VBR (Variable Bitrate)",
@@ -93,7 +98,7 @@ private val H265_SPEC_ITEMS = listOf(
     ),
     FixedEncodingSpecItem(
         title = "Rendering Pipeline",
-        value = "Direct Surface + Async Callback + Dedicated Encoder Thread + Buffer Reuse",
+        value = "GPU Surface + Async Callback + Dedicated Encoder Thread",
         icon = Icons.Rounded.Bolt
     ),
     FixedEncodingSpecItem(
@@ -123,6 +128,9 @@ fun EncodingSettingsScreen(
     viewModel: HomeViewModel,
     onBack: () -> Unit
 ) {
+    val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val gpuSupport by viewModel.gpuSupport.collectAsStateWithLifecycle()
+    val codecCapabilities by viewModel.codecCapabilities.collectAsStateWithLifecycle()
     val encoderReport by viewModel.encoderReport.collectAsStateWithLifecycle()
 
     Scaffold(
@@ -171,9 +179,18 @@ fun EncodingSettingsScreen(
                     .widthIn(max = 700.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                ActiveCodecHeaderCard()
+                ActiveGpuHeaderCard(
+                    api = settings.gpuRenderingApi,
+                    support = gpuSupport[settings.gpuRenderingApi]
+                )
 
-                H265_SPEC_ITEMS.forEach { spec ->
+                ActiveCodecHeaderCard(
+                    codec = settings.videoCodec,
+                    bitrateMbps = settings.bitrateMbps,
+                    capability = codecCapabilities[settings.videoCodec]
+                )
+
+                COMMON_SPEC_ITEMS.forEach { spec ->
                     EncodingSpecCard(item = spec)
                 }
 
@@ -188,11 +205,88 @@ fun EncodingSettingsScreen(
 }
 
 @Composable
-private fun ActiveCodecHeaderCard() {
+private fun ActiveGpuHeaderCard(
+    api: GpuRenderingApi,
+    support: GpuApiSupport?
+) {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .testTag("codec_header_h265"),
+            .testTag("settings_gpu_header"),
+        shape = RoundedCornerShape(18.dp),
+        color = FrameScopeColors.CardSurface,
+        border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(30.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(FrameScopeColors.ElevatedSurface),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Memory,
+                        contentDescription = null,
+                        tint = FrameScopeColors.TextSecondary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+                Text(
+                    text = "GPU Rendering API",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = FrameScopeColors.TextPrimary
+                )
+            }
+
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                color = FrameScopeColors.SelectionBlueTint,
+                border = BorderStroke(1.dp, FrameScopeColors.SelectionBlue)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "${api.displayName} (${support?.hardwareDetail ?: "GPU"})",
+                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                        color = FrameScopeColors.TextPrimary
+                    )
+                    Text(
+                        text = support?.statusText ?: "✓ Supported",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = FrameScopeColors.ReadyGreen
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ActiveCodecHeaderCard(
+    codec: EncodingTab,
+    bitrateMbps: Int,
+    capability: VideoCodecCapability?
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("codec_header_${codec.name.lowercase()}"),
         shape = RoundedCornerShape(18.dp),
         color = FrameScopeColors.CardSurface,
         border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle)
@@ -222,7 +316,7 @@ private fun ActiveCodecHeaderCard() {
                     )
                 }
                 Text(
-                    text = "H.265 (HEVC)",
+                    text = codec.displayName,
                     style = MaterialTheme.typography.titleMedium,
                     color = FrameScopeColors.TextPrimary
                 )
@@ -239,18 +333,28 @@ private fun ActiveCodecHeaderCard() {
                         .fillMaxWidth()
                         .padding(horizontal = 14.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .clip(CircleShape)
-                            .background(FrameScopeColors.RecordRed)
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(FrameScopeColors.RecordRed)
+                        )
+                        Text(
+                            text = "${codec.shortName} • $bitrateMbps Mbps",
+                            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                            color = FrameScopeColors.TextPrimary
+                        )
+                    }
                     Text(
-                        text = "H.265",
-                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
-                        color = FrameScopeColors.TextPrimary
+                        text = capability?.statusText ?: "",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = FrameScopeColors.ReadyGreen
                     )
                 }
             }
@@ -365,7 +469,11 @@ private fun HardwareValidationCard(report: EncoderValidationReport) {
                     modifier = Modifier.size(18.dp)
                 )
                 Text(
-                    text = "Device Hardware Encoder",
+                    text = if (report.isHardwareAccelerated) {
+                        "Device Hardware Encoder"
+                    } else {
+                        "Device Software Encoder"
+                    },
                     style = MaterialTheme.typography.titleMedium,
                     color = FrameScopeColors.TextPrimary
                 )

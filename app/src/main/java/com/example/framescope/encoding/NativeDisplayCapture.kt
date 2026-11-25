@@ -9,6 +9,7 @@ class NativeDisplayCapture(
     private val projection: MediaProjection
 ) {
     private var virtualDisplay: VirtualDisplay? = null
+    private var gpuPipeline: GpuSurfacePipeline? = null
     var resizeHandler: CaptureResizeHandler? = null
         private set
 
@@ -17,20 +18,37 @@ class NativeDisplayCapture(
         height: Int,
         densityDpi: Int,
         encoderSurface: Surface,
+        gpuApi: GpuRenderingApi,
         orientation: RecordingOrientation,
-        renderer: RotationRenderer
+        renderer: RotationRenderer,
+        onFatalError: (Throwable) -> Unit
     ) {
         check(virtualDisplay == null)
+
+        val pipeline = createGpuSurfacePipeline(
+            api = gpuApi,
+            width = width,
+            height = height,
+            encoderSurface = encoderSurface,
+            onFatalError = onFatalError
+        )
+        pipeline.start()
+        gpuPipeline = pipeline
+
         val created = projection.createVirtualDisplay(
             "FrameScopeDisplayCapture",
             width,
             height,
             densityDpi,
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            encoderSurface,
+            pipeline.inputSurface,
             null,
             null
-        ) ?: error("VirtualDisplay creation failed.")
+        ) ?: run {
+            runCatching { pipeline.stop() }
+            gpuPipeline = null
+            error("VirtualDisplay creation failed.")
+        }
 
         virtualDisplay = created
         resizeHandler = CaptureResizeHandler(
@@ -47,5 +65,7 @@ class NativeDisplayCapture(
         resizeHandler = null
         runCatching { virtualDisplay?.release() }
         virtualDisplay = null
+        runCatching { gpuPipeline?.stop() }
+        gpuPipeline = null
     }
 }

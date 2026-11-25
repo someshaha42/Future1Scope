@@ -185,7 +185,7 @@ fun RecordedVideosScreen(
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "Tap Record on the home screen to capture an H.265 MP4 recording.",
+                        text = "Tap Record on the home screen to capture an MP4 recording.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = FrameScopeColors.TextSecondary
                     )
