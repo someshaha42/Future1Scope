@@ -43,13 +43,11 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.WbSunny
 import androidx.compose.material.icons.rounded.Fullscreen
 import androidx.compose.material.icons.rounded.GraphicEq
-import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.StayCurrentLandscape
@@ -64,8 +62,6 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -90,20 +86,16 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.framescope.R
-import com.example.framescope.data.AppSettings
 import com.example.framescope.data.AudioSourceMode
 import com.example.framescope.data.RecordingMode
 import com.example.framescope.encoding.EncodingForegroundService
 import com.example.framescope.encoding.EncodingTab
-import com.example.framescope.encoding.GpuApiSupport
-import com.example.framescope.encoding.GpuRenderingApi
 import com.example.framescope.encoding.RecordingOrientation
 import com.example.framescope.encoding.RecordingSessionState
 import com.example.framescope.encoding.VideoCodecCapability
@@ -123,8 +115,6 @@ fun HomeScreen(
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val sessionState by viewModel.sessionState.collectAsStateWithLifecycle()
     val recordings by viewModel.recordings.collectAsStateWithLifecycle()
-    val bitrateError by viewModel.bitrateError.collectAsStateWithLifecycle()
-    val gpuSupport by viewModel.gpuSupport.collectAsStateWithLifecycle()
     val codecCapabilities by viewModel.codecCapabilities.collectAsStateWithLifecycle()
     val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
 
@@ -168,7 +158,6 @@ fun HomeScreen(
                 putExtra(EncodingForegroundService.EXTRA_RESULT_CODE, result.resultCode)
                 putExtra(EncodingForegroundService.EXTRA_RESULT_DATA, result.data)
                 putExtra(EncodingForegroundService.EXTRA_TAB, settings.videoCodec.name)
-                putExtra(EncodingForegroundService.EXTRA_GPU_API, settings.gpuRenderingApi.name)
                 putExtra(EncodingForegroundService.EXTRA_WIDTH, targetDimensions.width)
                 putExtra(EncodingForegroundService.EXTRA_HEIGHT, targetDimensions.height)
                 putExtra(EncodingForegroundService.EXTRA_DENSITY, displayInfo.densityDpi)
@@ -353,12 +342,6 @@ fun HomeScreen(
                                 modifier = Modifier.weight(1f),
                                 verticalArrangement = Arrangement.spacedBy(14.dp)
                             ) {
-                                GpuRenderingSection(
-                                    selected = settings.gpuRenderingApi,
-                                    supportMap = gpuSupport,
-                                    enabled = controlsEnabled,
-                                    onSelect = viewModel::selectGpuRenderingApi
-                                )
                                 VideoEncoderSection(
                                     selected = settings.videoCodec,
                                     capabilities = codecCapabilities,
@@ -386,23 +369,9 @@ fun HomeScreen(
                                     enabled = controlsEnabled,
                                     onSelect = viewModel::setAudioSource
                                 )
-                                VideoBitrateSection(
-                                    selectedMbps = settings.bitrateMbps,
-                                    customInput = settings.customBitrateInput,
-                                    bitrateError = bitrateError,
-                                    enabled = controlsEnabled,
-                                    onSelectPreset = viewModel::selectPresetBitrate,
-                                    onCustomChanged = viewModel::updateCustomBitrate
-                                )
                             }
                         }
                     } else {
-                        GpuRenderingSection(
-                            selected = settings.gpuRenderingApi,
-                            supportMap = gpuSupport,
-                            enabled = controlsEnabled,
-                            onSelect = viewModel::selectGpuRenderingApi
-                        )
                         VideoEncoderSection(
                             selected = settings.videoCodec,
                             capabilities = codecCapabilities,
@@ -425,154 +394,11 @@ fun HomeScreen(
                             enabled = controlsEnabled,
                             onSelect = viewModel::setAudioSource
                         )
-                        VideoBitrateSection(
-                            selectedMbps = settings.bitrateMbps,
-                            customInput = settings.customBitrateInput,
-                            bitrateError = bitrateError,
-                            enabled = controlsEnabled,
-                            onSelectPreset = viewModel::selectPresetBitrate,
-                            onCustomChanged = viewModel::updateCustomBitrate
-                        )
                     }
 
                     Spacer(modifier = Modifier.height(12.dp))
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun GpuRenderingSection(
-    selected: GpuRenderingApi,
-    supportMap: Map<GpuRenderingApi, GpuApiSupport>,
-    enabled: Boolean,
-    onSelect: (GpuRenderingApi) -> Unit
-) {
-    SectionCard(
-        title = stringResource(R.string.section_gpu_rendering_api),
-        trailing = {
-            Text(
-                text = selected.displayName,
-                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                color = FrameScopeColors.SelectionBlue
-            )
-        }
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            GpuRenderingApi.entries.forEach { api ->
-                val support = supportMap[api]
-                val isSupported = support?.isSupported == true
-                val isSelected = selected == api && isSupported
-                GpuApiCard(
-                    api = api,
-                    support = support,
-                    selected = isSelected,
-                    enabled = enabled && isSupported,
-                    onClick = { onSelect(api) },
-                    modifier = Modifier.weight(1f)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun GpuApiCard(
-    api: GpuRenderingApi,
-    support: GpuApiSupport?,
-    selected: Boolean,
-    enabled: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val isSupported = support?.isSupported == true
-    val borderColor by animateColorAsState(
-        targetValue = if (selected) FrameScopeColors.SelectionBlue else FrameScopeColors.BorderSubtle,
-        label = "gpu_border"
-    )
-    val containerColor by animateColorAsState(
-        targetValue = if (selected) FrameScopeColors.SelectionBlueTint else FrameScopeColors.InnerSurface,
-        label = "gpu_bg"
-    )
-    val iconBg by animateColorAsState(
-        targetValue = if (selected) FrameScopeColors.SelectionBlueIconBg else FrameScopeColors.ElevatedSurface,
-        label = "gpu_icon_bg"
-    )
-
-    val shape = RoundedCornerShape(14.dp)
-
-    Surface(
-        modifier = modifier
-            .minimumInteractiveComponentSize()
-            .alpha(if (isSupported) 1f else 0.55f)
-            .clip(shape)
-            .clickable(enabled = enabled, onClick = onClick)
-            .testTag("gpu_api_card_${api.name.lowercase()}"),
-        shape = shape,
-        color = containerColor,
-        border = BorderStroke(if (selected) 1.5.dp else 1.dp, borderColor)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(34.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(iconBg),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Memory,
-                        contentDescription = api.displayName,
-                        tint = if (selected) FrameScopeColors.TextPrimary else FrameScopeColors.TextSecondary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-
-                if (selected) {
-                    ActiveCheckBadge()
-                }
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            Text(
-                text = api.displayName,
-                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
-                color = FrameScopeColors.TextPrimary
-            )
-
-            Spacer(modifier = Modifier.height(2.dp))
-
-            Text(
-                text = "${api.apiLabel} ${api.versionLabel} • GPU",
-                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 12.sp),
-                color = FrameScopeColors.TextSecondary
-            )
-
-            Spacer(modifier = Modifier.height(6.dp))
-
-            Text(
-                text = support?.statusText ?: "Checking…",
-                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                color = when {
-                    support == null -> FrameScopeColors.TextMuted
-                    isSupported -> FrameScopeColors.ReadyGreen
-                    else -> FrameScopeColors.SpecRedText
-                }
-            )
         }
     }
 }
@@ -1052,119 +878,6 @@ private fun AudioSourceSection(
                 testTag = "audio_mic_card",
                 onClick = { onSelect(AudioSourceMode.MICROPHONE) },
                 modifier = Modifier.weight(1f)
-            )
-        }
-    }
-}
-
-@Composable
-private fun VideoBitrateSection(
-    selectedMbps: Int,
-    customInput: String,
-    bitrateError: String?,
-    enabled: Boolean,
-    onSelectPreset: (Int) -> Unit,
-    onCustomChanged: (String) -> Unit
-) {
-    SectionCard(
-        title = stringResource(R.string.section_video_bitrate),
-        trailing = {
-            Text(
-                text = "${selectedMbps} Mbps",
-                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                color = FrameScopeColors.SelectionBlue
-            )
-        }
-    ) {
-        val rows = AppSettings.PRESET_BITRATES_MBPS.chunked(2)
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            rows.forEach { pair ->
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    pair.forEach { mbps ->
-                        val isPresetActive = customInput.isEmpty() && selectedMbps == mbps
-                        BitrateChip(
-                            mbps = mbps,
-                            selected = isPresetActive,
-                            enabled = enabled,
-                            onClick = { onSelectPreset(mbps) },
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(2.dp))
-
-            OutlinedTextField(
-                value = customInput,
-                onValueChange = onCustomChanged,
-                enabled = enabled,
-                singleLine = true,
-                isError = bitrateError != null,
-                placeholder = {
-                    Text(
-                        text = stringResource(R.string.custom_bitrate_hint),
-                        color = FrameScopeColors.TextMuted
-                    )
-                },
-                supportingText = bitrateError?.let { err ->
-                    { Text(err, color = FrameScopeColors.SpecRedText) }
-                },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                shape = RoundedCornerShape(12.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = FrameScopeColors.SelectionBlue,
-                    unfocusedBorderColor = FrameScopeColors.BorderSubtle,
-                    focusedContainerColor = FrameScopeColors.InnerSurface,
-                    unfocusedContainerColor = FrameScopeColors.InnerSurface,
-                    focusedTextColor = FrameScopeColors.TextPrimary,
-                    unfocusedTextColor = FrameScopeColors.TextPrimary
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("custom_bitrate_input")
-            )
-        }
-    }
-}
-
-@Composable
-private fun BitrateChip(
-    mbps: Int,
-    selected: Boolean,
-    enabled: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val shape = RoundedCornerShape(12.dp)
-    Surface(
-        modifier = modifier
-            .minimumInteractiveComponentSize()
-            .clip(shape)
-            .clickable(enabled = enabled, onClick = onClick)
-            .testTag("bitrate_chip_$mbps"),
-        shape = shape,
-        color = if (selected) FrameScopeColors.SelectionBlueTint else FrameScopeColors.InnerSurface,
-        border = BorderStroke(
-            width = if (selected) 1.5.dp else 1.dp,
-            color = if (selected) FrameScopeColors.SelectionBlue else FrameScopeColors.BorderSubtle
-        )
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 12.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = "$mbps Mbps",
-                style = MaterialTheme.typography.bodyLarge.copy(
-                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
-                ),
-                color = if (selected) FrameScopeColors.SelectionBlue else FrameScopeColors.TextPrimary
             )
         }
     }

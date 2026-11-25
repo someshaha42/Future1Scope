@@ -32,7 +32,6 @@ import androidx.compose.material.icons.rounded.GridOn
 import androidx.compose.material.icons.rounded.HdrOn
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.ListAlt
-import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Tune
@@ -57,8 +56,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.framescope.R
 import com.example.framescope.encoding.EncoderValidationReport
 import com.example.framescope.encoding.EncodingTab
-import com.example.framescope.encoding.GpuApiSupport
-import com.example.framescope.encoding.GpuRenderingApi
 import com.example.framescope.encoding.VideoCodecCapability
 import com.example.framescope.ui.theme.FrameScopeColors
 
@@ -98,7 +95,7 @@ private val COMMON_SPEC_ITEMS = listOf(
     ),
     FixedEncodingSpecItem(
         title = "Rendering Pipeline",
-        value = "GPU Surface + Async Callback + Dedicated Encoder Thread",
+        value = "Direct Surface + Async Callback + Dedicated Encoder Thread",
         icon = Icons.Rounded.Bolt
     ),
     FixedEncodingSpecItem(
@@ -129,7 +126,6 @@ fun EncodingSettingsScreen(
     onBack: () -> Unit
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
-    val gpuSupport by viewModel.gpuSupport.collectAsStateWithLifecycle()
     val codecCapabilities by viewModel.codecCapabilities.collectAsStateWithLifecycle()
     val encoderReport by viewModel.encoderReport.collectAsStateWithLifecycle()
 
@@ -179,14 +175,9 @@ fun EncodingSettingsScreen(
                     .widthIn(max = 700.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                ActiveGpuHeaderCard(
-                    api = settings.gpuRenderingApi,
-                    support = gpuSupport[settings.gpuRenderingApi]
-                )
-
                 ActiveCodecHeaderCard(
                     codec = settings.videoCodec,
-                    bitrateMbps = settings.bitrateMbps,
+                    bitrateMbps = settings.videoCodec.defaultBitrateMbps,
                     capability = codecCapabilities[settings.videoCodec]
                 )
 
@@ -199,79 +190,6 @@ fun EncodingSettingsScreen(
                 }
 
                 Spacer(modifier = Modifier.height(12.dp))
-            }
-        }
-    }
-}
-
-@Composable
-private fun ActiveGpuHeaderCard(
-    api: GpuRenderingApi,
-    support: GpuApiSupport?
-) {
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("settings_gpu_header"),
-        shape = RoundedCornerShape(18.dp),
-        color = FrameScopeColors.CardSurface,
-        border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(30.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(FrameScopeColors.ElevatedSurface),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Memory,
-                        contentDescription = null,
-                        tint = FrameScopeColors.TextSecondary,
-                        modifier = Modifier.size(16.dp)
-                    )
-                }
-                Text(
-                    text = "GPU Rendering API",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = FrameScopeColors.TextPrimary
-                )
-            }
-
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                color = FrameScopeColors.SelectionBlueTint,
-                border = BorderStroke(1.dp, FrameScopeColors.SelectionBlue)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = "${api.displayName} (${support?.hardwareDetail ?: "GPU"})",
-                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
-                        color = FrameScopeColors.TextPrimary
-                    )
-                    Text(
-                        text = support?.statusText ?: "✓ Supported",
-                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                        color = FrameScopeColors.ReadyGreen
-                    )
-                }
             }
         }
     }

@@ -40,7 +40,6 @@ class EncodingForegroundService : Service() {
         const val EXTRA_RESULT_CODE = "projection_result_code"
         const val EXTRA_RESULT_DATA = "projection_result_data"
         const val EXTRA_TAB = "encoding_tab"
-        const val EXTRA_GPU_API = "gpu_rendering_api"
         const val EXTRA_WIDTH = "width"
         const val EXTRA_HEIGHT = "height"
         const val EXTRA_DENSITY = "density_dpi"
@@ -125,16 +124,6 @@ class EncodingForegroundService : Service() {
                 EncodingSpec.selectDefaultVideoCodec(codecMap)
             }
 
-            val gpuSupportMap = GpuCapabilitiesDetector.detectAll(applicationContext)
-            val requestedGpu = intent.getStringExtra(EXTRA_GPU_API)?.let { raw ->
-                runCatching { GpuRenderingApi.valueOf(raw) }.getOrNull()
-            }
-            val gpuApi = if (requestedGpu != null && gpuSupportMap[requestedGpu]?.isSupported == true) {
-                requestedGpu
-            } else {
-                GpuCapabilitiesDetector.selectDefaultApi(gpuSupportMap)
-            }
-
             val orientation = intent.getStringExtra(EXTRA_ORIENTATION)?.let { raw ->
                 runCatching { RecordingOrientation.valueOf(raw) }.getOrNull()
             } ?: RecordingOrientation.PORTRAIT
@@ -145,7 +134,7 @@ class EncodingForegroundService : Service() {
             val width = intent.getIntExtra(EXTRA_WIDTH, 0)
             val height = intent.getIntExtra(EXTRA_HEIGHT, 0)
             val density = intent.getIntExtra(EXTRA_DENSITY, 0)
-            val bitrate = intent.getIntExtra(EXTRA_BITRATE, 0)
+            val bitrate = intent.getIntExtra(EXTRA_BITRATE, tab.defaultBitrateMbps * 1_000_000)
             val preferredFrameRate = intent.getIntExtra(EXTRA_FRAME_RATE, 60).coerceIn(24, 120)
             val outputPath = intent.getStringExtra(EXTRA_OUTPUT_PATH)
                 ?: error("Output MP4 path is missing.")
@@ -227,19 +216,14 @@ class EncodingForegroundService : Service() {
                 height = targetHeight,
                 densityDpi = density,
                 encoderSurface = vEncoder.inputSurface,
-                gpuApi = gpuApi,
                 orientation = orientation,
-                renderer = rotationCoordinator,
-                onFatalError = { err ->
-                    stopRecording(fatalError = err.message ?: "GPU rendering pipeline error")
-                }
+                renderer = rotationCoordinator
             )
 
             val summary = buildActiveSummary(
                 width = targetWidth,
                 height = targetHeight,
                 tab = vEncoder.activeTab,
-                gpuApi = gpuApi,
                 orientation = orientation,
                 audioSource = audioSource,
                 fallbackSummary = intent.getStringExtra(EXTRA_SUMMARY)
@@ -255,7 +239,7 @@ class EncodingForegroundService : Service() {
                 )
             )
 
-            val notificationDesc = "${vEncoder.activeTab.shortName} • ${gpuApi.displayName}"
+            val notificationDesc = "${vEncoder.activeTab.shortName} encoding is active"
             timerJob?.cancel()
             timerJob = serviceScope.launch {
                 var elapsed = 0L
@@ -302,7 +286,6 @@ class EncodingForegroundService : Service() {
         width: Int,
         height: Int,
         tab: EncodingTab,
-        gpuApi: GpuRenderingApi,
         orientation: RecordingOrientation,
         audioSource: AudioSourceMode,
         fallbackSummary: String?
@@ -316,7 +299,7 @@ class EncodingForegroundService : Service() {
             AudioSourceMode.MICROPHONE -> "Microphone"
         }
         return if (width > 0 && height > 0) {
-            "${tab.shortName} (${width}×${height}) • ${gpuApi.displayName} • $orientationLabel • $audioLabel"
+            "${tab.shortName} (${width}×${height}) • $orientationLabel • $audioLabel"
         } else {
             fallbackSummary ?: "${width}×${height}"
         }

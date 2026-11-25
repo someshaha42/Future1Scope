@@ -9,29 +9,25 @@ enum class EncodingTab(
     val mimeType: String,
     val displayName: String,
     val shortName: String,
-    val defaultBitrateMbps: Int,
-    val requiresHardware: Boolean
+    val defaultBitrateMbps: Int
 ) {
     H264(
         mimeType = MediaFormat.MIMETYPE_VIDEO_AVC,
         displayName = "H.264 (AVC)",
         shortName = "H.264",
-        defaultBitrateMbps = 45,
-        requiresHardware = true
+        defaultBitrateMbps = 45
     ),
     H265(
         mimeType = MediaFormat.MIMETYPE_VIDEO_HEVC,
         displayName = "H.265 (HEVC)",
         shortName = "H.265",
-        defaultBitrateMbps = 30,
-        requiresHardware = true
+        defaultBitrateMbps = 30
     ),
     AV1(
         mimeType = MediaFormat.MIMETYPE_VIDEO_AV1,
         displayName = "AV1",
         shortName = "AV1",
-        defaultBitrateMbps = 25,
-        requiresHardware = false
+        defaultBitrateMbps = 25
     )
 }
 
@@ -98,28 +94,8 @@ object EncodingSpec {
                 supportsSurfaceInput(info, tab.mimeType)
         }
 
+        // Prioritize Hardware for all three codecs; fall back to Software if Hardware unavailable
         val hwEncoder = encoders.firstOrNull { it.isHardwareAccelerated }
-        if (tab.requiresHardware) {
-            return if (hwEncoder != null) {
-                VideoCodecCapability(
-                    tab = tab,
-                    isSupported = true,
-                    isHardwareAccelerated = true,
-                    codecName = hwEncoder.name,
-                    statusText = "✓ Hardware Supported"
-                )
-            } else {
-                VideoCodecCapability(
-                    tab = tab,
-                    isSupported = false,
-                    isHardwareAccelerated = false,
-                    codecName = null,
-                    statusText = "Unsupported (Hardware Required)"
-                )
-            }
-        }
-
-        // AV1: prefer Hardware if supported, else Software if supported
         if (hwEncoder != null) {
             return VideoCodecCapability(
                 tab = tab,
@@ -161,11 +137,7 @@ object EncodingSpec {
         val capability = detectCodecCapability(tab, list)
         val codecName = capability.codecName
         check(capability.isSupported && !codecName.isNullOrBlank()) {
-            if (tab.requiresHardware) {
-                "${tab.displayName} hardware encoder is unavailable on this device."
-            } else {
-                "${tab.displayName} encoder is unavailable on this device."
-            }
+            "${tab.displayName} encoder is unavailable on this device."
         }
 
         val matching = list.codecInfos.first { it.name == codecName }
@@ -320,7 +292,6 @@ object EncodingSpec {
         if (disableBFrames) {
             format.setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
         }
-        // Display-driven capture: supply nominal operating rate hint without forcing fixed FPS output
         format.setInteger(MediaFormat.KEY_FRAME_RATE, frameRate.coerceAtLeast(24))
     }
 
