@@ -5,6 +5,9 @@ import android.graphics.SurfaceTexture
 import android.media.MediaPlayer
 import android.view.Surface
 import android.view.TextureView
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -117,7 +120,7 @@ fun CropWorkspaceCanvas(
         contentAlignment = Alignment.Center
     ) {
         val targetWorkspaceRatio = if (isPreviewMode) {
-            cropCompositionAspectRatio.coerceIn(0.25f, 3.5f)
+            cropCompositionAspectRatio.coerceIn(0.2f, 5f)
         } else {
             canvasAspectRatio.coerceIn(0.35f, 2.5f)
         }
@@ -125,8 +128,19 @@ fun CropWorkspaceCanvas(
         val availW = maxWidth
         val availH = maxWorkspaceHeightDp.coerceAtLeast(240.dp)
         val widthFromH = availH * targetWorkspaceRatio
-        val canvasWidthDp = minOf(availW, widthFromH)
-        val canvasHeightDp = (canvasWidthDp / targetWorkspaceRatio).coerceAtLeast(120.dp)
+        val targetCanvasWidthDp = minOf(availW, widthFromH)
+        val targetCanvasHeightDp = (targetCanvasWidthDp / targetWorkspaceRatio).coerceAtLeast(100.dp)
+
+        val canvasWidthDp by animateDpAsState(
+            targetValue = targetCanvasWidthDp,
+            animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+            label = "preview_canvas_width"
+        )
+        val canvasHeightDp by animateDpAsState(
+            targetValue = targetCanvasHeightDp,
+            animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+            label = "preview_canvas_height"
+        )
 
         val canvasWidthPx = with(density) { canvasWidthDp.toPx() }.coerceAtLeast(1f)
         val canvasHeightPx = with(density) { canvasHeightDp.toPx() }.coerceAtLeast(1f)
@@ -147,21 +161,39 @@ fun CropWorkspaceCanvas(
         val editMediaLeft = (canvasWidthPx - editMediaW) / 2f
         val editMediaTop = (canvasHeightPx - editMediaH) / 2f
 
-        // Preview coordinates: render ONLY the selected crop area scaled cleanly without distortion.
-        val cropSrcW = (cropRect.widthFraction * srcW).coerceAtLeast(1f)
-        val cropSrcH = (cropRect.heightFraction * srcH).coerceAtLeast(1f)
-        val previewScale = minOf(canvasWidthPx / cropSrcW, canvasHeightPx / cropSrcH)
-        val previewMediaW = (srcW * previewScale).coerceAtLeast(1f)
-        val previewMediaH = (srcH * previewScale).coerceAtLeast(1f)
-        val cropCenterX = ((cropRect.left + cropRect.right) * 0.5f) * previewMediaW
-        val cropCenterY = ((cropRect.top + cropRect.bottom) * 0.5f) * previewMediaH
-        val previewMediaLeft = (canvasWidthPx * 0.5f) - cropCenterX
-        val previewMediaTop = (canvasHeightPx * 0.5f) - cropCenterY
+        // Preview coordinates: keep media container fitted inside canvas (never clamped by parent!)
+        // and apply uniform graphicsLayer scale + translation so ONLY the selected crop area zooms
+        // cleanly to fill the reshaped Preview Canvas edge-to-edge without distortion.
+        val previewBaseScale = minOf(canvasWidthPx / srcW, canvasHeightPx / srcH)
+        val previewBaseW = (srcW * previewBaseScale).coerceAtLeast(1f)
+        val previewBaseH = (srcH * previewBaseScale).coerceAtLeast(1f)
+        val previewBaseLeft = (canvasWidthPx - previewBaseW) * 0.5f
+        val previewBaseTop = (canvasHeightPx - previewBaseH) * 0.5f
 
-        val activeMediaLeft = if (isPreviewMode) previewMediaLeft else editMediaLeft
-        val activeMediaTop = if (isPreviewMode) previewMediaTop else editMediaTop
-        val activeMediaW = if (isPreviewMode) previewMediaW else editMediaW
-        val activeMediaH = if (isPreviewMode) previewMediaH else editMediaH
+        val cropBaseW = (cropRect.widthFraction * previewBaseW).coerceAtLeast(1f)
+        val cropBaseH = (cropRect.heightFraction * previewBaseH).coerceAtLeast(1f)
+        val previewZoomScale = if (isPreviewMode) {
+            minOf(canvasWidthPx / cropBaseW, canvasHeightPx / cropBaseH).coerceAtLeast(1f)
+        } else {
+            1f
+        }
+        val cropCenterNormX = (cropRect.left + cropRect.right) * 0.5f
+        val cropCenterNormY = (cropRect.top + cropRect.bottom) * 0.5f
+        val previewTx = if (isPreviewMode) {
+            -((cropCenterNormX - 0.5f) * previewBaseW) * previewZoomScale
+        } else {
+            0f
+        }
+        val previewTy = if (isPreviewMode) {
+            -((cropCenterNormY - 0.5f) * previewBaseH) * previewZoomScale
+        } else {
+            0f
+        }
+
+        val activeMediaLeft = if (isPreviewMode) previewBaseLeft else editMediaLeft
+        val activeMediaTop = if (isPreviewMode) previewBaseTop else editMediaTop
+        val activeMediaW = if (isPreviewMode) previewBaseW else editMediaW
+        val activeMediaH = if (isPreviewMode) previewBaseH else editMediaH
 
         val mediaWidthDp = with(density) { activeMediaW.toDp() }
         val mediaHeightDp = with(density) { activeMediaH.toDp() }
@@ -194,7 +226,7 @@ fun CropWorkspaceCanvas(
         val latestSrcRatio by rememberUpdatedState(srcRatio)
 
         val workspaceBorderColor = when {
-            isPreviewMode -> FrameScopeColors.SelectionBlue.copy(alpha = 0.75f)
+            isPreviewMode -> FrameScopeColors.SelectionBlue
             isZoomEnabled -> Color(0xFF38BDF8)
             else -> FrameScopeColors.BorderSubtle
         }
@@ -206,7 +238,7 @@ fun CropWorkspaceCanvas(
                 .clip(RoundedCornerShape(14.dp))
                 .background(Color(0xFF070A10))
                 .border(
-                    width = if (isZoomEnabled || isPreviewMode) 1.5.dp else 1.dp,
+                    width = if (isZoomEnabled || isPreviewMode) 1.75.dp else 1.dp,
                     color = workspaceBorderColor,
                     shape = RoundedCornerShape(14.dp)
                 )
@@ -372,10 +404,17 @@ fun CropWorkspaceCanvas(
                     }
             ) {
                 // Locked Imported Media Object: cannot be dragged independently.
+                // In Preview Mode, scaled & centered smoothly via graphicsLayer to fit the reshaped canvas.
                 Box(
                     modifier = Modifier
                         .offset { IntOffset(activeMediaLeft.roundToInt(), activeMediaTop.roundToInt()) }
                         .size(mediaWidthDp, mediaHeightDp)
+                        .graphicsLayer {
+                            scaleX = previewZoomScale
+                            scaleY = previewZoomScale
+                            translationX = previewTx
+                            translationY = previewTy
+                        }
                 ) {
                     if (media.mediaType == CropMediaType.IMAGE && previewBitmap != null) {
                         val imageBitmap = remember(previewBitmap) { previewBitmap.asImageBitmap() }

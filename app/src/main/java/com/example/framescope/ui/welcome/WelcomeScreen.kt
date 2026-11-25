@@ -74,9 +74,12 @@ fun WelcomeScreen(
     var hasEntered by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
 
-    // Android Back must never bypass the Welcome Screen
-    BackHandler(enabled = true) {
-        selectedElement = null
+    // Pressing system Back on the Welcome Screen also enters the application
+    BackHandler(enabled = !hasEntered) {
+        if (!hasEntered) {
+            hasEntered = true
+            onEnter()
+        }
     }
 
     BoxWithConstraints(
