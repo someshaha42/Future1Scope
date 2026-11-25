@@ -332,7 +332,7 @@ object CropMediaInspector {
         originalExt: String,
         originalMime: String
     ): List<VideoExportFormatOption> {
-        val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+        val list = MediaCodecList(MediaCodecList.ALL_CODECS)
         val canExportMp4 = hasSurfaceEncoderForAny(
             list,
             listOf(MediaFormat.MIMETYPE_VIDEO_AVC, MediaFormat.MIMETYPE_VIDEO_HEVC)
@@ -412,7 +412,7 @@ object CropMediaInspector {
 
     private fun hasSurfaceEncoderForAny(list: MediaCodecList, mimes: List<String>): Boolean {
         return list.codecInfos.any { info ->
-            info.isEncoder && info.supportedTypes.any { type ->
+            !info.isAlias && info.isEncoder && info.supportedTypes.any { type ->
                 mimes.any { target ->
                     type.equals(target, ignoreCase = true) &&
                         runCatching {
@@ -428,11 +428,11 @@ object CropMediaInspector {
         sourceVideoMime: String?,
         container: VideoContainerFormat?
     ): CodecPipelineSupport {
-        val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+        val list = MediaCodecList(MediaCodecList.ALL_CODECS)
 
         val decoderInfo = if (!sourceVideoMime.isNullOrBlank()) {
             val decoders = list.codecInfos.filter { info ->
-                !info.isEncoder && info.supportedTypes.any { it.equals(sourceVideoMime, ignoreCase = true) }
+                !info.isAlias && !info.isEncoder && info.supportedTypes.any { it.equals(sourceVideoMime, ignoreCase = true) }
             }
             decoders.firstOrNull { it.isHardwareAccelerated } ?: decoders.firstOrNull()
         } else {
@@ -454,7 +454,8 @@ object CropMediaInspector {
 
         val matchingEncoders = encoderMimes.flatMap { mime ->
             list.codecInfos.filter { info ->
-                info.isEncoder &&
+                !info.isAlias &&
+                    info.isEncoder &&
                     info.supportedTypes.any { it.equals(mime, ignoreCase = true) } &&
                     runCatching {
                         MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface in

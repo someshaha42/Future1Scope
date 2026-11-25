@@ -64,7 +64,7 @@ object EncodingSpec {
     const val GOP_SECONDS = 2
 
     fun detectAllVideoCodecs(): Map<EncodingTab, VideoCodecCapability> {
-        val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+        val list = MediaCodecList(MediaCodecList.ALL_CODECS)
         return EncodingTab.entries.associateWith { tab ->
             detectCodecCapability(tab, list)
         }
@@ -84,6 +84,7 @@ object EncodingSpec {
     ): VideoCodecCapability {
         val encoders = list.codecInfos.filter { info ->
             info.isEncoder &&
+                !info.isAlias &&
                 info.supportedTypes.any { it.equals(tab.mimeType, ignoreCase = true) } &&
                 supportsSurfaceInput(info, tab.mimeType)
         }
@@ -127,7 +128,7 @@ object EncodingSpec {
         requestedBitrateBps: Int,
         preferredFrameRate: Int = 60
     ): List<ResolvedVideoConfig> {
-        val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+        val list = MediaCodecList(MediaCodecList.ALL_CODECS)
         val candidates = mutableListOf<ResolvedVideoConfig>()
         val seenCodecKeys = HashSet<String>()
 
@@ -140,6 +141,7 @@ object EncodingSpec {
         for (candidateTab in orderedTabs) {
             val matchingEncoders = list.codecInfos.filter { info ->
                 info.isEncoder &&
+                    !info.isAlias &&
                     info.supportedTypes.any { it.equals(candidateTab.mimeType, ignoreCase = true) } &&
                     supportsSurfaceInput(info, candidateTab.mimeType)
             }.sortedByDescending { it.isHardwareAccelerated }
@@ -165,6 +167,7 @@ object EncodingSpec {
         for (fallbackMime in listOf(MediaFormat.MIMETYPE_VIDEO_AVC, MediaFormat.MIMETYPE_VIDEO_MPEG4)) {
             val matching = list.codecInfos.filter { info ->
                 info.isEncoder &&
+                    !info.isAlias &&
                     info.supportedTypes.any { it.equals(fallbackMime, ignoreCase = true) } &&
                     supportsSurfaceInput(info, fallbackMime)
             }.sortedBy { it.isHardwareAccelerated } // software last-resort safety
@@ -378,7 +381,7 @@ object EncodingSpec {
     }
 
     fun inspectHardwareEncoder(tab: EncodingTab = EncodingTab.H265): EncoderValidationReport {
-        val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+        val list = MediaCodecList(MediaCodecList.ALL_CODECS)
         val capability = detectCodecCapability(tab, list)
         val matchingName = capability.codecName
         val matching = matchingName?.let { name ->

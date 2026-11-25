@@ -11,6 +11,7 @@ import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.os.Build
 import android.provider.MediaStore
+import androidx.activity.result.contract.ActivityResultContracts
 import com.example.framescope.crop.CanvasAspectMode
 import com.example.framescope.crop.CropAspectRatio
 import com.example.framescope.crop.CropImportSource
@@ -67,7 +68,7 @@ object DeviceCapabilityEngine {
         screenHeight: Int,
         selectedVideoCodec: EncodingTab
     ): HomeCapabilitiesSnapshot {
-        val codecList = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+        val codecList = MediaCodecList(MediaCodecList.ALL_CODECS)
         val rawCodecs = EncodingSpec.detectAllVideoCodecs()
 
         val hasFallbackMpeg4 = hasAnyVideoEncoder(codecList, MediaFormat.MIMETYPE_VIDEO_MPEG4)
@@ -285,7 +286,7 @@ object DeviceCapabilityEngine {
         context: Context,
         requested: AudioSourceMode
     ): Pair<EffectiveAudioStrategy, Int> {
-        val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+        val list = MediaCodecList(MediaCodecList.ALL_CODECS)
         val probe = probeAudioInternal(context, list)
         val requestedSupported = probe.supportMap[requested]?.isSupported == true
         val strategy = when {
@@ -407,9 +408,9 @@ object DeviceCapabilityEngine {
 
     fun probeCropCapabilities(context: Context): CropCapabilitiesSnapshot {
         val pm = context.packageManager
-        val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+        val list = MediaCodecList(MediaCodecList.ALL_CODECS)
         val hasAnyVideoCodec = list.codecInfos.any { info ->
-            info.isEncoder && (
+            info.isEncoder && !info.isAlias && (
                 info.supportedTypes.any { it.equals(MediaFormat.MIMETYPE_VIDEO_AVC, ignoreCase = true) } ||
                     info.supportedTypes.any { it.equals(MediaFormat.MIMETYPE_VIDEO_HEVC, ignoreCase = true) } ||
                     info.supportedTypes.any { it.equals(MediaFormat.MIMETYPE_VIDEO_MPEG4, ignoreCase = true) }
@@ -418,7 +419,8 @@ object DeviceCapabilityEngine {
 
         val pickIntent = Intent(MediaStore.ACTION_PICK_IMAGES)
         val hasPhotoPicker = runCatching {
-            pm.queryIntentActivities(pickIntent, PackageManager.MATCH_DEFAULT_ONLY).isNotEmpty() ||
+            ActivityResultContracts.PickVisualMedia.isPhotoPickerAvailable(context) ||
+                pm.queryIntentActivities(pickIntent, PackageManager.MATCH_DEFAULT_ONLY).isNotEmpty() ||
                 pm.queryIntentActivities(Intent(Intent.ACTION_GET_CONTENT).setType("image/*"), 0).isNotEmpty()
         }.getOrDefault(true)
 
@@ -544,7 +546,7 @@ object DeviceCapabilityEngine {
         customBitrateMbps: Float,
         container: VideoContainerFormat?
     ): Map<VideoBitrateMode, OptionSupportInfo> {
-        val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+        val list = MediaCodecList(MediaCodecList.ALL_CODECS)
         val range = findPrimaryEncoderBitrateRange(list, media?.sourceVideoMime, container)
         val lowerMbps = (range.first / 1_000_000f).coerceAtLeast(0.25f)
         val upperMbps = (range.second / 1_000_000f).coerceAtLeast(lowerMbps)
@@ -601,7 +603,7 @@ object DeviceCapabilityEngine {
 
         for (mime in mimes) {
             val infos = list.codecInfos.filter { info ->
-                info.isEncoder && info.supportedTypes.any { it.equals(mime, ignoreCase = true) }
+                !info.isAlias && info.isEncoder && info.supportedTypes.any { it.equals(mime, ignoreCase = true) }
             }.sortedByDescending { it.isHardwareAccelerated }
 
             for (info in infos) {
@@ -641,7 +643,7 @@ object DeviceCapabilityEngine {
         container: VideoContainerFormat,
         fallbackLabel: String
     ): OptionSupportInfo {
-        val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+        val list = MediaCodecList(MediaCodecList.ALL_CODECS)
         val hasSurfaceForContainer = when (container) {
             VideoContainerFormat.MP4 -> hasAnyVideoEncoder(
                 list, MediaFormat.MIMETYPE_VIDEO_AVC, requireSurface = true
@@ -676,7 +678,7 @@ object DeviceCapabilityEngine {
         requireSurface: Boolean = true
     ): Boolean {
         return list.codecInfos.any { info ->
-            if (!info.isEncoder || !info.supportedTypes.any { it.equals(mime, ignoreCase = true) }) {
+            if (!info.isEncoder || info.isAlias || !info.supportedTypes.any { it.equals(mime, ignoreCase = true) }) {
                 return@any false
             }
             if (!requireSurface) return@any true

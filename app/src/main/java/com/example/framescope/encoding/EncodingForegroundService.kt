@@ -1,11 +1,13 @@
 package com.example.framescope.encoding
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.media.AudioFormat
 import android.media.AudioRecord
@@ -16,6 +18,8 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import android.widget.RemoteViews
+import androidx.core.content.ContextCompat
+import androidx.core.content.IntentCompat
 import com.example.framescope.MainActivity
 import com.example.framescope.R
 import com.example.framescope.capability.DeviceCapabilityEngine
@@ -152,19 +156,32 @@ class EncodingForegroundService : Service() {
         createNotificationChannel()
         val notification = createNotification("00:00:00", paused = false)
 
+        val hasMicPermission = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        val serviceTypes = if (hasMicPermission) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        } else {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+        }
+
         startForeground(
             NOTIFICATION_ID,
             notification,
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            serviceTypes
         )
 
         acquireWakeLock()
 
         try {
             val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
-            val resultData = intent.getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
-                ?: error("MediaProjection consent data is missing.")
+            val resultData = IntentCompat.getParcelableExtra(
+                intent,
+                EXTRA_RESULT_DATA,
+                Intent::class.java
+            ) ?: error("MediaProjection consent data is missing.")
 
             val manager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             val mediaProjection = manager.getMediaProjection(resultCode, resultData)

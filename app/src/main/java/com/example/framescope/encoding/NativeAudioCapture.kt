@@ -71,7 +71,7 @@ class NativeAudioCapture(
                     .setBufferSizeInBytes(recordBufferBytes)
                     .build()
 
-                selectPreferredExternalMic(micRecord)
+                runCatching { selectPreferredExternalMic(micRecord) }
                 micRecord
             }
         }

@@ -477,8 +477,9 @@ object VideoCropProcessor {
                 add(VideoContainerFormat.MP4)
             }
         }
-        val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+        val list = MediaCodecList(MediaCodecList.ALL_CODECS)
         val candidates = mutableListOf<Pair<VideoContainerFormat, SelectedVideoEncoder>>()
+        val seenKeys = HashSet<String>()
 
         for (container in containerOrder) {
             val candidateMimes = when (container) {
@@ -502,11 +503,13 @@ object VideoCropProcessor {
             for (mime in candidateMimes) {
                 val encoders = list.codecInfos.filter { info ->
                     info.isEncoder &&
+                        !info.isAlias &&
                         info.supportedTypes.any { it.equals(mime, ignoreCase = true) } &&
                         supportsSurface(info, mime)
                 }
                 val ordered = encoders.sortedByDescending { it.isHardwareAccelerated }
                 for (info in ordered) {
+                    if (!seenKeys.add("${container.name}|${info.name}|$mime")) continue
                     val caps = runCatching { info.getCapabilitiesForType(mime) }.getOrNull() ?: continue
                     val videoCaps = caps.videoCapabilities ?: continue
                     val encoderCaps = caps.encoderCapabilities
@@ -599,7 +602,9 @@ object VideoCropProcessor {
                 if (attempt.profile != null) {
                     setInteger(MediaFormat.KEY_PROFILE, attempt.profile)
                 }
-                if (attempt.includeColor) {
+                if (attempt.includeColor &&
+                    (media.colorTransfer == null || media.colorTransfer == MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
+                ) {
                     media.colorStandard?.let { setInteger(MediaFormat.KEY_COLOR_STANDARD, it) }
                     media.colorRange?.let { setInteger(MediaFormat.KEY_COLOR_RANGE, it) }
                     media.colorTransfer?.let { setInteger(MediaFormat.KEY_COLOR_TRANSFER, it) }
