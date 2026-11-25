@@ -64,6 +64,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -93,8 +94,8 @@ import com.example.framescope.R
 import com.example.framescope.crop.CanvasAspectMode
 import com.example.framescope.crop.CodecPipelineSupport
 import com.example.framescope.crop.CropExportState
-import com.example.framescope.crop.CropExportedItem
 import com.example.framescope.crop.CropMediaType
+import com.example.framescope.crop.CropProjectRecord
 import com.example.framescope.ui.theme.FrameScopeColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -110,13 +111,21 @@ fun CropToolScreen(
     )
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
-    var previewImageItem by remember { mutableStateOf<CropExportedItem?>(null) }
+    var previewImageProject by remember { mutableStateOf<CropProjectRecord?>(null) }
+    var showProjectSettingsDialog by remember { mutableStateOf(false) }
+    var pendingDeleteProject by remember { mutableStateOf<CropProjectRecord?>(null) }
     var canvasMenuExpanded by remember { mutableStateOf(false) }
 
     val galleryPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
             viewModel.importMedia(uri)
         }
     }
@@ -135,6 +144,18 @@ fun CropToolScreen(
         }
     }
 
+    LaunchedEffect(state.showImportPanel) {
+        if (state.showImportPanel) {
+            viewModel.refreshRecentProjects()
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            viewModel.saveProjectOnExit()
+        }
+    }
+
     LaunchedEffect(state.message) {
         val msg = state.message ?: return@LaunchedEffect
         snackbarHostState.showSnackbar(msg)
@@ -149,10 +170,56 @@ fun CropToolScreen(
         viewModel.closeImportPanelIfLoaded()
     }
 
-    previewImageItem?.let { item ->
+    previewImageProject?.let { project ->
         ExportedImagePreviewDialog(
-            item = item,
-            onDismiss = { previewImageItem = null }
+            project = project,
+            onDismiss = { previewImageProject = null }
+        )
+    }
+
+    if (showProjectSettingsDialog) {
+        ProjectSourceSettingsDialog(
+            copyOriginalSourceEnabled = state.copyOriginalSourceEnabled,
+            onToggleCopyOriginalSource = viewModel::setCopyOriginalSource,
+            onDismiss = { showProjectSettingsDialog = false }
+        )
+    }
+
+    pendingDeleteProject?.let { project ->
+        AlertDialog(
+            onDismissRequest = { pendingDeleteProject = null },
+            containerColor = FrameScopeColors.CardSurface,
+            title = {
+                Text(
+                    text = "Delete Project?",
+                    color = FrameScopeColors.TextPrimary
+                )
+            },
+            text = {
+                Text(
+                    text = "Are you sure you want to delete \"${project.title}\"? Your exported file in the Gallery will not be deleted.",
+                    color = FrameScopeColors.TextSecondary
+                )
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { pendingDeleteProject = null },
+                    modifier = Modifier.testTag("cancel_delete_project_button")
+                ) {
+                    Text("Cancel", color = FrameScopeColors.TextSecondary)
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteProject(project.id)
+                        pendingDeleteProject = null
+                    },
+                    modifier = Modifier.testTag("confirm_delete_project_button")
+                ) {
+                    Text("Delete", color = FrameScopeColors.SpecRedText, fontWeight = FontWeight.Bold)
+                }
+            }
         )
     }
 
@@ -186,7 +253,7 @@ fun CropToolScreen(
                         viewModel.openImportPanel()
                     }
                 ) {
-                    Text("View Exports", color = FrameScopeColors.TextSecondary)
+                    Text("View Projects", color = FrameScopeColors.TextSecondary)
                 }
             },
             confirmButton = {
@@ -237,6 +304,7 @@ fun CropToolScreen(
                         if (state.isPreviewMode) {
                             viewModel.exitPreviewMode()
                         } else {
+                            viewModel.saveProjectOnExit()
                             onBack()
                         }
                     },
@@ -265,7 +333,10 @@ fun CropToolScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(
-                        onClick = onBack,
+                        onClick = {
+                            viewModel.saveProjectOnExit()
+                            onBack()
+                        },
                         modifier = Modifier.testTag("crop_back_button")
                     ) {
                         Icon(
@@ -358,18 +429,23 @@ fun CropToolScreen(
                             onCancelImport = viewModel::closeImportPanelIfLoaded
                         )
 
-                        RecentExportsSection(
-                            exports = state.recentExports,
-                            thumbnails = state.exportThumbnails,
-                            onItemClick = { item ->
-                                if (item.mediaType == CropMediaType.VIDEO) {
-                                    onPlayVideo(item.filePath)
-                                } else {
-                                    previewImageItem = item
+                        RecentProjectsSection(
+                            projects = state.recentProjects,
+                            thumbnails = state.projectThumbnails,
+                            onOpenSettings = { showProjectSettingsDialog = true },
+                            onOpenProject = viewModel::openProject,
+                            onPlayExported = { project ->
+                                val path = project.exportedFilePath
+                                if (!path.isNullOrBlank()) {
+                                    if (project.mediaType == CropMediaType.VIDEO) {
+                                        onPlayVideo(path)
+                                    } else {
+                                        previewImageProject = project
+                                    }
                                 }
                             },
-                            onDeleteClick = { item ->
-                                viewModel.deleteExportItem(item.filePath)
+                            onRequestDelete = { project ->
+                                pendingDeleteProject = project
                             }
                         )
                     }
@@ -981,20 +1057,26 @@ private fun ExportActionCard(
 
 @Composable
 private fun ExportedImagePreviewDialog(
-    item: CropExportedItem,
+    project: CropProjectRecord,
     onDismiss: () -> Unit
 ) {
-    val bitmap by produceState<Bitmap?>(initialValue = null, item.filePath) {
+    val filePath = project.exportedFilePath.orEmpty()
+    val imgW = if (project.exportedWidth > 0) project.exportedWidth else project.outputWidth
+    val imgH = if (project.exportedHeight > 0) project.exportedHeight else project.outputHeight
+    val formatLabel = project.exportedFormatLabel ?: "Image"
+
+    val bitmap by produceState<Bitmap?>(initialValue = null, filePath) {
         value = withContext(Dispatchers.IO) {
+            if (filePath.isBlank()) return@withContext null
             runCatching {
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeFile(item.filePath, bounds)
+                BitmapFactory.decodeFile(filePath, bounds)
                 var sample = 1
                 while (bounds.outWidth / sample > 1440 || bounds.outHeight / sample > 1440) {
                     sample *= 2
                 }
                 BitmapFactory.decodeFile(
-                    item.filePath,
+                    filePath,
                     BitmapFactory.Options().apply { inSampleSize = sample }
                 )
             }.getOrNull()
@@ -1014,7 +1096,7 @@ private fun ExportedImagePreviewDialog(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = item.fileName,
+                    text = project.title,
                     style = MaterialTheme.typography.titleMedium,
                     color = FrameScopeColors.TextPrimary,
                     maxLines = 1,
@@ -1024,8 +1106,8 @@ private fun ExportedImagePreviewDialog(
                     modifier = Modifier
                         .fillMaxWidth()
                         .aspectRatio(
-                            if (item.width > 0 && item.height > 0) {
-                                (item.width.toFloat() / item.height.toFloat()).coerceIn(0.5f, 1.8f)
+                            if (imgW > 0 && imgH > 0) {
+                                (imgW.toFloat() / imgH.toFloat()).coerceIn(0.5f, 1.8f)
                             } else {
                                 1f
                             }
@@ -1039,7 +1121,7 @@ private fun ExportedImagePreviewDialog(
                         val imgBmp = remember(bmp) { bmp.asImageBitmap() }
                         Image(
                             bitmap = imgBmp,
-                            contentDescription = item.fileName,
+                            contentDescription = project.title,
                             contentScale = ContentScale.Fit,
                             modifier = Modifier.fillMaxSize()
                         )
@@ -1053,7 +1135,7 @@ private fun ExportedImagePreviewDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "${item.formatLabel} • ${item.width}×${item.height}",
+                        text = "$formatLabel • ${imgW}×${imgH}",
                         style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
                         color = FrameScopeColors.TextSecondary
                     )

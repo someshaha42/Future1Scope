@@ -36,8 +36,11 @@ import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.PlayCircleOutline
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.VideoLibrary
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -47,6 +50,8 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
@@ -79,11 +84,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.framescope.crop.CanvasAspectMode
 import com.example.framescope.crop.CropAspectRatio
-import com.example.framescope.crop.CropExportedItem
 import com.example.framescope.crop.CropMediaType
+import com.example.framescope.crop.CropProjectRecord
 import com.example.framescope.crop.ImageExportFormatOption
 import com.example.framescope.crop.VideoBitrateMode
 import com.example.framescope.crop.VideoExportFormatOption
+import java.io.File
 import com.example.framescope.ui.components.SectionCard
 import com.example.framescope.ui.theme.FrameScopeColors
 import java.text.SimpleDateFormat
@@ -1071,152 +1077,295 @@ private fun FormatChip(
 }
 
 @Composable
-internal fun RecentExportsSection(
-    exports: List<CropExportedItem>,
+internal fun RecentProjectsSection(
+    projects: List<CropProjectRecord>,
     thumbnails: Map<String, Bitmap>,
-    onItemClick: (CropExportedItem) -> Unit,
-    onDeleteClick: (CropExportedItem) -> Unit
+    onOpenSettings: () -> Unit,
+    onOpenProject: (CropProjectRecord) -> Unit,
+    onPlayExported: (CropProjectRecord) -> Unit,
+    onRequestDelete: (CropProjectRecord) -> Unit
 ) {
     val timeFormat = remember { SimpleDateFormat("hh:mm a • MMM d", Locale.getDefault()) }
 
-    SectionCard(title = "Recent Exports") {
-        if (exports.isEmpty()) {
+    SectionCard(
+        title = "Recent Projects",
+        trailing = {
+            IconButton(
+                onClick = onOpenSettings,
+                modifier = Modifier
+                    .minimumInteractiveComponentSize()
+                    .testTag("crop_recent_settings_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Settings,
+                    contentDescription = "Project settings",
+                    tint = FrameScopeColors.TextSecondary
+                )
+            }
+        }
+    ) {
+        if (projects.isEmpty()) {
             Text(
-                text = "No cropped videos or images exported yet.",
+                text = "No recent crop projects yet. Import a photo or video to start.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = FrameScopeColors.TextMuted,
                 modifier = Modifier.padding(vertical = 8.dp)
             )
         } else {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                exports.forEachIndexed { index, item ->
-                    val thumb = thumbnails[item.filePath]
+                projects.forEachIndexed { index, project ->
+                    val thumb = thumbnails[project.id]
+                    val expFileExists = !project.exportedFilePath.isNullOrBlank() &&
+                        File(project.exportedFilePath).exists()
                     val cardShape = RoundedCornerShape(12.dp)
+
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(cardShape)
-                            .clickable { onItemClick(item) }
-                            .testTag("recent_export_item_$index"),
+                            .testTag("recent_project_item_$index"),
                         shape = cardShape,
                         color = FrameScopeColors.InnerSurface,
                         border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle)
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            Box(
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            // Tapping project card opens the project directly in its saved editing state
+                            Row(
                                 modifier = Modifier
-                                    .size(56.dp)
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(FrameScopeColors.ElevatedSurface),
-                                contentAlignment = Alignment.Center
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
+                                    .clickable { onOpenProject(project) }
+                                    .padding(10.dp)
+                                    .testTag("open_project_item_$index"),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
-                                if (thumb != null) {
-                                    val imgBmp = remember(thumb) { thumb.asImageBitmap() }
-                                    Image(
-                                        bitmap = imgBmp,
-                                        contentDescription = item.fileName,
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
-                                    if (item.mediaType == CropMediaType.VIDEO) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(56.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(FrameScopeColors.ElevatedSurface),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (thumb != null) {
+                                        val imgBmp = remember(thumb) { thumb.asImageBitmap() }
+                                        Image(
+                                            bitmap = imgBmp,
+                                            contentDescription = project.title,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                        if (project.mediaType == CropMediaType.VIDEO) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.PlayCircleOutline,
+                                                contentDescription = null,
+                                                tint = Color.White.copy(alpha = 0.9f),
+                                                modifier = Modifier.size(24.dp)
+                                            )
+                                        }
+                                    } else {
                                         Icon(
-                                            imageVector = Icons.Rounded.PlayCircleOutline,
-                                            contentDescription = null,
-                                            tint = Color.White.copy(alpha = 0.9f),
+                                            imageVector = if (project.mediaType == CropMediaType.VIDEO) {
+                                                Icons.Rounded.VideoLibrary
+                                            } else {
+                                                Icons.Rounded.Image
+                                            },
+                                            contentDescription = project.title,
+                                            tint = FrameScopeColors.SelectionBlue,
                                             modifier = Modifier.size(24.dp)
                                         )
                                     }
-                                } else {
-                                    Icon(
-                                        imageVector = if (item.mediaType == CropMediaType.VIDEO) {
-                                            Icons.Rounded.VideoLibrary
+                                }
+
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Text(
+                                        text = project.title,
+                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                        color = FrameScopeColors.TextPrimary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = FrameScopeColors.SelectionBlueTint,
+                                            border = BorderStroke(1.dp, FrameScopeColors.SelectionBlue)
+                                        ) {
+                                            Text(
+                                                text = project.aspectRatio.label,
+                                                style = MaterialTheme.typography.labelMedium.copy(
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                ),
+                                                color = FrameScopeColors.SelectionBlue,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+
+                                        if (expFileExists && !project.exportedFormatLabel.isNullOrBlank()) {
+                                            Surface(
+                                                shape = RoundedCornerShape(6.dp),
+                                                color = FrameScopeColors.ReadyGreenBg,
+                                                border = BorderStroke(1.dp, FrameScopeColors.ReadyGreen.copy(alpha = 0.5f))
+                                            ) {
+                                                Text(
+                                                    text = project.exportedFormatLabel,
+                                                    style = MaterialTheme.typography.labelMedium.copy(
+                                                        fontSize = 11.sp,
+                                                        fontWeight = FontWeight.Bold
+                                                    ),
+                                                    color = FrameScopeColors.ReadyGreen,
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                )
+                                            }
                                         } else {
-                                            Icons.Rounded.Image
-                                        },
-                                        contentDescription = item.fileName,
-                                        tint = FrameScopeColors.SelectionBlue,
-                                        modifier = Modifier.size(24.dp)
+                                            Surface(
+                                                shape = RoundedCornerShape(6.dp),
+                                                color = FrameScopeColors.ElevatedSurface,
+                                                border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle)
+                                            ) {
+                                                Text(
+                                                    text = "Draft",
+                                                    style = MaterialTheme.typography.labelMedium.copy(
+                                                        fontSize = 11.sp,
+                                                        fontWeight = FontWeight.SemiBold
+                                                    ),
+                                                    color = FrameScopeColors.TextSecondary,
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                        }
+
+                                        val w = if (project.exportedWidth > 0) project.exportedWidth else project.outputWidth
+                                        val h = if (project.exportedHeight > 0) project.exportedHeight else project.outputHeight
+                                        val dims = if (w > 0 && h > 0) "${w}×${h}" else ""
+                                        if (dims.isNotEmpty()) {
+                                            Text(
+                                                text = dims,
+                                                style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
+                                                color = FrameScopeColors.TextSecondary,
+                                                maxLines = 1
+                                            )
+                                        }
+                                    }
+
+                                    val sourceNote = if (project.localCopyPath != null) "App Copy" else "Gallery Source"
+                                    Text(
+                                        text = "${timeFormat.format(Date(project.updatedAtMs))} • $sourceNote",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = FrameScopeColors.TextMuted,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
                             }
 
-                            Column(
-                                modifier = Modifier.weight(1f),
-                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            HorizontalDivider(
+                                thickness = 1.dp,
+                                color = FrameScopeColors.BorderSubtle.copy(alpha = 0.7f)
+                            )
+
+                            // Bottom Action Bar: Delete on the LEFT, Play on the RIGHT
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(
-                                    text = item.fileName,
-                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                                    color = FrameScopeColors.TextPrimary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = FrameScopeColors.SpecRedContainer.copy(alpha = 0.65f),
+                                    border = BorderStroke(1.dp, FrameScopeColors.SpecRedBorder),
+                                    modifier = Modifier
+                                        .minimumInteractiveComponentSize()
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable { onRequestDelete(project) }
+                                        .testTag("delete_project_item_$index")
                                 ) {
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = FrameScopeColors.SelectionBlueTint,
-                                        border = BorderStroke(1.dp, FrameScopeColors.SelectionBlue)
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp)
                                     ) {
-                                        Text(
-                                            text = item.formatLabel,
-                                            style = MaterialTheme.typography.labelMedium.copy(
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.Bold
-                                            ),
-                                            color = FrameScopeColors.SelectionBlue,
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        Icon(
+                                            imageVector = Icons.Rounded.DeleteOutline,
+                                            contentDescription = "Delete ${project.title}",
+                                            tint = FrameScopeColors.SpecRedText,
+                                            modifier = Modifier.size(16.dp)
                                         )
-                                    }
-
-                                    val dims = if (item.width > 0 && item.height > 0) {
-                                        "${item.width}×${item.height}"
-                                    } else {
-                                        ""
-                                    }
-                                    val dur = if (item.mediaType == CropMediaType.VIDEO && item.durationMs > 0L) {
-                                        " • ${formatTimelineMs(item.durationMs)}"
-                                    } else {
-                                        ""
-                                    }
-                                    if (dims.isNotEmpty() || dur.isNotEmpty()) {
                                         Text(
-                                            text = "$dims$dur",
-                                            style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
-                                            color = FrameScopeColors.TextSecondary,
-                                            maxLines = 1
+                                            text = "Delete",
+                                            style = MaterialTheme.typography.labelMedium.copy(
+                                                fontWeight = FontWeight.SemiBold,
+                                                fontSize = 12.sp
+                                            ),
+                                            color = FrameScopeColors.SpecRedText
                                         )
                                     }
                                 }
 
-                                Text(
-                                    text = timeFormat.format(Date(item.exportedAtMs)),
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = FrameScopeColors.TextMuted,
-                                    maxLines = 1
-                                )
-                            }
-
-                            IconButton(
-                                onClick = { onDeleteClick(item) },
-                                modifier = Modifier
-                                    .minimumInteractiveComponentSize()
-                                    .testTag("delete_export_item_$index")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.DeleteOutline,
-                                    contentDescription = "Delete ${item.fileName}",
-                                    tint = FrameScopeColors.TextSecondary
-                                )
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (expFileExists) {
+                                        FrameScopeColors.SelectionBlueTint
+                                    } else {
+                                        FrameScopeColors.ElevatedSurface
+                                    },
+                                    border = BorderStroke(
+                                        1.dp,
+                                        if (expFileExists) {
+                                            FrameScopeColors.SelectionBlue
+                                        } else {
+                                            FrameScopeColors.BorderSubtle
+                                        }
+                                    ),
+                                    modifier = Modifier
+                                        .minimumInteractiveComponentSize()
+                                        .alpha(if (expFileExists) 1f else 0.45f)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable(enabled = expFileExists) { onPlayExported(project) }
+                                        .testTag("play_project_item_$index")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.PlayArrow,
+                                            contentDescription = if (project.mediaType == CropMediaType.VIDEO) {
+                                                "Play exported video"
+                                            } else {
+                                                "View exported image"
+                                            },
+                                            tint = if (expFileExists) {
+                                                FrameScopeColors.SelectionBlue
+                                            } else {
+                                                FrameScopeColors.TextMuted
+                                            },
+                                            modifier = Modifier.size(17.dp)
+                                        )
+                                        Text(
+                                            text = if (project.mediaType == CropMediaType.VIDEO) "Play" else "View",
+                                            style = MaterialTheme.typography.labelMedium.copy(
+                                                fontWeight = FontWeight.SemiBold,
+                                                fontSize = 12.sp
+                                            ),
+                                            color = if (expFileExists) {
+                                                FrameScopeColors.TextPrimary
+                                            } else {
+                                                FrameScopeColors.TextMuted
+                                            }
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -1224,6 +1373,81 @@ internal fun RecentExportsSection(
             }
         }
     }
+}
+
+@Composable
+internal fun ProjectSourceSettingsDialog(
+    copyOriginalSourceEnabled: Boolean,
+    onToggleCopyOriginalSource: (Boolean) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = FrameScopeColors.CardSurface,
+        title = {
+            Text(
+                text = "Recent Projects Settings",
+                color = FrameScopeColors.TextPrimary,
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = FrameScopeColors.InnerSurface,
+                    border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                text = "Copy Original Source",
+                                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                                color = FrameScopeColors.TextPrimary
+                            )
+                            Text(
+                                text = if (copyOriginalSourceEnabled) {
+                                    "Enabled: Imported photos and videos are copied inside app storage so projects remain even if deleted from Gallery."
+                                } else {
+                                    "Disabled (Default): Uses the original Gallery file directly without copying. If deleted from Gallery, the project is removed."
+                                },
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = FrameScopeColors.TextSecondary
+                            )
+                        }
+                        Switch(
+                            checked = copyOriginalSourceEnabled,
+                            onCheckedChange = onToggleCopyOriginalSource,
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = FrameScopeColors.SelectionBlue,
+                                uncheckedThumbColor = FrameScopeColors.TextSecondary,
+                                uncheckedTrackColor = FrameScopeColors.ElevatedSurface
+                            ),
+                            modifier = Modifier.testTag("copy_original_source_switch")
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onDismiss,
+                modifier = Modifier.testTag("crop_recent_settings_close")
+            ) {
+                Text("Back", color = FrameScopeColors.SelectionBlue, fontWeight = FontWeight.SemiBold)
+            }
+        }
+    )
 }
 
 internal fun formatTimelineMs(ms: Long): String {

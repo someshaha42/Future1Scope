@@ -2,6 +2,7 @@ package com.example.framescope.crop
 
 import android.media.MediaMuxer
 import android.net.Uri
+import kotlinx.serialization.Serializable
 
 enum class CropImportSource {
     ALL,
@@ -142,4 +143,44 @@ sealed interface CropExportState {
         val mediaType: CropMediaType
     ) : CropExportState
     data class Error(val message: String) : CropExportState
+}
+
+@Serializable
+data class CropProjectRecord(
+    val id: String,
+    val title: String,
+    val mediaTypeName: String,
+    val sourceUriString: String,
+    val localCopyPath: String? = null,
+    val cropLeft: Float = 0f,
+    val cropTop: Float = 0f,
+    val cropRight: Float = 1f,
+    val cropBottom: Float = 1f,
+    val aspectRatioName: String = CropAspectRatio.FREE.name,
+    val customAspectWidth: String = "4",
+    val customAspectHeight: String = "3",
+    val canvasAspectModeName: String = CanvasAspectMode.ORIGINAL.name,
+    val customCanvasWidth: String = "4",
+    val customCanvasHeight: String = "3",
+    val trimStartMs: Long = 0L,
+    val trimEndMs: Long = 0L,
+    val bitrateModeName: String = VideoBitrateMode.CUSTOM.name,
+    val customBitrateMbps: Float = 12f,
+    val selectedFormatLabel: String? = null,
+    val outputWidth: Int = 0,
+    val outputHeight: Int = 0,
+    val durationMs: Long = 0L,
+    val exportedFilePath: String? = null,
+    val exportedFormatLabel: String? = null,
+    val exportedWidth: Int = 0,
+    val exportedHeight: Int = 0,
+    val exportedDurationMs: Long = 0L,
+    val updatedAtMs: Long = 0L,
+    val exportedAtMs: Long? = null
+) {
+    val mediaType: CropMediaType
+        get() = runCatching { CropMediaType.valueOf(mediaTypeName) }.getOrDefault(CropMediaType.VIDEO)
+
+    val aspectRatio: CropAspectRatio
+        get() = runCatching { CropAspectRatio.valueOf(aspectRatioName) }.getOrDefault(CropAspectRatio.FREE)
 }
