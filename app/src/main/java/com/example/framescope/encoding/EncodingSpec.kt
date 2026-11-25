@@ -148,15 +148,17 @@ object EncodingSpec {
 
             for (info in matchingEncoders) {
                 if (!seenCodecKeys.add("${info.name}|${candidateTab.mimeType}")) continue
-                buildResolvedConfig(
-                    info = info,
-                    tab = candidateTab,
-                    mimeType = candidateTab.mimeType,
-                    requestedWidth = requestedWidth,
-                    requestedHeight = requestedHeight,
-                    requestedBitrateBps = requestedBitrateBps,
-                    preferredFrameRate = preferredFrameRate
-                )?.let { candidates += it }
+                runCatching {
+                    buildResolvedConfig(
+                        info = info,
+                        tab = candidateTab,
+                        mimeType = candidateTab.mimeType,
+                        requestedWidth = requestedWidth,
+                        requestedHeight = requestedHeight,
+                        requestedBitrateBps = requestedBitrateBps,
+                        preferredFrameRate = preferredFrameRate
+                    )
+                }.getOrNull()?.let { candidates += it }
             }
         }
 
@@ -172,15 +174,17 @@ object EncodingSpec {
                     supportsSurfaceInput(info, fallbackMime)
             }.sortedBy { it.isHardwareAccelerated } // software last-resort safety
             for (info in matching) {
-                buildResolvedConfig(
-                    info = info,
-                    tab = EncodingTab.H264,
-                    mimeType = fallbackMime,
-                    requestedWidth = safeW,
-                    requestedHeight = safeH,
-                    requestedBitrateBps = safeBps,
-                    preferredFrameRate = 30
-                )?.let { candidates += it }
+                runCatching {
+                    buildResolvedConfig(
+                        info = info,
+                        tab = EncodingTab.H264,
+                        mimeType = fallbackMime,
+                        requestedWidth = safeW,
+                        requestedHeight = safeH,
+                        requestedBitrateBps = safeBps,
+                        preferredFrameRate = 30
+                    )
+                }.getOrNull()?.let { candidates += it }
             }
         }
 
@@ -218,7 +222,7 @@ object EncodingSpec {
         val encoderCaps = caps.encoderCapabilities
 
         val (alignedW, alignedH) = if (videoCaps != null) {
-            fitSupportedDimensions(videoCaps, requestedWidth, requestedHeight)
+            fitSupportedDimensions(videoCaps, requestedWidth, requestedHeight) ?: return null
         } else {
             Pair(
                 (requestedWidth and 1.inv()).coerceAtLeast(16),
@@ -227,10 +231,11 @@ object EncodingSpec {
         }
 
         val clampedBitrate = if (videoCaps != null) {
-            requestedBitrateBps.coerceIn(
-                videoCaps.bitrateRange.lower.coerceAtLeast(500_000),
-                videoCaps.bitrateRange.upper.coerceAtLeast(videoCaps.bitrateRange.lower)
-            )
+            val rawLower = videoCaps.bitrateRange.lower.coerceAtLeast(1)
+            val rawUpper = videoCaps.bitrateRange.upper.coerceAtLeast(rawLower)
+            if (rawUpper < 128_000) return null
+            val minBitrate = rawLower.coerceAtLeast(500_000).coerceAtMost(rawUpper)
+            requestedBitrateBps.coerceIn(minBitrate, rawUpper)
         } else {
             requestedBitrateBps.coerceAtLeast(500_000)
         }
@@ -250,14 +255,16 @@ object EncodingSpec {
                 videoCaps.getSupportedFrameRatesFor(alignedW, alignedH)
             }.getOrNull()
             if (achievable != null) {
-                desiredFps.toDouble().coerceIn(achievable.lower, achievable.upper)
+                val minFps = achievable.lower.coerceAtLeast(1.0)
+                val maxFps = achievable.upper.coerceAtLeast(minFps)
+                desiredFps.toDouble().coerceIn(minFps, maxFps)
                     .roundToInt()
-                    .coerceAtLeast(24)
+                    .coerceAtLeast(15)
             } else {
-                desiredFps.coerceIn(
-                    videoCaps.supportedFrameRates.lower.coerceAtLeast(24),
-                    videoCaps.supportedFrameRates.upper.coerceAtLeast(24)
-                )
+                val rawMinFps = videoCaps.supportedFrameRates.lower.coerceAtLeast(1)
+                val maxFps = videoCaps.supportedFrameRates.upper.coerceAtLeast(rawMinFps).coerceAtLeast(24)
+                val minFps = rawMinFps.coerceAtLeast(24).coerceAtMost(maxFps)
+                desiredFps.coerceIn(minFps, maxFps)
             }
         } else {
             desiredFps
@@ -294,7 +301,7 @@ object EncodingSpec {
         videoCaps: MediaCodecInfo.VideoCapabilities,
         rawWidth: Int,
         rawHeight: Int
-    ): Pair<Int, Int> {
+    ): Pair<Int, Int>? {
         val wAlign = videoCaps.widthAlignment.coerceAtLeast(2)
         val hAlign = videoCaps.heightAlignment.coerceAtLeast(2)
 
@@ -308,6 +315,7 @@ object EncodingSpec {
         val minH = videoCaps.supportedHeights.lower.coerceAtLeast(hAlign)
         val maxW = videoCaps.supportedWidths.upper
         val maxH = videoCaps.supportedHeights.upper
+        if (maxW < minW || maxH < minH) return null
 
         var targetW = alignDown(rawWidth.coerceIn(minW, maxW), wAlign, minW)
         var targetH = alignDown(rawHeight.coerceIn(minH, maxH), hAlign, minH)
@@ -325,8 +333,8 @@ object EncodingSpec {
             }
         }
 
-        targetW = alignDown(rawWidth.coerceAtMost(maxW), wAlign, minW)
-        targetH = alignDown(rawHeight.coerceAtMost(maxH), hAlign, minH)
+        targetW = alignDown(rawWidth.coerceIn(minW, maxW), wAlign, minW)
+        targetH = alignDown(rawHeight.coerceIn(minH, maxH), hAlign, minH)
         return targetW to targetH
     }
 

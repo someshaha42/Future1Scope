@@ -522,10 +522,11 @@ object VideoCropProcessor {
                         maxSourceH = maxSourceHeight
                     ) ?: continue
 
-                    val safeBitrate = requestedBitrateBps.coerceIn(
-                        videoCaps.bitrateRange.lower.coerceAtLeast(MIN_SAFE_ENCODER_BITRATE_BPS),
-                        videoCaps.bitrateRange.upper.coerceAtLeast(videoCaps.bitrateRange.lower)
-                    )
+                    val rawLow = videoCaps.bitrateRange.lower.coerceAtLeast(1)
+                    val rawHigh = videoCaps.bitrateRange.upper.coerceAtLeast(rawLow)
+                    if (rawHigh < 64_000) continue
+                    val safeLow = rawLow.coerceAtLeast(MIN_SAFE_ENCODER_BITRATE_BPS).coerceAtMost(rawHigh)
+                    val safeBitrate = requestedBitrateBps.coerceIn(safeLow, rawHigh)
 
                     val bitrateMode = when {
                         encoderCaps == null -> MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
@@ -538,7 +539,9 @@ object VideoCropProcessor {
 
                     val safeFps = runCatching {
                         val range = videoCaps.getSupportedFrameRatesFor(outW, outH)
-                        fps.toDouble().coerceIn(range.lower, range.upper).roundToInt().coerceAtLeast(15)
+                        val minFps = range.lower.coerceAtLeast(1.0)
+                        val maxFps = range.upper.coerceAtLeast(minFps)
+                        fps.toDouble().coerceIn(minFps, maxFps).roundToInt().coerceAtLeast(15)
                     }.getOrDefault(fps.coerceIn(15, 60))
 
                     val profile = when (mime) {
