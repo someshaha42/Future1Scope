@@ -36,4 +36,9 @@
     <string name="notification_title">FrameScope Recording</string>
     <string name="notification_text">Native GPU screen encoding is active</string>
     <string name="notification_action_stop">Stop</string>
+    <string name="tab_home">Home</string>
+    <string name="tab_tools">Tools</string>
+    <string name="tool_crop_title">Crop</string>
+    <string name="tool_crop_desc">Crop images and videos with aspect ratios, zoom and bitrate controls</string>
+    <string name="crop_tool_title">Crop Tool</string>
 </resources>

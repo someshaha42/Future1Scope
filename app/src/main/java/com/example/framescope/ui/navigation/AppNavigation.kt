@@ -8,10 +8,11 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import com.example.framescope.FrameScopeApplication
 import com.example.framescope.ui.EncodingSettingsScreen
-import com.example.framescope.ui.HomeScreen
 import com.example.framescope.ui.HomeViewModel
+import com.example.framescope.ui.MainTabsScreen
 import com.example.framescope.ui.RecordedVideosScreen
 import com.example.framescope.ui.VideoPlayerScreen
+import com.example.framescope.ui.crop.CropToolScreen
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -25,6 +26,9 @@ data object RecordedVideosRoute
 
 @Serializable
 data class VideoPlayerRoute(val filePath: String)
+
+@Serializable
+data object CropToolRoute
 
 @Composable
 fun FrameScopeNavHost(application: FrameScopeApplication) {
@@ -42,10 +46,11 @@ fun FrameScopeNavHost(application: FrameScopeApplication) {
         startDestination = HomeRoute
     ) {
         composable<HomeRoute> {
-            HomeScreen(
-                viewModel = homeViewModel,
+            MainTabsScreen(
+                homeViewModel = homeViewModel,
                 onOpenSettings = { navController.navigate(EncodingSettingsRoute) },
-                onOpenRecordedVideos = { navController.navigate(RecordedVideosRoute) }
+                onOpenRecordedVideos = { navController.navigate(RecordedVideosRoute) },
+                onOpenCropTool = { navController.navigate(CropToolRoute) }
             )
         }
 
@@ -70,6 +75,12 @@ fun FrameScopeNavHost(application: FrameScopeApplication) {
             val route = backStackEntry.toRoute<VideoPlayerRoute>()
             VideoPlayerScreen(
                 filePath = route.filePath,
+                onBack = { navController.popBackStack() }
+            )
+        }
+
+        composable<CropToolRoute> {
+            CropToolScreen(
                 onBack = { navController.popBackStack() }
             )
         }
