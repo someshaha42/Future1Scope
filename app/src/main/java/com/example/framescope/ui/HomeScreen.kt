@@ -91,14 +91,17 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.framescope.R
+import com.example.framescope.capability.OptionSupportInfo
 import com.example.framescope.data.AudioSourceMode
 import com.example.framescope.encoding.EncodingForegroundService
 import com.example.framescope.encoding.EncodingTab
 import com.example.framescope.encoding.RecordingOrientation
 import com.example.framescope.encoding.RecordingSessionState
 import com.example.framescope.encoding.VideoCodecCapability
+import com.example.framescope.ui.components.AlternativeInUseBanner
 import com.example.framescope.ui.components.SectionCard
 import com.example.framescope.ui.components.SelectableOptionCard
+import com.example.framescope.ui.components.SupportStatusPill
 import com.example.framescope.ui.theme.FrameScopeColors
 import kotlinx.coroutines.launch
 
@@ -114,6 +117,7 @@ fun HomeScreen(
     val sessionState by viewModel.sessionState.collectAsStateWithLifecycle()
     val recordings by viewModel.recordings.collectAsStateWithLifecycle()
     val codecCapabilities by viewModel.codecCapabilities.collectAsStateWithLifecycle()
+    val homeCapabilities by viewModel.homeCapabilities.collectAsStateWithLifecycle()
     val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
@@ -342,6 +346,7 @@ fun HomeScreen(
                                 VideoEncoderSection(
                                     selected = settings.videoCodec,
                                     capabilities = codecCapabilities,
+                                    supportMap = homeCapabilities.codecSupport,
                                     enabled = controlsEnabled,
                                     onSelect = viewModel::selectVideoCodec
                                 )
@@ -352,11 +357,13 @@ fun HomeScreen(
                             ) {
                                 OrientationSection(
                                     selected = settings.orientation,
+                                    supportMap = homeCapabilities.orientationSupport,
                                     enabled = controlsEnabled,
                                     onSelect = viewModel::setOrientation
                                 )
                                 AudioSourceSection(
                                     selected = settings.audioSource,
+                                    supportMap = homeCapabilities.audioSourceSupport,
                                     enabled = controlsEnabled,
                                     onSelect = viewModel::setAudioSource
                                 )
@@ -366,16 +373,19 @@ fun HomeScreen(
                         VideoEncoderSection(
                             selected = settings.videoCodec,
                             capabilities = codecCapabilities,
+                            supportMap = homeCapabilities.codecSupport,
                             enabled = controlsEnabled,
                             onSelect = viewModel::selectVideoCodec
                         )
                         OrientationSection(
                             selected = settings.orientation,
+                            supportMap = homeCapabilities.orientationSupport,
                             enabled = controlsEnabled,
                             onSelect = viewModel::setOrientation
                         )
                         AudioSourceSection(
                             selected = settings.audioSource,
+                            supportMap = homeCapabilities.audioSourceSupport,
                             enabled = controlsEnabled,
                             onSelect = viewModel::setAudioSource
                         )
@@ -392,6 +402,7 @@ fun HomeScreen(
 private fun VideoEncoderSection(
     selected: EncodingTab,
     capabilities: Map<EncodingTab, VideoCodecCapability>,
+    supportMap: Map<EncodingTab, OptionSupportInfo>,
     enabled: Boolean,
     onSelect: (EncodingTab) -> Unit
 ) {
@@ -408,13 +419,14 @@ private fun VideoEncoderSection(
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             EncodingTab.entries.forEach { tab ->
                 val cap = capabilities[tab]
-                val isSupported = cap?.isSupported == true
-                val isSelected = selected == tab && isSupported
+                val supportInfo = supportMap[tab]
+                val isSelected = selected == tab
                 VideoEncoderOptionCard(
                     tab = tab,
                     capability = cap,
+                    supportInfo = supportInfo,
                     selected = isSelected,
-                    enabled = enabled && isSupported,
+                    enabled = enabled,
                     onClick = { onSelect(tab) }
                 )
             }
@@ -426,11 +438,12 @@ private fun VideoEncoderSection(
 private fun VideoEncoderOptionCard(
     tab: EncodingTab,
     capability: VideoCodecCapability?,
+    supportInfo: OptionSupportInfo?,
     selected: Boolean,
     enabled: Boolean,
     onClick: () -> Unit
 ) {
-    val isSupported = capability?.isSupported == true
+    val isSupported = supportInfo?.isSupported ?: (capability?.isSupported == true)
     val borderColor by animateColorAsState(
         targetValue = if (selected) FrameScopeColors.SelectionBlue else FrameScopeColors.BorderSubtle,
         label = "codec_border"
@@ -445,7 +458,6 @@ private fun VideoEncoderOptionCard(
         modifier = Modifier
             .fillMaxWidth()
             .minimumInteractiveComponentSize()
-            .alpha(if (isSupported) 1f else 0.55f)
             .clip(shape)
             .clickable(enabled = enabled, onClick = onClick)
             .testTag("encoder_card_${tab.name.lowercase()}"),
@@ -462,7 +474,7 @@ private fun VideoEncoderOptionCard(
         ) {
             Column(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
+                verticalArrangement = Arrangement.spacedBy(3.dp)
             ) {
                 Text(
                     text = tab.displayName,
@@ -477,19 +489,32 @@ private fun VideoEncoderOptionCard(
                     ),
                     color = FrameScopeColors.SelectionBlue
                 )
-                Text(
-                    text = capability?.statusText ?: "Checking encoder…",
-                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                    color = when {
-                        capability == null -> FrameScopeColors.TextMuted
-                        isSupported -> FrameScopeColors.ReadyGreen
-                        else -> FrameScopeColors.SpecRedText
-                    }
-                )
+                if (isSupported && capability != null) {
+                    Text(
+                        text = capability.statusText,
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = FrameScopeColors.ReadyGreen
+                    )
+                }
+                if (!isSupported && !supportInfo?.alternativeName.isNullOrBlank()) {
+                    AlternativeInUseBanner(
+                        alternativeName = supportInfo!!.alternativeName!!
+                    )
+                }
             }
 
-            if (selected) {
-                ActiveCheckBadge()
+            Spacer(modifier = Modifier.width(8.dp))
+
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                if (selected) {
+                    ActiveCheckBadge()
+                }
+                if (capability != null || supportInfo != null) {
+                    SupportStatusPill(isSupported = isSupported)
+                }
             }
         }
     }
@@ -716,6 +741,7 @@ private fun HeroRecordingCard(
 @Composable
 private fun OrientationSection(
     selected: RecordingOrientation,
+    supportMap: Map<RecordingOrientation, OptionSupportInfo>,
     enabled: Boolean,
     onSelect: (RecordingOrientation) -> Unit
 ) {
@@ -730,6 +756,7 @@ private fun OrientationSection(
                 selected = selected == RecordingOrientation.PORTRAIT,
                 enabled = enabled,
                 testTag = "orientation_portrait_card",
+                supportInfo = supportMap[RecordingOrientation.PORTRAIT],
                 onClick = { onSelect(RecordingOrientation.PORTRAIT) },
                 modifier = Modifier.weight(1f)
             )
@@ -739,6 +766,7 @@ private fun OrientationSection(
                 selected = selected == RecordingOrientation.LANDSCAPE,
                 enabled = enabled,
                 testTag = "orientation_landscape_card",
+                supportInfo = supportMap[RecordingOrientation.LANDSCAPE],
                 onClick = { onSelect(RecordingOrientation.LANDSCAPE) },
                 modifier = Modifier.weight(1f)
             )
@@ -749,6 +777,7 @@ private fun OrientationSection(
 @Composable
 private fun AudioSourceSection(
     selected: AudioSourceMode,
+    supportMap: Map<AudioSourceMode, OptionSupportInfo>,
     enabled: Boolean,
     onSelect: (AudioSourceMode) -> Unit
 ) {
@@ -763,6 +792,7 @@ private fun AudioSourceSection(
                 selected = selected == AudioSourceMode.INTERNAL_AUDIO,
                 enabled = enabled,
                 testTag = "audio_internal_card",
+                supportInfo = supportMap[AudioSourceMode.INTERNAL_AUDIO],
                 onClick = { onSelect(AudioSourceMode.INTERNAL_AUDIO) },
                 modifier = Modifier.weight(1f)
             )
@@ -772,6 +802,7 @@ private fun AudioSourceSection(
                 selected = selected == AudioSourceMode.MICROPHONE,
                 enabled = enabled,
                 testTag = "audio_mic_card",
+                supportInfo = supportMap[AudioSourceMode.MICROPHONE],
                 onClick = { onSelect(AudioSourceMode.MICROPHONE) },
                 modifier = Modifier.weight(1f)
             )

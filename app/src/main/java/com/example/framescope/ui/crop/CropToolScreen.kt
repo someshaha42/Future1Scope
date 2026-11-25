@@ -91,11 +91,13 @@ import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.framescope.R
+import com.example.framescope.capability.OptionSupportInfo
 import com.example.framescope.crop.CanvasAspectMode
 import com.example.framescope.crop.CodecPipelineSupport
 import com.example.framescope.crop.CropExportState
 import com.example.framescope.crop.CropMediaType
 import com.example.framescope.crop.CropProjectRecord
+import com.example.framescope.ui.components.SupportStatusPill
 import com.example.framescope.ui.theme.FrameScopeColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -294,6 +296,7 @@ fun CropToolScreen(
             if (isWorkspaceEditingVisible) {
                 CropWorkspaceTopToolbar(
                     canvasAspectMode = state.canvasAspectMode,
+                    canvasRatioSupport = state.cropCapabilities.canvasRatioSupport,
                     canvasMenuExpanded = canvasMenuExpanded,
                     canUndo = state.canUndo,
                     canRedo = state.canRedo,
@@ -408,6 +411,7 @@ fun CropToolScreen(
                     if (state.showImportPanel || state.media == null) {
                         ImportInterfaceCard(
                             hasLoadedMedia = state.media != null,
+                            importSupport = state.cropCapabilities.importSupport,
                             onPickAll = {
                                 galleryPickerLauncher.launch(
                                     PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
@@ -657,6 +661,7 @@ fun CropToolScreen(
                             customHeight = state.customAspectHeight,
                             customError = state.customAspectError,
                             enabled = !state.isPreviewMode,
+                            aspectRatioSupport = state.aspectRatioSupport,
                             onSelectRatio = viewModel::selectAspectRatio,
                             onCustomChanged = viewModel::updateCustomAspectRatio
                         )
@@ -677,6 +682,7 @@ fun CropToolScreen(
                                 mode = state.bitrateMode,
                                 customBitrateMbps = state.customBitrateMbps,
                                 originalBitrateBps = media.originalBitrateBps,
+                                bitrateModeSupport = state.bitrateModeSupport,
                                 onSelectMode = viewModel::selectBitrateMode,
                                 onSliderChanged = viewModel::setManualCustomBitrate
                             )
@@ -720,6 +726,7 @@ fun CropToolScreen(
 @Composable
 private fun CropWorkspaceTopToolbar(
     canvasAspectMode: CanvasAspectMode,
+    canvasRatioSupport: Map<CanvasAspectMode, OptionSupportInfo>,
     canvasMenuExpanded: Boolean,
     canUndo: Boolean,
     canRedo: Boolean,
@@ -825,13 +832,23 @@ private fun CropWorkspaceTopToolbar(
             ) {
                 CanvasAspectMode.entries.forEach { mode ->
                     val isSelected = mode == canvasAspectMode
+                    val modeInfo = canvasRatioSupport[mode] ?: OptionSupportInfo(true)
                     DropdownMenuItem(
                         text = {
-                            Text(
-                                text = mode.label,
-                                color = if (isSelected) FrameScopeColors.SelectionBlue else FrameScopeColors.TextPrimary,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
-                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = mode.label,
+                                    color = if (isSelected) FrameScopeColors.SelectionBlue else FrameScopeColors.TextPrimary,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                                )
+                                SupportStatusPill(
+                                    isSupported = modeInfo.isSupported,
+                                    compact = true
+                                )
+                            }
                         },
                         trailingIcon = if (isSelected) {
                             {

@@ -27,6 +27,7 @@ class NativeVideoEncoder(
 
     var activeTab: EncodingTab = tab
         private set
+    private var activeMime: String = tab.mimeType
     var configuredWidth: Int = width
         private set
     var configuredHeight: Int = height
@@ -38,29 +39,49 @@ class NativeVideoEncoder(
         private set
 
     fun start() {
-        val resolved = EncodingSpec.resolveCompatibleVideoConfig(
+        val candidates = EncodingSpec.resolveVideoConfigCandidates(
             tab = tab,
             requestedWidth = width,
             requestedHeight = height,
             requestedBitrateBps = existingProjectVideoBitrate,
             preferredFrameRate = preferredFrameRate
         )
+        check(candidates.isNotEmpty()) {
+            "No compatible video encoder found on this device."
+        }
 
         val thread = HandlerThread("VideoEncoderThread").apply { start() }
         encoderThread = thread
         val handler = Handler(thread.looper)
         callbackHandler = handler
 
-        val mediaCodec = MediaCodec.createByCodecName(resolved.codecName)
-        attachCallback(mediaCodec, handler)
-        configureCodecWithFallback(mediaCodec, resolved)
-        inputSurface = mediaCodec.createInputSurface()
-        codec = mediaCodec
-        activeTab = resolved.tab
-        configuredWidth = resolved.width
-        configuredHeight = resolved.height
-        configuredBitrateBps = resolved.bitrateBps
-        mediaCodec.start()
+        var lastError: Throwable? = null
+        for (resolved in candidates) {
+            var mediaCodec: MediaCodec? = null
+            val attempt = runCatching {
+                mediaCodec = MediaCodec.createByCodecName(resolved.codecName)
+                attachCallback(mediaCodec!!, handler)
+                configureCodecWithFallback(mediaCodec!!, resolved)
+                val surface = mediaCodec!!.createInputSurface()
+                activeTab = resolved.tab
+                activeMime = resolved.mimeType
+                configuredWidth = resolved.width
+                configuredHeight = resolved.height
+                configuredBitrateBps = resolved.bitrateBps
+                inputSurface = surface
+                codec = mediaCodec
+                mediaCodec!!.start()
+            }
+            if (attempt.isSuccess) return
+            lastError = attempt.exceptionOrNull()
+            runCatching { mediaCodec?.stop() }
+            runCatching { mediaCodec?.release() }
+        }
+
+        encoderThread?.quitSafely()
+        encoderThread = null
+        callbackHandler = null
+        throw lastError ?: IllegalStateException("Unable to initialize any video encoder.")
     }
 
     private fun attachCallback(mediaCodec: MediaCodec, handler: Handler) {
@@ -139,7 +160,7 @@ class NativeVideoEncoder(
         var lastError: Throwable? = null
         for (attempt in attempts) {
             val format = MediaFormat.createVideoFormat(
-                resolved.tab.mimeType,
+                resolved.mimeType,
                 resolved.width,
                 resolved.height
             )
@@ -166,8 +187,8 @@ class NativeVideoEncoder(
     private fun validateVideoOutputFormat(format: MediaFormat) {
         if (format.containsKey(MediaFormat.KEY_MIME)) {
             val actualMime = format.getString(MediaFormat.KEY_MIME)
-            check(actualMime == null || actualMime.equals(activeTab.mimeType, ignoreCase = true)) {
-                "Encoder output MIME ($actualMime) does not match active codec (${activeTab.mimeType})."
+            check(actualMime == null || actualMime.equals(activeMime, ignoreCase = true)) {
+                "Encoder output MIME ($actualMime) does not match active codec ($activeMime)."
             }
         }
     }

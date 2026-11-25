@@ -2,6 +2,7 @@ package com.example.framescope.crop
 
 import android.media.MediaMuxer
 import android.net.Uri
+import com.example.framescope.capability.OptionSupportInfo
 import kotlinx.serialization.Serializable
 
 enum class CropImportSource {
@@ -59,7 +60,8 @@ data class ImageExportFormatOption(
     val label: String,
     val extension: String,
     val mimeType: String,
-    val supportsTransparency: Boolean
+    val supportsTransparency: Boolean,
+    val supportInfo: OptionSupportInfo = OptionSupportInfo(isSupported = true)
 )
 
 enum class VideoContainerFormat(
@@ -75,7 +77,8 @@ enum class VideoContainerFormat(
 data class VideoExportFormatOption(
     val label: String,
     val container: VideoContainerFormat,
-    val isOriginal: Boolean
+    val isOriginal: Boolean,
+    val supportInfo: OptionSupportInfo = OptionSupportInfo(isSupported = true)
 )
 
 data class CodecPipelineSupport(

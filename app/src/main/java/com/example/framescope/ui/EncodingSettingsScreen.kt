@@ -54,9 +54,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.framescope.R
+import com.example.framescope.capability.OptionSupportInfo
 import com.example.framescope.encoding.EncoderValidationReport
 import com.example.framescope.encoding.EncodingTab
 import com.example.framescope.encoding.VideoCodecCapability
+import com.example.framescope.ui.components.AlternativeInUseBanner
+import com.example.framescope.ui.components.SupportStatusPill
 import com.example.framescope.ui.theme.FrameScopeColors
 
 private data class FixedEncodingSpecItem(
@@ -127,6 +130,7 @@ fun EncodingSettingsScreen(
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val codecCapabilities by viewModel.codecCapabilities.collectAsStateWithLifecycle()
+    val homeCapabilities by viewModel.homeCapabilities.collectAsStateWithLifecycle()
     val encoderReport by viewModel.encoderReport.collectAsStateWithLifecycle()
 
     Scaffold(
@@ -178,11 +182,15 @@ fun EncodingSettingsScreen(
                 ActiveCodecHeaderCard(
                     codec = settings.videoCodec,
                     bitrateMbps = settings.videoCodec.defaultBitrateMbps,
-                    capability = codecCapabilities[settings.videoCodec]
+                    capability = codecCapabilities[settings.videoCodec],
+                    supportInfo = homeCapabilities.codecSupport[settings.videoCodec]
                 )
 
                 COMMON_SPEC_ITEMS.forEach { spec ->
-                    EncodingSpecCard(item = spec)
+                    EncodingSpecCard(
+                        item = spec,
+                        supportInfo = homeCapabilities.encodingSpecSupport[spec.title]
+                    )
                 }
 
                 encoderReport?.let { report ->
@@ -199,8 +207,10 @@ fun EncodingSettingsScreen(
 private fun ActiveCodecHeaderCard(
     codec: EncodingTab,
     bitrateMbps: Int,
-    capability: VideoCodecCapability?
+    capability: VideoCodecCapability?,
+    supportInfo: OptionSupportInfo?
 ) {
+    val isSupported = supportInfo?.isSupported ?: (capability?.isSupported != false)
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -216,28 +226,35 @@ private fun ActiveCodecHeaderCard(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(
+                modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(30.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(FrameScopeColors.ElevatedSurface),
-                    contentAlignment = Alignment.Center
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Tune,
-                        contentDescription = null,
-                        tint = FrameScopeColors.TextSecondary,
-                        modifier = Modifier.size(16.dp)
+                    Box(
+                        modifier = Modifier
+                            .size(30.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(FrameScopeColors.ElevatedSurface),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Tune,
+                            contentDescription = null,
+                            tint = FrameScopeColors.TextSecondary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                    Text(
+                        text = codec.displayName,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = FrameScopeColors.TextPrimary
                     )
                 }
-                Text(
-                    text = codec.displayName,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = FrameScopeColors.TextPrimary
-                )
+                SupportStatusPill(isSupported = isSupported)
             }
 
             Surface(
@@ -246,34 +263,42 @@ private fun ActiveCodecHeaderCard(
                 color = FrameScopeColors.SpecRedContainer,
                 border = BorderStroke(1.dp, FrameScopeColors.SpecRedBorder)
             ) {
-                Row(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Row(
+                        modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .clip(CircleShape)
-                                .background(FrameScopeColors.RecordRed)
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(FrameScopeColors.RecordRed)
+                            )
+                            Text(
+                                text = "${codec.shortName} • $bitrateMbps Mbps",
+                                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                                color = FrameScopeColors.TextPrimary
+                            )
+                        }
                         Text(
-                            text = "${codec.shortName} • $bitrateMbps Mbps",
-                            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
-                            color = FrameScopeColors.TextPrimary
+                            text = capability?.statusText ?: "",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                            color = if (isSupported) FrameScopeColors.ReadyGreen else FrameScopeColors.SpecRedText
                         )
                     }
-                    Text(
-                        text = capability?.statusText ?: "",
-                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                        color = FrameScopeColors.ReadyGreen
-                    )
+                    if (!isSupported && !supportInfo?.alternativeName.isNullOrBlank()) {
+                        AlternativeInUseBanner(alternativeName = supportInfo!!.alternativeName!!)
+                    }
                 }
             }
         }
@@ -281,7 +306,11 @@ private fun ActiveCodecHeaderCard(
 }
 
 @Composable
-private fun EncodingSpecCard(item: FixedEncodingSpecItem) {
+private fun EncodingSpecCard(
+    item: FixedEncodingSpecItem,
+    supportInfo: OptionSupportInfo?
+) {
+    val isSupported = supportInfo?.isSupported ?: true
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(18.dp),
@@ -295,28 +324,37 @@ private fun EncodingSpecCard(item: FixedEncodingSpecItem) {
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Row(
+                modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(30.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(FrameScopeColors.ElevatedSurface),
-                    contentAlignment = Alignment.Center
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f)
                 ) {
-                    Icon(
-                        imageVector = item.icon,
-                        contentDescription = null,
-                        tint = FrameScopeColors.TextSecondary,
-                        modifier = Modifier.size(16.dp)
+                    Box(
+                        modifier = Modifier
+                            .size(30.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(FrameScopeColors.ElevatedSurface),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = item.icon,
+                            contentDescription = null,
+                            tint = FrameScopeColors.TextSecondary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                    Text(
+                        text = item.title,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = FrameScopeColors.TextPrimary
                     )
                 }
-                Text(
-                    text = item.title,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = FrameScopeColors.TextPrimary
-                )
+                Spacer(modifier = Modifier.width(8.dp))
+                SupportStatusPill(isSupported = isSupported)
             }
 
             Surface(
@@ -345,6 +383,9 @@ private fun EncodingSpecCard(item: FixedEncodingSpecItem) {
                             style = MaterialTheme.typography.bodyMedium,
                             color = FrameScopeColors.TextSecondary
                         )
+                    }
+                    if (!isSupported && !supportInfo?.alternativeName.isNullOrBlank()) {
+                        AlternativeInUseBanner(alternativeName = supportInfo!!.alternativeName!!)
                     }
                 }
             }

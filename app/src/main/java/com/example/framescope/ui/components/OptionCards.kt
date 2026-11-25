@@ -8,12 +8,15 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
@@ -29,9 +32,122 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.framescope.capability.OptionSupportInfo
 import com.example.framescope.ui.theme.FrameScopeColors
+
+@Composable
+fun SupportStatusPill(
+    isSupported: Boolean,
+    modifier: Modifier = Modifier,
+    compact: Boolean = false
+) {
+    val bgColor = if (isSupported) FrameScopeColors.ReadyGreenBg else FrameScopeColors.SpecRedContainer
+    val borderColor = if (isSupported) {
+        FrameScopeColors.ReadyGreen.copy(alpha = 0.45f)
+    } else {
+        FrameScopeColors.SpecRedBorder
+    }
+    val textColor = if (isSupported) FrameScopeColors.ReadyGreen else FrameScopeColors.SpecRedText
+    val label = when {
+        compact && isSupported -> "✓"
+        compact && !isSupported -> "✕"
+        isSupported -> "✓ Supported"
+        else -> "✕ Unsupported"
+    }
+
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(50),
+        color = bgColor,
+        border = BorderStroke(1.dp, borderColor)
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium.copy(
+                fontSize = if (compact) 10.sp else 11.5.sp,
+                fontWeight = FontWeight.Bold
+            ),
+            color = textColor,
+            maxLines = 1,
+            modifier = Modifier.padding(
+                horizontal = if (compact) 6.dp else 9.dp,
+                vertical = if (compact) 1.5.dp else 3.5.dp
+            )
+        )
+    }
+}
+
+@Composable
+fun AlternativeInUseBanner(
+    alternativeName: String,
+    modifier: Modifier = Modifier,
+    compact: Boolean = false
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(IntrinsicSize.Min)
+            .padding(top = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .width(2.dp)
+                .fillMaxHeight()
+                .background(FrameScopeColors.BorderSubtle)
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                text = "Alternative in use",
+                style = MaterialTheme.typography.labelMedium.copy(
+                    fontSize = if (compact) 10.sp else 11.sp,
+                    fontWeight = FontWeight.SemiBold
+                ),
+                color = FrameScopeColors.ReadyGreen,
+                maxLines = 1
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    text = alternativeName,
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        fontSize = if (compact) 12.sp else 13.sp,
+                        fontWeight = FontWeight.Bold
+                    ),
+                    color = FrameScopeColors.TextPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                Surface(
+                    shape = RoundedCornerShape(50),
+                    color = FrameScopeColors.ReadyGreenBg,
+                    border = BorderStroke(1.dp, FrameScopeColors.ReadyGreen.copy(alpha = 0.45f))
+                ) {
+                    Text(
+                        text = "✓ Active",
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontSize = if (compact) 9.5.sp else 10.5.sp,
+                            fontWeight = FontWeight.Bold
+                        ),
+                        color = FrameScopeColors.ReadyGreen,
+                        maxLines = 1,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.5.dp)
+                    )
+                }
+            }
+        }
+    }
+}
 
 @Composable
 fun SectionCard(
@@ -78,7 +194,8 @@ fun SelectableOptionCard(
     enabled: Boolean,
     testTag: String,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    supportInfo: OptionSupportInfo? = null
 ) {
     val borderColor by animateColorAsState(
         targetValue = if (selected) FrameScopeColors.SelectionBlue else FrameScopeColors.BorderSubtle,
@@ -130,13 +247,24 @@ fun SelectableOptionCard(
                     )
                 }
 
-                if (selected) {
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .clip(CircleShape)
-                            .background(FrameScopeColors.SelectionBlue)
-                    )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    if (supportInfo != null) {
+                        SupportStatusPill(
+                            isSupported = supportInfo.isSupported,
+                            compact = true
+                        )
+                    }
+                    if (selected) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(FrameScopeColors.SelectionBlue)
+                        )
+                    }
                 }
             }
 
@@ -145,7 +273,9 @@ fun SelectableOptionCard(
             Text(
                 text = title,
                 style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
-                color = FrameScopeColors.TextPrimary
+                color = FrameScopeColors.TextPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
 
             if (!subtitle.isNullOrBlank()) {
@@ -155,6 +285,17 @@ fun SelectableOptionCard(
                     style = MaterialTheme.typography.bodyMedium.copy(fontSize = 12.sp, lineHeight = 16.sp),
                     color = FrameScopeColors.TextSecondary
                 )
+            }
+
+            if (supportInfo != null) {
+                Spacer(modifier = Modifier.height(6.dp))
+                SupportStatusPill(isSupported = supportInfo.isSupported)
+                if (!supportInfo.isSupported && !supportInfo.alternativeName.isNullOrBlank()) {
+                    AlternativeInUseBanner(
+                        alternativeName = supportInfo.alternativeName,
+                        compact = true
+                    )
+                }
             }
         }
     }

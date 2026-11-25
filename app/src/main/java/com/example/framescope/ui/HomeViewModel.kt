@@ -1,9 +1,13 @@
 package com.example.framescope.ui
 
 import android.content.Context
+import android.view.WindowManager
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.framescope.capability.DeviceCapabilityEngine
+import com.example.framescope.capability.EffectiveAudioStrategy
+import com.example.framescope.capability.HomeCapabilitiesSnapshot
 import com.example.framescope.data.AppSettings
 import com.example.framescope.data.AudioSourceMode
 import com.example.framescope.data.RecordedVideo
@@ -30,6 +34,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class HomeViewModel(
+    private val appContext: Context,
     private val settingsRepository: SettingsRepository,
     private val recordingsRepository: RecordingsRepository
 ) : ViewModel() {
@@ -48,6 +53,9 @@ class HomeViewModel(
     private val _codecCapabilities = MutableStateFlow<Map<EncodingTab, VideoCodecCapability>>(emptyMap())
     val codecCapabilities: StateFlow<Map<EncodingTab, VideoCodecCapability>> = _codecCapabilities.asStateFlow()
 
+    private val _homeCapabilities = MutableStateFlow(HomeCapabilitiesSnapshot())
+    val homeCapabilities: StateFlow<HomeCapabilitiesSnapshot> = _homeCapabilities.asStateFlow()
+
     private val _encoderReport = MutableStateFlow<EncoderValidationReport?>(null)
     val encoderReport: StateFlow<EncoderValidationReport?> = _encoderReport.asStateFlow()
 
@@ -64,27 +72,34 @@ class HomeViewModel(
             }
         }
         viewModelScope.launch {
-            val detectedCodecs = withContext(Dispatchers.Default) {
-                EncodingSpec.detectAllVideoCodecs()
-            }
-            _codecCapabilities.value = detectedCodecs
-
             val current = settingsRepository.settings.first()
-
-            val activeCodec = if (detectedCodecs[current.videoCodec]?.isSupported == true) {
-                current.videoCodec
-            } else {
-                val fallbackCodec = EncodingSpec.selectDefaultVideoCodec(detectedCodecs)
-                if (fallbackCodec != current.videoCodec) {
-                    settingsRepository.setVideoCodec(fallbackCodec)
-                }
-                fallbackCodec
-            }
-
-            _encoderReport.value = withContext(Dispatchers.Default) {
-                EncodingSpec.inspectHardwareEncoder(activeCodec)
-            }
+            refreshCapabilitiesFor(current.videoCodec)
         }
+    }
+
+    private suspend fun refreshCapabilitiesFor(selectedCodec: EncodingTab) {
+        val (w, h) = readScreenBounds()
+        val snapshot = withContext(Dispatchers.Default) {
+            DeviceCapabilityEngine.probeHomeCapabilities(
+                context = appContext,
+                screenWidth = w,
+                screenHeight = h,
+                selectedVideoCodec = selectedCodec
+            )
+        }
+        _codecCapabilities.value = snapshot.codecCapabilities
+        _homeCapabilities.value = snapshot
+        _encoderReport.value = withContext(Dispatchers.Default) {
+            EncodingSpec.inspectHardwareEncoder(snapshot.effectiveVideoCodec)
+        }
+    }
+
+    private fun readScreenBounds(): Pair<Int, Int> {
+        val wm = appContext.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+        val bounds = wm?.maximumWindowMetrics?.bounds
+        val w = bounds?.width()?.coerceAtLeast(720) ?: 1080
+        val h = bounds?.height()?.coerceAtLeast(1280) ?: 2400
+        return w to h
     }
 
     fun refreshRecordings() {
@@ -112,16 +127,9 @@ class HomeViewModel(
     }
 
     fun selectVideoCodec(tab: EncodingTab) {
-        val capability = _codecCapabilities.value[tab]
-        if (capability == null || !capability.isSupported) {
-            _statusMessage.value = "${tab.displayName} is unsupported on this device."
-            return
-        }
         viewModelScope.launch {
             settingsRepository.setVideoCodec(tab)
-            _encoderReport.value = withContext(Dispatchers.Default) {
-                EncodingSpec.inspectHardwareEncoder(tab)
-            }
+            refreshCapabilitiesFor(tab)
         }
     }
 
@@ -173,26 +181,40 @@ class HomeViewModel(
         currentSettings: AppSettings,
         dimensions: VideoDimensions
     ): String {
+        val caps = _homeCapabilities.value
+        val codecLabel = if (caps.codecSupport[currentSettings.videoCodec]?.isSupported == false) {
+            caps.effectiveVideoCodec.shortName
+        } else {
+            currentSettings.videoCodec.shortName
+        }
         val orientationLabel = when (currentSettings.orientation) {
             RecordingOrientation.PORTRAIT -> "Portrait"
             RecordingOrientation.LANDSCAPE -> "Landscape"
         }
-        val audioLabel = when (currentSettings.audioSource) {
-            AudioSourceMode.INTERNAL_AUDIO -> "Internal Audio"
-            AudioSourceMode.MICROPHONE -> "Microphone"
+        val audioInfo = caps.audioSourceSupport[currentSettings.audioSource]
+        val audioLabel = if (audioInfo != null && !audioInfo.isSupported) {
+            when (caps.effectiveAudioStrategy) {
+                EffectiveAudioStrategy.INTERNAL_AUDIO -> "Internal Audio"
+                EffectiveAudioStrategy.MICROPHONE -> "Microphone"
+                EffectiveAudioStrategy.VIDEO_ONLY -> "Video-Only"
+            }
+        } else {
+            when (currentSettings.audioSource) {
+                AudioSourceMode.INTERNAL_AUDIO -> "Internal Audio"
+                AudioSourceMode.MICROPHONE -> "Microphone"
+            }
         }
-        return "${currentSettings.videoCodec.shortName} (${dimensions.width}×${dimensions.height}) • $orientationLabel • $audioLabel"
+        return "$codecLabel (${dimensions.width}×${dimensions.height}) • $orientationLabel • $audioLabel"
     }
 
     class Factory(
-        @Suppress("unused")
         private val appContext: Context,
         private val settingsRepository: SettingsRepository,
         private val recordingsRepository: RecordingsRepository
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
-            return HomeViewModel(settingsRepository, recordingsRepository) as T
+            return HomeViewModel(appContext.applicationContext, settingsRepository, recordingsRepository) as T
         }
     }
 }

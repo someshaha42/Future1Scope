@@ -62,7 +62,7 @@ object VideoCropProcessor {
         trimEndMs: Long = media.durationMs,
         onProgress: (Float, String) -> Unit
     ): CropExportState = withContext(Dispatchers.IO) {
-        val outFile = CropExportsRepository(context).createVideoExportFile(formatOption.container.extension)
+        var outFile: File? = null
 
         val videoExtractor = MediaExtractor()
         var audioExtractor: MediaExtractor? = null
@@ -107,8 +107,8 @@ object VideoCropProcessor {
             val rawOutH = (cropRect.heightFraction * media.displayHeight).roundToInt()
                 .coerceIn(16, media.displayHeight)
 
-            val selectedEncoder = resolveVideoEncoder(
-                container = formatOption.container,
+            val encoderCandidates = resolveVideoEncoderCandidates(
+                requestedContainer = formatOption.container,
                 preferredMime = media.sourceVideoMime,
                 requestedWidth = rawOutW,
                 requestedHeight = rawOutH,
@@ -116,13 +116,47 @@ object VideoCropProcessor {
                 maxSourceHeight = media.displayHeight,
                 requestedBitrateBps = targetBitrateBps.coerceAtLeast(MIN_SAFE_ENCODER_BITRATE_BPS),
                 fps = media.fps
-            ) ?: return@withContext CropExportState.Error(
-                "No compatible video encoder found for ${formatOption.label}."
             )
+            if (encoderCandidates.isEmpty()) {
+                return@withContext CropExportState.Error(
+                    "No compatible video encoder found for ${formatOption.label}."
+                )
+            }
 
-            encoder = MediaCodec.createByCodecName(selectedEncoder.codecName)
-            configureVideoEncoderWithFallback(encoder, selectedEncoder, media)
-            encoderInputSurface = encoder.createInputSurface()
+            var effectiveContainer: VideoContainerFormat? = null
+            var activeEncoder: MediaCodec? = null
+            var activeInputSurface: Surface? = null
+            for ((candidateContainer, candidateSpec) in encoderCandidates) {
+                var probeEncoder: MediaCodec? = null
+                var probeSurface: Surface? = null
+                val ok = runCatching {
+                    probeEncoder = MediaCodec.createByCodecName(candidateSpec.codecName)
+                    configureVideoEncoderWithFallback(probeEncoder!!, candidateSpec, media)
+                    probeSurface = probeEncoder!!.createInputSurface()
+                    probeEncoder!!.start()
+                }.isSuccess
+                if (ok && probeEncoder != null && probeSurface != null) {
+                    activeEncoder = probeEncoder
+                    activeInputSurface = probeSurface
+                    effectiveContainer = candidateContainer
+                    break
+                } else {
+                    runCatching { probeSurface?.release() }
+                    runCatching { probeEncoder?.stop() }
+                    runCatching { probeEncoder?.release() }
+                }
+            }
+
+            val finalContainer = effectiveContainer
+            encoder = activeEncoder
+            encoderInputSurface = activeInputSurface
+            if (encoder == null || encoderInputSurface == null || finalContainer == null) {
+                return@withContext CropExportState.Error(
+                    "All hardware and software video encoders rejected the export format."
+                )
+            }
+
+            outFile = CropExportsRepository(context).createVideoExportFile(finalContainer.extension)
 
             glContext = EglCropSurface(
                 encoderSurface = encoderInputSurface,
@@ -139,16 +173,37 @@ object VideoCropProcessor {
 
             val inputMime = videoInputFormat.getString(MediaFormat.KEY_MIME)
                 ?: return@withContext CropExportState.Error("Missing source video MIME type.")
-            decoder = createVideoDecoder(inputMime)
-            // Ensure SurfaceTexture receives raw frames cleanly without Surface-level rotation surprises
-            val decoderFormat = MediaFormat(videoInputFormat).apply {
-                if (containsKey(MediaFormat.KEY_ROTATION)) {
-                    setInteger(MediaFormat.KEY_ROTATION, 0)
+            val decoderCandidates = resolveCandidateDecoders(inputMime)
+            var activeDecoder: MediaCodec? = null
+            for ((codecName, overrideMime) in decoderCandidates) {
+                var probeDecoder: MediaCodec? = null
+                val ok = runCatching {
+                    probeDecoder = MediaCodec.createByCodecName(codecName)
+                    // Ensure SurfaceTexture receives raw frames cleanly without Surface-level rotation surprises
+                    val decoderFormat = MediaFormat(videoInputFormat).apply {
+                        if (overrideMime != null) {
+                            setString(MediaFormat.KEY_MIME, overrideMime)
+                        }
+                        if (containsKey(MediaFormat.KEY_ROTATION)) {
+                            setInteger(MediaFormat.KEY_ROTATION, 0)
+                        }
+                    }
+                    probeDecoder!!.configure(decoderFormat, decoderSurface, null, 0)
+                    probeDecoder!!.start()
+                }.isSuccess
+                if (ok && probeDecoder != null) {
+                    activeDecoder = probeDecoder
+                    break
+                } else {
+                    runCatching { probeDecoder?.stop() }
+                    runCatching { probeDecoder?.release() }
                 }
             }
-            decoder.configure(decoderFormat, decoderSurface, null, 0)
+            decoder = activeDecoder ?: return@withContext CropExportState.Error(
+                "No compatible video decoder could start for $inputMime."
+            )
 
-            muxer = MediaMuxer(outFile.absolutePath, formatOption.container.muxerOutputFormat)
+            muxer = MediaMuxer(outFile.absolutePath, finalContainer.muxerOutputFormat)
             if (media.locationLat != null && media.locationLon != null) {
                 runCatching { muxer.setLocation(media.locationLat, media.locationLon) }
             }
@@ -156,12 +211,10 @@ object VideoCropProcessor {
             val compatibleAudioFormat = audioInputFormat?.takeIf {
                 isAudioCompatibleWithContainer(
                     it.getString(MediaFormat.KEY_MIME),
-                    formatOption.container
+                    finalContainer
                 )
             }
 
-            encoder.start()
-            decoder.start()
             videoExtractor.selectTrack(videoTrackIndex)
 
             val trimStartUs = trimStartMs.coerceAtLeast(0L) * 1_000L
@@ -352,7 +405,7 @@ object VideoCropProcessor {
             val savedToGallery = exportVideoToMediaStore(
                 context = context,
                 file = outFile,
-                mimeType = formatOption.container.mimeType
+                mimeType = finalContainer.mimeType
             )
 
             CropExportState.Success(
@@ -362,7 +415,7 @@ object VideoCropProcessor {
                 mediaType = CropMediaType.VIDEO
             )
         } catch (t: Throwable) {
-            runCatching { outFile.delete() }
+            runCatching { outFile?.delete() }
             if (t is InterruptedException || t is kotlinx.coroutines.CancellationException) {
                 CropExportState.Idle
             } else {
@@ -387,20 +440,29 @@ object VideoCropProcessor {
         }
     }
 
-    private fun createVideoDecoder(mimeType: String): MediaCodec {
-        val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
-        val hw = list.codecInfos.firstOrNull { info ->
-            !info.isEncoder && info.isHardwareAccelerated &&
-                info.supportedTypes.any { it.equals(mimeType, ignoreCase = true) }
+    private fun resolveCandidateDecoders(mimeType: String): List<Pair<String, String?>> {
+        val list = MediaCodecList(MediaCodecList.ALL_CODECS)
+        val primary = list.codecInfos
+            .filter { info ->
+                !info.isEncoder && info.supportedTypes.any { it.equals(mimeType, ignoreCase = true) }
+            }
+            .sortedByDescending { it.isHardwareAccelerated }
+            .map { it.name to null }
+
+        if (!mimeType.equals("video/dolby-vision", ignoreCase = true)) {
+            return primary
         }
-        if (hw != null) {
-            return MediaCodec.createByCodecName(hw.name)
-        }
-        return MediaCodec.createDecoderByType(mimeType)
+        val hevcFallbacks = list.codecInfos
+            .filter { info ->
+                !info.isEncoder && info.supportedTypes.any { it.equals(MediaFormat.MIMETYPE_VIDEO_HEVC, ignoreCase = true) }
+            }
+            .sortedByDescending { it.isHardwareAccelerated }
+            .map { it.name to MediaFormat.MIMETYPE_VIDEO_HEVC }
+        return primary + hevcFallbacks
     }
 
-    private fun resolveVideoEncoder(
-        container: VideoContainerFormat,
+    private fun resolveVideoEncoderCandidates(
+        requestedContainer: VideoContainerFormat,
         preferredMime: String?,
         requestedWidth: Int,
         requestedHeight: Int,
@@ -408,89 +470,99 @@ object VideoCropProcessor {
         maxSourceHeight: Int,
         requestedBitrateBps: Int,
         fps: Int
-    ): SelectedVideoEncoder? {
-        val candidateMimes = when (container) {
-            VideoContainerFormat.MP4 -> {
-                if (preferredMime.equals(MediaFormat.MIMETYPE_VIDEO_HEVC, ignoreCase = true)) {
-                    listOf(MediaFormat.MIMETYPE_VIDEO_HEVC, MediaFormat.MIMETYPE_VIDEO_AVC)
-                } else {
-                    listOf(MediaFormat.MIMETYPE_VIDEO_AVC, MediaFormat.MIMETYPE_VIDEO_HEVC)
-                }
+    ): List<Pair<VideoContainerFormat, SelectedVideoEncoder>> {
+        val containerOrder = buildList {
+            add(requestedContainer)
+            if (requestedContainer != VideoContainerFormat.MP4) {
+                add(VideoContainerFormat.MP4)
             }
-            VideoContainerFormat.WEBM -> listOf(
-                MediaFormat.MIMETYPE_VIDEO_VP9,
-                MediaFormat.MIMETYPE_VIDEO_VP8
-            )
-            VideoContainerFormat.THREE_GP -> listOf(
-                MediaFormat.MIMETYPE_VIDEO_AVC,
-                MediaFormat.MIMETYPE_VIDEO_H263
-            )
         }
-
         val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
-        for (mime in candidateMimes) {
-            val encoders = list.codecInfos.filter { info ->
-                info.isEncoder &&
-                    info.supportedTypes.any { it.equals(mime, ignoreCase = true) } &&
-                    supportsSurface(info, mime)
+        val candidates = mutableListOf<Pair<VideoContainerFormat, SelectedVideoEncoder>>()
+
+        for (container in containerOrder) {
+            val candidateMimes = when (container) {
+                VideoContainerFormat.MP4 -> {
+                    if (preferredMime.equals(MediaFormat.MIMETYPE_VIDEO_HEVC, ignoreCase = true)) {
+                        listOf(MediaFormat.MIMETYPE_VIDEO_HEVC, MediaFormat.MIMETYPE_VIDEO_AVC)
+                    } else {
+                        listOf(MediaFormat.MIMETYPE_VIDEO_AVC, MediaFormat.MIMETYPE_VIDEO_HEVC)
+                    }
+                }
+                VideoContainerFormat.WEBM -> listOf(
+                    MediaFormat.MIMETYPE_VIDEO_VP9,
+                    MediaFormat.MIMETYPE_VIDEO_VP8
+                )
+                VideoContainerFormat.THREE_GP -> listOf(
+                    MediaFormat.MIMETYPE_VIDEO_AVC,
+                    MediaFormat.MIMETYPE_VIDEO_H263
+                )
             }
-            val ordered = encoders.sortedByDescending { it.isHardwareAccelerated }
-            for (info in ordered) {
-                val caps = runCatching { info.getCapabilitiesForType(mime) }.getOrNull() ?: continue
-                val videoCaps = caps.videoCapabilities ?: continue
-                val encoderCaps = caps.encoderCapabilities
 
-                val (outW, outH) = fitDimensionsWithoutUpscale(
-                    videoCaps = videoCaps,
-                    requestedW = requestedWidth,
-                    requestedH = requestedHeight,
-                    maxSourceW = maxSourceWidth,
-                    maxSourceH = maxSourceHeight
-                ) ?: continue
-
-                val safeBitrate = requestedBitrateBps.coerceIn(
-                    videoCaps.bitrateRange.lower.coerceAtLeast(MIN_SAFE_ENCODER_BITRATE_BPS),
-                    videoCaps.bitrateRange.upper.coerceAtLeast(videoCaps.bitrateRange.lower)
-                )
-
-                val bitrateMode = when {
-                    encoderCaps == null -> MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
-                    encoderCaps.isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR) ->
-                        MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
-                    encoderCaps.isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR) ->
-                        MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
-                    else -> null
+            for (mime in candidateMimes) {
+                val encoders = list.codecInfos.filter { info ->
+                    info.isEncoder &&
+                        info.supportedTypes.any { it.equals(mime, ignoreCase = true) } &&
+                        supportsSurface(info, mime)
                 }
+                val ordered = encoders.sortedByDescending { it.isHardwareAccelerated }
+                for (info in ordered) {
+                    val caps = runCatching { info.getCapabilitiesForType(mime) }.getOrNull() ?: continue
+                    val videoCaps = caps.videoCapabilities ?: continue
+                    val encoderCaps = caps.encoderCapabilities
 
-                val safeFps = runCatching {
-                    val range = videoCaps.getSupportedFrameRatesFor(outW, outH)
-                    fps.toDouble().coerceIn(range.lower, range.upper).roundToInt().coerceAtLeast(15)
-                }.getOrDefault(fps.coerceIn(15, 60))
+                    val (outW, outH) = fitDimensionsWithoutUpscale(
+                        videoCaps = videoCaps,
+                        requestedW = requestedWidth,
+                        requestedH = requestedHeight,
+                        maxSourceW = maxSourceWidth,
+                        maxSourceH = maxSourceHeight
+                    ) ?: continue
 
-                val profile = when (mime) {
-                    MediaFormat.MIMETYPE_VIDEO_HEVC -> caps.profileLevels?.firstOrNull {
-                        it.profile == MediaCodecInfo.CodecProfileLevel.HEVCProfileMain
-                    }?.profile
-                    MediaFormat.MIMETYPE_VIDEO_AVC -> caps.profileLevels?.firstOrNull {
-                        it.profile == MediaCodecInfo.CodecProfileLevel.AVCProfileHigh
-                    }?.profile
-                    else -> null
+                    val safeBitrate = requestedBitrateBps.coerceIn(
+                        videoCaps.bitrateRange.lower.coerceAtLeast(MIN_SAFE_ENCODER_BITRATE_BPS),
+                        videoCaps.bitrateRange.upper.coerceAtLeast(videoCaps.bitrateRange.lower)
+                    )
+
+                    val bitrateMode = when {
+                        encoderCaps == null -> MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
+                        encoderCaps.isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR) ->
+                            MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
+                        encoderCaps.isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR) ->
+                            MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
+                        else -> null
+                    }
+
+                    val safeFps = runCatching {
+                        val range = videoCaps.getSupportedFrameRatesFor(outW, outH)
+                        fps.toDouble().coerceIn(range.lower, range.upper).roundToInt().coerceAtLeast(15)
+                    }.getOrDefault(fps.coerceIn(15, 60))
+
+                    val profile = when (mime) {
+                        MediaFormat.MIMETYPE_VIDEO_HEVC -> caps.profileLevels?.firstOrNull {
+                            it.profile == MediaCodecInfo.CodecProfileLevel.HEVCProfileMain
+                        }?.profile
+                        MediaFormat.MIMETYPE_VIDEO_AVC -> caps.profileLevels?.firstOrNull {
+                            it.profile == MediaCodecInfo.CodecProfileLevel.AVCProfileHigh
+                        }?.profile
+                        else -> null
+                    }
+
+                    candidates += container to SelectedVideoEncoder(
+                        codecName = info.name,
+                        mimeType = mime,
+                        isHardware = info.isHardwareAccelerated,
+                        width = outW,
+                        height = outH,
+                        bitrateBps = safeBitrate,
+                        bitrateMode = bitrateMode,
+                        frameRate = safeFps,
+                        profile = profile
+                    )
                 }
-
-                return SelectedVideoEncoder(
-                    codecName = info.name,
-                    mimeType = mime,
-                    isHardware = info.isHardwareAccelerated,
-                    width = outW,
-                    height = outH,
-                    bitrateBps = safeBitrate,
-                    bitrateMode = bitrateMode,
-                    frameRate = safeFps,
-                    profile = profile
-                )
             }
         }
-        return null
+        return candidates
     }
 
     private fun configureVideoEncoderWithFallback(

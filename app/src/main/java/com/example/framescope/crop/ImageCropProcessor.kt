@@ -153,15 +153,27 @@ object ImageCropProcessor {
     }
 
     private fun decodeFullResolutionBitmap(context: Context, uri: android.net.Uri): Bitmap? {
-        return runCatching {
+        val direct = try {
             val source = ImageDecoder.createSource(context.contentResolver, uri)
             ImageDecoder.decodeBitmap(source) { decoder, _, _ ->
                 decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
                 decoder.isMutableRequired = false
             }
-        }.getOrElse {
-            decodeWithBitmapFactory(context, uri, maxDimension = 0)
+        } catch (_: Throwable) {
+            null
         }
+        if (direct != null) return direct
+
+        val caps = listOf(0, 4096, 2560)
+        for (cap in caps) {
+            val attempt = try {
+                decodeWithBitmapFactory(context, uri, maxDimension = cap)
+            } catch (_: OutOfMemoryError) {
+                null
+            }
+            if (attempt != null) return attempt
+        }
+        return null
     }
 
     private fun decodeWithBitmapFactory(
@@ -182,13 +194,24 @@ object ImageCropProcessor {
             }
         }
 
-        val decodeOpts = BitmapFactory.Options().apply {
-            inSampleSize = sampleSize
-            inPreferredConfig = Bitmap.Config.ARGB_8888
+        var raw: Bitmap? = null
+        var attemptSample = sampleSize
+        repeat(4) {
+            if (raw != null) return@repeat
+            val decodeOpts = BitmapFactory.Options().apply {
+                inSampleSize = attemptSample
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
+            raw = try {
+                resolver.openInputStream(uri)?.use {
+                    BitmapFactory.decodeStream(it, null, decodeOpts)
+                }
+            } catch (_: OutOfMemoryError) {
+                attemptSample *= 2
+                null
+            }
         }
-        val raw = resolver.openInputStream(uri)?.use {
-            BitmapFactory.decodeStream(it, null, decodeOpts)
-        } ?: return null
+        val decoded = raw ?: return null
 
         val orientation = resolver.openInputStream(uri)?.use { input ->
             runCatching {
@@ -214,14 +237,14 @@ object ImageCropProcessor {
                 matrix.postRotate(270f)
                 matrix.postScale(-1f, 1f)
             }
-            else -> return raw
+            else -> return decoded
         }
 
         return runCatching {
-            val rotated = Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, matrix, true)
-            if (rotated !== raw) raw.recycle()
+            val rotated = Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, matrix, true)
+            if (rotated !== decoded) decoded.recycle()
             rotated
-        }.getOrDefault(raw)
+        }.getOrDefault(decoded)
     }
 
     private data class CompressSpec(

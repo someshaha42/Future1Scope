@@ -7,6 +7,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.framescope.capability.CropCapabilitiesSnapshot
+import com.example.framescope.capability.DeviceCapabilityEngine
+import com.example.framescope.capability.OptionSupportInfo
 import com.example.framescope.crop.CanvasAspectMode
 import com.example.framescope.crop.CodecPipelineSupport
 import com.example.framescope.crop.CropAspectRatio
@@ -70,6 +73,9 @@ data class CropToolUiState(
     val selectedImageFormat: ImageExportFormatOption? = null,
     val selectedVideoFormat: VideoExportFormatOption? = null,
     val pipelineSupport: CodecPipelineSupport? = null,
+    val cropCapabilities: CropCapabilitiesSnapshot = CropCapabilitiesSnapshot(),
+    val aspectRatioSupport: Map<CropAspectRatio, OptionSupportInfo> = emptyMap(),
+    val bitrateModeSupport: Map<VideoBitrateMode, OptionSupportInfo> = emptyMap(),
     val recentProjects: List<CropProjectRecord> = emptyList(),
     val projectThumbnails: Map<String, Bitmap> = emptyMap(),
     val exportState: CropExportState = CropExportState.Idle,
@@ -157,12 +163,35 @@ class CropToolViewModel(
     private var pendingGestureStartSnapshot: CropEditSnapshot? = null
 
     init {
+        val caps = DeviceCapabilityEngine.probeCropCapabilities(appContext)
+        _uiState.update { it.copy(cropCapabilities = caps) }
         viewModelScope.launch {
             projectsRepository.copyOriginalSourceFlow.collect { enabled ->
                 _uiState.update { it.copy(copyOriginalSourceEnabled = enabled) }
             }
         }
         refreshRecentProjects()
+    }
+
+    private fun CropToolUiState.withDynamicSupport(): CropToolUiState {
+        val aspectSupport = DeviceCapabilityEngine.probeAspectRatiosForMedia(
+            media = media,
+            customWidth = customAspectWidth,
+            customHeight = customAspectHeight
+        )
+        val bitrateSupport = if (media?.mediaType == CropMediaType.VIDEO) {
+            DeviceCapabilityEngine.probeCropVideoBitrateModes(
+                media = media,
+                customBitrateMbps = customBitrateMbps,
+                container = selectedVideoFormat?.container
+            )
+        } else {
+            emptyMap()
+        }
+        return copy(
+            aspectRatioSupport = aspectSupport,
+            bitrateModeSupport = bitrateSupport
+        )
     }
 
     private fun CropToolUiState.toSnapshot(): CropEditSnapshot = CropEditSnapshot(
@@ -223,7 +252,7 @@ class CropToolViewModel(
                 customAspectWidth = prevSnap.customAspectWidth,
                 customAspectHeight = prevSnap.customAspectHeight,
                 customAspectError = null
-            ).withHistoryFlags()
+            ).withHistoryFlags().withDynamicSupport()
         }
         persistCurrentProjectAsync()
     }
@@ -241,7 +270,7 @@ class CropToolViewModel(
                 customAspectWidth = nextSnap.customAspectWidth,
                 customAspectHeight = nextSnap.customAspectHeight,
                 customAspectError = null
-            ).withHistoryFlags()
+            ).withHistoryFlags().withDynamicSupport()
         }
         persistCurrentProjectAsync()
     }
@@ -259,7 +288,7 @@ class CropToolViewModel(
                 customAspectWidth = initialSnapshot.customAspectWidth,
                 customAspectHeight = initialSnapshot.customAspectHeight,
                 customAspectError = null
-            ).withHistoryFlags()
+            ).withHistoryFlags().withDynamicSupport()
         }
         persistCurrentProjectAsync()
     }
@@ -421,7 +450,12 @@ class CropToolViewModel(
                     runCatching { oldBitmap.recycle() }
                 }
 
-                val firstVideoFormat = info.videoExportOptions.firstOrNull()
+                val firstVideoFormat = info.videoExportOptions.firstOrNull {
+                    it.isOriginal && it.supportInfo.isSupported
+                } ?: info.videoExportOptions.firstOrNull {
+                    it.supportInfo.isSupported
+                } ?: info.videoExportOptions.firstOrNull()
+
                 val pipelineSupport = withContext(Dispatchers.Default) {
                     if (info.mediaType == CropMediaType.VIDEO) {
                         CropMediaInspector.inspectVideoPipelineSupport(
@@ -485,7 +519,7 @@ class CropToolViewModel(
                         selectedVideoFormat = firstVideoFormat,
                         pipelineSupport = pipelineSupport,
                         exportState = CropExportState.Idle
-                    )
+                    ).withDynamicSupport()
                 }
 
                 val record = buildProjectRecordFromState(_uiState.value)
@@ -661,7 +695,7 @@ class CropToolViewModel(
                         selectedVideoFormat = savedVideoFormat,
                         pipelineSupport = pipelineSupport,
                         exportState = CropExportState.Idle
-                    ).withHistoryFlags()
+                    ).withHistoryFlags().withDynamicSupport()
                 }
             }
         }
@@ -818,7 +852,7 @@ class CropToolViewModel(
                 customAspectError = null
             )
             pushHistory(prevSnap, nextState.toSnapshot())
-            _uiState.value = nextState.withHistoryFlags()
+            _uiState.value = nextState.withHistoryFlags().withDynamicSupport()
             persistCurrentProjectAsync()
             return
         }
@@ -835,7 +869,7 @@ class CropToolViewModel(
             customAspectError = null
         )
         pushHistory(prevSnap, nextState.toSnapshot())
-        _uiState.value = nextState.withHistoryFlags()
+        _uiState.value = nextState.withHistoryFlags().withDynamicSupport()
         persistCurrentProjectAsync()
     }
 
@@ -855,7 +889,7 @@ class CropToolViewModel(
                     customAspectWidth = cleanW,
                     customAspectHeight = cleanH,
                     customAspectError = "Enter positive ratio numbers"
-                )
+                ).withDynamicSupport()
             }
             return
         }
@@ -876,23 +910,14 @@ class CropToolViewModel(
             cropRect = centered
         )
         pushHistory(prevSnap, nextState.toSnapshot())
-        _uiState.value = nextState.withHistoryFlags()
+        _uiState.value = nextState.withHistoryFlags().withDynamicSupport()
         persistCurrentProjectAsync()
     }
 
     fun selectBitrateMode(mode: VideoBitrateMode) {
-        val media = _uiState.value.media ?: return
-        if (mode == VideoBitrateMode.ORIGINAL_PRESERVATION &&
-            (media.originalBitrateBps == null || media.originalBitrateBps <= 0L)
-        ) {
-            _uiState.update {
-                it.copy(
-                    message = "Original bitrate metadata is unavailable for this video. Custom mode remains active."
-                )
-            }
-            return
+        _uiState.update {
+            it.copy(bitrateMode = mode).withDynamicSupport()
         }
-        _uiState.update { it.copy(bitrateMode = mode) }
         persistCurrentProjectAsync()
     }
 
@@ -902,7 +927,7 @@ class CropToolViewModel(
             it.copy(
                 bitrateMode = VideoBitrateMode.CUSTOM,
                 customBitrateMbps = clamped
-            )
+            ).withDynamicSupport()
         }
         persistCurrentProjectAsync()
     }
@@ -915,17 +940,23 @@ class CropToolViewModel(
     fun selectVideoFormat(option: VideoExportFormatOption) {
         val media = _uiState.value.media
         viewModelScope.launch {
+            val effectiveContainer = if (option.supportInfo.isSupported) {
+                option.container
+            } else {
+                media?.videoExportOptions?.firstOrNull { it.supportInfo.isSupported }?.container
+                    ?: com.example.framescope.crop.VideoContainerFormat.MP4
+            }
             val support = withContext(Dispatchers.Default) {
                 CropMediaInspector.inspectVideoPipelineSupport(
                     sourceVideoMime = media?.sourceVideoMime,
-                    container = option.container
+                    container = effectiveContainer
                 )
             }
             _uiState.update {
                 it.copy(
                     selectedVideoFormat = option,
                     pipelineSupport = support
-                )
+                ).withDynamicSupport()
             }
             persistCurrentProjectAsync()
         }
@@ -947,9 +978,19 @@ class CropToolViewModel(
             }
 
             val formatLabel = if (media.mediaType == CropMediaType.VIDEO) {
-                state.selectedVideoFormat?.label ?: "MP4"
+                val chosen = state.selectedVideoFormat
+                if (chosen != null && !chosen.supportInfo.isSupported && !chosen.supportInfo.alternativeName.isNullOrBlank()) {
+                    chosen.supportInfo.alternativeName
+                } else {
+                    chosen?.label ?: "MP4"
+                }
             } else {
-                state.selectedImageFormat?.label ?: "PNG"
+                val chosen = state.selectedImageFormat
+                if (chosen != null && !chosen.supportInfo.isSupported && !chosen.supportInfo.alternativeName.isNullOrBlank()) {
+                    chosen.supportInfo.alternativeName
+                } else {
+                    chosen?.label ?: "PNG"
+                }
             }
 
             val result = when (media.mediaType) {
@@ -966,36 +1007,34 @@ class CropToolViewModel(
                     )
                 }
                 CropMediaType.VIDEO -> {
-                    val format = state.selectedVideoFormat ?: media.videoExportOptions.firstOrNull()
-                    if (format == null) {
+                    val chosenFormat = state.selectedVideoFormat ?: media.videoExportOptions.firstOrNull()
+                    val effectiveFormat = if (chosenFormat != null && !chosenFormat.supportInfo.isSupported) {
+                        media.videoExportOptions.firstOrNull { it.supportInfo.isSupported } ?: chosenFormat
+                    } else {
+                        chosenFormat
+                    }
+                    if (effectiveFormat == null) {
                         CropExportState.Error("No compatible video export format found on this device.")
                     } else {
+                        val fallbackCustomBps = (state.customBitrateMbps * 1_000_000f).roundToInt()
+                            .coerceAtLeast(250_000)
                         val targetBps = when (state.bitrateMode) {
                             VideoBitrateMode.ORIGINAL_PRESERVATION -> {
                                 val orig = media.originalBitrateBps
-                                if (orig == null || orig <= 0L) {
-                                    _uiState.update {
-                                        it.copy(
-                                            exportState = CropExportState.Error(
-                                                "Original bitrate metadata is unavailable for this file. Switch to Custom bitrate mode."
-                                            )
-                                        )
-                                    }
-                                    return@launch
+                                if (orig != null && orig > 0L) {
+                                    orig.coerceIn(250_000L, 50_000_000L).toInt()
+                                } else {
+                                    fallbackCustomBps
                                 }
-                                orig.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
                             }
-                            VideoBitrateMode.CUSTOM -> {
-                                (state.customBitrateMbps * 1_000_000f).roundToInt()
-                                    .coerceAtLeast(250_000)
-                            }
+                            VideoBitrateMode.CUSTOM -> fallbackCustomBps
                         }
 
                         VideoCropProcessor.exportCroppedVideo(
                             context = appContext,
                             media = media,
                             cropRect = state.cropRect,
-                            formatOption = format,
+                            formatOption = effectiveFormat,
                             targetBitrateBps = targetBps,
                             trimStartMs = state.trimStartMs,
                             trimEndMs = state.trimEndMs,

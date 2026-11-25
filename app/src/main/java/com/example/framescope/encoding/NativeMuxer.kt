@@ -25,6 +25,7 @@ class NativeMuxer(outputPath: String) {
 
     private var videoTrack = -1
     private var audioTrack = -1
+    private var audioDisabled = false
     private var started = false
     private var stopped = false
     private var wroteAnySample = false
@@ -38,6 +39,15 @@ class NativeMuxer(outputPath: String) {
     private val pendingVideo = ArrayDeque<PendingSample>()
     private val pendingAudio = ArrayDeque<PendingSample>()
 
+    fun disableAudioTrack() {
+        synchronized(lock) {
+            if (stopped || started) return
+            audioDisabled = true
+            pendingAudio.clear()
+            startIfReady()
+        }
+    }
+
     fun addVideoTrack(format: MediaFormat) {
         synchronized(lock) {
             if (stopped || started || videoTrack != -1) return
@@ -48,14 +58,14 @@ class NativeMuxer(outputPath: String) {
 
     fun addAudioTrack(format: MediaFormat) {
         synchronized(lock) {
-            if (stopped || started || audioTrack != -1) return
+            if (stopped || started || audioTrack != -1 || audioDisabled) return
             audioTrack = muxer.addTrack(format)
             startIfReady()
         }
     }
 
     private fun startIfReady() {
-        if (!started && videoTrack >= 0 && audioTrack >= 0) {
+        if (!started && videoTrack >= 0 && (audioTrack >= 0 || audioDisabled)) {
             muxer.start()
             started = true
             flushPendingSamples()

@@ -30,16 +30,25 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.framescope.R
+import com.example.framescope.capability.DeviceCapabilityEngine
+import com.example.framescope.capability.OptionSupportInfo
+import com.example.framescope.ui.components.AlternativeInUseBanner
+import com.example.framescope.ui.components.SupportStatusPill
 import com.example.framescope.ui.theme.FrameScopeColors
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 private data class ToolEntry(
     val id: String,
@@ -47,6 +56,7 @@ private data class ToolEntry(
     val description: String,
     val icon: ImageVector,
     val testTag: String,
+    val supportInfo: OptionSupportInfo,
     val onClick: () -> Unit
 )
 
@@ -54,6 +64,16 @@ private data class ToolEntry(
 fun ToolsScreen(
     onOpenCropTool: () -> Unit
 ) {
+    val context = LocalContext.current
+    val cropSupport by produceState(
+        initialValue = OptionSupportInfo(true, detailText = "Photo & Video Supported"),
+        context
+    ) {
+        value = withContext(Dispatchers.Default) {
+            DeviceCapabilityEngine.probeCropCapabilities(context).cropToolSupport
+        }
+    }
+
     val tools = listOf(
         ToolEntry(
             id = "crop",
@@ -61,6 +81,7 @@ fun ToolsScreen(
             description = stringResource(R.string.tool_crop_desc),
             icon = Icons.Rounded.Crop,
             testTag = "tool_card_crop",
+            supportInfo = cropSupport,
             onClick = onOpenCropTool
         )
     )
@@ -137,50 +158,65 @@ private fun ToolCard(tool: ToolEntry) {
         color = FrameScopeColors.CardSurface,
         border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle)
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(FrameScopeColors.SelectionBlueTint)
-                    .border(1.dp, FrameScopeColors.SelectionBlue, RoundedCornerShape(12.dp)),
-                contentAlignment = Alignment.Center
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp)
             ) {
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(FrameScopeColors.SelectionBlueTint)
+                        .border(1.dp, FrameScopeColors.SelectionBlue, RoundedCornerShape(12.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = tool.icon,
+                        contentDescription = tool.title,
+                        tint = FrameScopeColors.SelectionBlue,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = tool.title,
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                            color = FrameScopeColors.TextPrimary
+                        )
+                        SupportStatusPill(isSupported = tool.supportInfo.isSupported)
+                    }
+                    Text(
+                        text = tool.description,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = FrameScopeColors.TextSecondary
+                    )
+                }
+
                 Icon(
-                    imageVector = tool.icon,
-                    contentDescription = tool.title,
-                    tint = FrameScopeColors.SelectionBlue,
-                    modifier = Modifier.size(22.dp)
+                    imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = FrameScopeColors.TextSecondary
                 )
             }
 
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(3.dp)
-            ) {
-                Text(
-                    text = tool.title,
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                    color = FrameScopeColors.TextPrimary
-                )
-                Text(
-                    text = tool.description,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = FrameScopeColors.TextSecondary
-                )
+            if (!tool.supportInfo.isSupported && !tool.supportInfo.alternativeName.isNullOrBlank()) {
+                AlternativeInUseBanner(alternativeName = tool.supportInfo.alternativeName)
             }
-
-            Icon(
-                imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
-                contentDescription = null,
-                tint = FrameScopeColors.TextSecondary
-            )
         }
     }
 }

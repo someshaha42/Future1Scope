@@ -82,15 +82,19 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.framescope.capability.OptionSupportInfo
 import com.example.framescope.crop.CanvasAspectMode
 import com.example.framescope.crop.CropAspectRatio
+import com.example.framescope.crop.CropImportSource
 import com.example.framescope.crop.CropMediaType
 import com.example.framescope.crop.CropProjectRecord
 import com.example.framescope.crop.ImageExportFormatOption
 import com.example.framescope.crop.VideoBitrateMode
 import com.example.framescope.crop.VideoExportFormatOption
 import java.io.File
+import com.example.framescope.ui.components.AlternativeInUseBanner
 import com.example.framescope.ui.components.SectionCard
+import com.example.framescope.ui.components.SupportStatusPill
 import com.example.framescope.ui.theme.FrameScopeColors
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -109,12 +113,18 @@ private enum class TimelineDragTarget {
 @Composable
 internal fun ImportInterfaceCard(
     hasLoadedMedia: Boolean,
+    importSupport: Map<CropImportSource, OptionSupportInfo> = emptyMap(),
     onPickAll: () -> Unit,
     onPickVideo: () -> Unit,
     onPickImage: () -> Unit,
     onPickFromFile: () -> Unit,
     onCancelImport: () -> Unit
 ) {
+    val allInfo = importSupport[CropImportSource.ALL] ?: OptionSupportInfo(true)
+    val videoInfo = importSupport[CropImportSource.VIDEO] ?: OptionSupportInfo(true)
+    val imageInfo = importSupport[CropImportSource.IMAGE] ?: OptionSupportInfo(true)
+    val fileInfo = importSupport[CropImportSource.FILE] ?: OptionSupportInfo(true)
+
     SectionCard(
         title = "Import Media",
         trailing = if (hasLoadedMedia) {
@@ -138,6 +148,7 @@ internal fun ImportInterfaceCard(
                 ImportTileButton(
                     label = "All",
                     icon = Icons.Rounded.Collections,
+                    supportInfo = allInfo,
                     testTag = "crop_import_all",
                     onClick = onPickAll,
                     modifier = Modifier.weight(1f)
@@ -145,6 +156,7 @@ internal fun ImportInterfaceCard(
                 ImportTileButton(
                     label = "Video",
                     icon = Icons.Rounded.VideoLibrary,
+                    supportInfo = videoInfo,
                     testTag = "crop_import_video",
                     onClick = onPickVideo,
                     modifier = Modifier.weight(1f)
@@ -152,6 +164,7 @@ internal fun ImportInterfaceCard(
                 ImportTileButton(
                     label = "Image",
                     icon = Icons.Rounded.Image,
+                    supportInfo = imageInfo,
                     testTag = "crop_import_image",
                     onClick = onPickImage,
                     modifier = Modifier.weight(1f)
@@ -166,7 +179,7 @@ internal fun ImportInterfaceCard(
                     containerColor = FrameScopeColors.SelectionBlueTint,
                     contentColor = FrameScopeColors.TextPrimary
                 ),
-                contentPadding = PaddingValues(vertical = 13.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 13.dp),
                 modifier = Modifier
                     .fillMaxWidth()
                     .minimumInteractiveComponentSize()
@@ -181,8 +194,17 @@ internal fun ImportInterfaceCard(
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = "Pick From File",
-                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold)
+                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                    modifier = Modifier.weight(1f)
                 )
+                SupportStatusPill(isSupported = fileInfo.isSupported)
+            }
+
+            val unsupportedFallback = listOf(allInfo, videoInfo, imageInfo, fileInfo)
+                .firstOrNull { !it.isSupported && !it.alternativeName.isNullOrBlank() }
+                ?.alternativeName
+            if (unsupportedFallback != null) {
+                AlternativeInUseBanner(alternativeName = unsupportedFallback)
             }
         }
     }
@@ -192,6 +214,7 @@ internal fun ImportInterfaceCard(
 private fun ImportTileButton(
     label: String,
     icon: ImageVector,
+    supportInfo: OptionSupportInfo,
     testTag: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
@@ -210,16 +233,27 @@ private fun ImportTileButton(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 12.dp, horizontal = 8.dp),
+                .padding(vertical = 10.dp, horizontal = 8.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            verticalArrangement = Arrangement.spacedBy(5.dp)
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = label,
-                tint = FrameScopeColors.SelectionBlue,
-                modifier = Modifier.size(22.dp)
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Spacer(modifier = Modifier.width(18.dp))
+                Icon(
+                    imageVector = icon,
+                    contentDescription = label,
+                    tint = FrameScopeColors.SelectionBlue,
+                    modifier = Modifier.size(22.dp)
+                )
+                SupportStatusPill(
+                    isSupported = supportInfo.isSupported,
+                    compact = true
+                )
+            }
             Text(
                 text = label,
                 style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
@@ -571,9 +605,12 @@ internal fun AspectRatioSection(
     customHeight: String,
     customError: String?,
     enabled: Boolean = true,
+    aspectRatioSupport: Map<CropAspectRatio, OptionSupportInfo> = emptyMap(),
     onSelectRatio: (CropAspectRatio) -> Unit,
     onCustomChanged: (String, String) -> Unit
 ) {
+    val selectedSupport = aspectRatioSupport[selected] ?: OptionSupportInfo(true)
+
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -642,6 +679,7 @@ internal fun AspectRatioSection(
                 ) {
                     CropAspectRatio.entries.forEach { ratio ->
                         val isSelected = selected == ratio
+                        val ratioInfo = aspectRatioSupport[ratio] ?: OptionSupportInfo(true)
                         val tileModifier = if (useEvenRow) {
                             Modifier.weight(1f)
                         } else {
@@ -651,6 +689,7 @@ internal fun AspectRatioSection(
                             ratio = ratio,
                             selected = isSelected,
                             enabled = enabled,
+                            supportInfo = ratioInfo,
                             onClick = { onSelectRatio(ratio) },
                             modifier = tileModifier
                         )
@@ -708,6 +747,10 @@ internal fun AspectRatioSection(
                     )
                 }
             }
+
+            if (!selectedSupport.isSupported && !selectedSupport.alternativeName.isNullOrBlank()) {
+                AlternativeInUseBanner(alternativeName = selectedSupport.alternativeName)
+            }
         }
     }
 }
@@ -717,6 +760,7 @@ private fun AspectRatioTile(
     ratio: CropAspectRatio,
     selected: Boolean,
     enabled: Boolean,
+    supportInfo: OptionSupportInfo,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -738,24 +782,28 @@ private fun AspectRatioTile(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 3.dp, vertical = 8.dp),
+                .padding(horizontal = 3.dp, vertical = 6.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(5.dp)
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             AspectRatioGlyph(
                 ratio = ratio,
                 tint = tintColor,
-                modifier = Modifier.size(20.dp)
+                modifier = Modifier.size(18.dp)
             )
             Text(
                 text = ratio.label,
                 style = MaterialTheme.typography.labelMedium.copy(
                     fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold,
-                    fontSize = 11.sp
+                    fontSize = 10.5.sp
                 ),
                 color = if (selected) FrameScopeColors.TextPrimary else FrameScopeColors.TextSecondary,
                 maxLines = 1,
                 overflow = TextOverflow.Clip
+            )
+            SupportStatusPill(
+                isSupported = supportInfo.isSupported,
+                compact = true
             )
         }
     }
@@ -839,6 +887,7 @@ internal fun VideoBitrateModeSection(
     mode: VideoBitrateMode,
     customBitrateMbps: Float,
     originalBitrateBps: Long?,
+    bitrateModeSupport: Map<VideoBitrateMode, OptionSupportInfo> = emptyMap(),
     onSelectMode: (VideoBitrateMode) -> Unit,
     onSliderChanged: (Float) -> Unit
 ) {
@@ -847,6 +896,9 @@ internal fun VideoBitrateModeSection(
     } else {
         "Unavailable"
     }
+    val customSupport = bitrateModeSupport[VideoBitrateMode.CUSTOM] ?: OptionSupportInfo(true)
+    val origSupport = bitrateModeSupport[VideoBitrateMode.ORIGINAL_PRESERVATION]
+        ?: OptionSupportInfo(originalBitrateBps != null && originalBitrateBps > 0L)
 
     SectionCard(title = "Bitrate Mode") {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -876,19 +928,29 @@ internal fun VideoBitrateModeSection(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = "Custom",
-                            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
-                            color = FrameScopeColors.TextPrimary
-                        )
-                        Text(
-                            text = String.format(Locale.US, "%.1f Mbps", customBitrateMbps),
-                            style = MaterialTheme.typography.bodyMedium.copy(
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.SemiBold
-                            ),
-                            color = FrameScopeColors.SelectionBlue
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "Custom",
+                                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                                color = FrameScopeColors.TextPrimary
+                            )
+                            Text(
+                                text = String.format(Locale.US, "%.1f Mbps", customBitrateMbps),
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.SemiBold
+                                ),
+                                color = FrameScopeColors.SelectionBlue
+                            )
+                        }
+                        SupportStatusPill(isSupported = customSupport.isSupported)
+                    }
+
+                    if (!customSupport.isSupported && !customSupport.alternativeName.isNullOrBlank()) {
+                        AlternativeInUseBanner(alternativeName = customSupport.alternativeName)
                     }
 
                     Slider(
@@ -939,42 +1001,57 @@ internal fun VideoBitrateModeSection(
                 color = if (origSelected) FrameScopeColors.SelectionBlueTint else FrameScopeColors.InnerSurface,
                 border = BorderStroke(if (origSelected) 1.5.dp else 1.dp, origBorder)
             ) {
-                Row(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 14.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                        .padding(horizontal = 12.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Text(
-                        text = "Original Preservation",
-                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
-                        color = FrameScopeColors.TextPrimary
-                    )
                     Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = origMbpsText,
-                            style = MaterialTheme.typography.bodyMedium.copy(
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.SemiBold
-                            ),
-                            color = if (originalBitrateBps != null && originalBitrateBps > 0L) {
-                                FrameScopeColors.ReadyGreen
-                            } else {
-                                FrameScopeColors.SpecRedText
-                            }
-                        )
-                        if (origSelected) {
-                            Icon(
-                                imageVector = Icons.Rounded.CheckCircle,
-                                contentDescription = "Selected",
-                                tint = FrameScopeColors.SelectionBlue,
-                                modifier = Modifier.size(18.dp)
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Text(
+                                text = "Original Preservation",
+                                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                                color = FrameScopeColors.TextPrimary
+                            )
+                            Text(
+                                text = origMbpsText,
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.SemiBold
+                                ),
+                                color = if (originalBitrateBps != null && originalBitrateBps > 0L) {
+                                    FrameScopeColors.ReadyGreen
+                                } else {
+                                    FrameScopeColors.SpecRedText
+                                }
                             )
                         }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            SupportStatusPill(isSupported = origSupport.isSupported)
+                            if (origSelected) {
+                                Icon(
+                                    imageVector = Icons.Rounded.CheckCircle,
+                                    contentDescription = "Selected",
+                                    tint = FrameScopeColors.SelectionBlue,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    if (!origSupport.isSupported && !origSupport.alternativeName.isNullOrBlank()) {
+                        AlternativeInUseBanner(alternativeName = origSupport.alternativeName)
                     }
                 }
             }
@@ -989,20 +1066,27 @@ internal fun ImageFormatSection(
     onSelect: (ImageExportFormatOption) -> Unit
 ) {
     SectionCard(title = "Export Format") {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            options.forEach { option ->
-                val isSelected = selected?.id == option.id
-                FormatChip(
-                    label = option.label,
-                    selected = isSelected,
-                    testTag = "image_format_${option.id.name.lowercase()}",
-                    onClick = { onSelect(option) }
-                )
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                options.forEach { option ->
+                    val isSelected = selected?.id == option.id
+                    FormatChip(
+                        label = option.label,
+                        selected = isSelected,
+                        supportInfo = option.supportInfo,
+                        testTag = "image_format_${option.id.name.lowercase()}",
+                        onClick = { onSelect(option) }
+                    )
+                }
+            }
+
+            if (selected != null && !selected.supportInfo.isSupported && !selected.supportInfo.alternativeName.isNullOrBlank()) {
+                AlternativeInUseBanner(alternativeName = selected.supportInfo.alternativeName)
             }
         }
     }
@@ -1022,20 +1106,27 @@ internal fun VideoFormatSection(
                 color = FrameScopeColors.SpecRedText
             )
         } else {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                options.forEach { option ->
-                    val isSelected = selected == option
-                    FormatChip(
-                        label = option.label,
-                        selected = isSelected,
-                        testTag = "video_format_${option.container.name.lowercase()}",
-                        onClick = { onSelect(option) }
-                    )
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    options.forEach { option ->
+                        val isSelected = selected == option
+                        FormatChip(
+                            label = option.label,
+                            selected = isSelected,
+                            supportInfo = option.supportInfo,
+                            testTag = "video_format_${option.container.name.lowercase()}",
+                            onClick = { onSelect(option) }
+                        )
+                    }
+                }
+
+                if (selected != null && !selected.supportInfo.isSupported && !selected.supportInfo.alternativeName.isNullOrBlank()) {
+                    AlternativeInUseBanner(alternativeName = selected.supportInfo.alternativeName)
                 }
             }
         }
@@ -1046,6 +1137,7 @@ internal fun VideoFormatSection(
 private fun FormatChip(
     label: String,
     selected: Boolean,
+    supportInfo: OptionSupportInfo,
     testTag: String,
     onClick: () -> Unit
 ) {
@@ -1063,14 +1155,19 @@ private fun FormatChip(
             if (selected) FrameScopeColors.SelectionBlue else FrameScopeColors.BorderSubtle
         )
     ) {
-        Box(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-            contentAlignment = Alignment.Center
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Text(
                 text = label,
                 style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
                 color = if (selected) FrameScopeColors.SelectionBlue else FrameScopeColors.TextPrimary
+            )
+            SupportStatusPill(
+                isSupported = supportInfo.isSupported,
+                compact = true
             )
         }
     }

@@ -52,7 +52,8 @@ data class ResolvedVideoConfig(
     val bitrateMode: Int?,
     val frameRate: Int,
     val profile: Int?,
-    val supportsMaxBFramesZero: Boolean
+    val supportsMaxBFramesZero: Boolean,
+    val mimeType: String = tab.mimeType
 )
 
 object EncodingSpec {
@@ -74,7 +75,7 @@ object EncodingSpec {
     ): EncodingTab {
         if (supportMap[EncodingTab.H265]?.isSupported == true) return EncodingTab.H265
         if (supportMap[EncodingTab.H264]?.isSupported == true) return EncodingTab.H264
-        return EncodingTab.H265
+        return EncodingTab.H264
     }
 
     private fun detectCodecCapability(
@@ -87,7 +88,7 @@ object EncodingSpec {
                 supportsSurfaceInput(info, tab.mimeType)
         }
 
-        // Prioritize Hardware for all three codecs; fall back to Software if Hardware unavailable
+        // Prioritize Hardware; fall back to Software if Hardware unavailable
         val hwEncoder = encoders.firstOrNull { it.isHardwareAccelerated }
         if (hwEncoder != null) {
             return VideoCodecCapability(
@@ -114,9 +115,73 @@ object EncodingSpec {
                 isSupported = false,
                 isHardwareAccelerated = false,
                 codecName = null,
-                statusText = "Unsupported"
+                statusText = "✕ Unsupported"
             )
         }
+    }
+
+    fun resolveVideoConfigCandidates(
+        tab: EncodingTab,
+        requestedWidth: Int,
+        requestedHeight: Int,
+        requestedBitrateBps: Int,
+        preferredFrameRate: Int = 60
+    ): List<ResolvedVideoConfig> {
+        val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+        val candidates = mutableListOf<ResolvedVideoConfig>()
+        val seenCodecKeys = HashSet<String>()
+
+        val orderedTabs = buildList {
+            add(tab)
+            EncodingTab.entries.filter { it != tab }.forEach { add(it) }
+        }
+
+        // 1. Try requested tab (HW first, then SW), then peer tabs (HW first, then SW)
+        for (candidateTab in orderedTabs) {
+            val matchingEncoders = list.codecInfos.filter { info ->
+                info.isEncoder &&
+                    info.supportedTypes.any { it.equals(candidateTab.mimeType, ignoreCase = true) } &&
+                    supportsSurfaceInput(info, candidateTab.mimeType)
+            }.sortedByDescending { it.isHardwareAccelerated }
+
+            for (info in matchingEncoders) {
+                if (!seenCodecKeys.add("${info.name}|${candidateTab.mimeType}")) continue
+                buildResolvedConfig(
+                    info = info,
+                    tab = candidateTab,
+                    mimeType = candidateTab.mimeType,
+                    requestedWidth = requestedWidth,
+                    requestedHeight = requestedHeight,
+                    requestedBitrateBps = requestedBitrateBps,
+                    preferredFrameRate = preferredFrameRate
+                )?.let { candidates += it }
+            }
+        }
+
+        // 2. Minimal safe 720p 30fps Software AVC/MPEG-4 fallback for devices with tight encoder limits
+        val safeW = requestedWidth.coerceAtMost(720)
+        val safeH = requestedHeight.coerceAtMost(1280)
+        val safeBps = requestedBitrateBps.coerceAtMost(6_000_000)
+        for (fallbackMime in listOf(MediaFormat.MIMETYPE_VIDEO_AVC, MediaFormat.MIMETYPE_VIDEO_MPEG4)) {
+            val matching = list.codecInfos.filter { info ->
+                info.isEncoder &&
+                    info.supportedTypes.any { it.equals(fallbackMime, ignoreCase = true) } &&
+                    supportsSurfaceInput(info, fallbackMime)
+            }.sortedBy { it.isHardwareAccelerated } // software last-resort safety
+            for (info in matching) {
+                buildResolvedConfig(
+                    info = info,
+                    tab = EncodingTab.H264,
+                    mimeType = fallbackMime,
+                    requestedWidth = safeW,
+                    requestedHeight = safeH,
+                    requestedBitrateBps = safeBps,
+                    preferredFrameRate = 30
+                )?.let { candidates += it }
+            }
+        }
+
+        return candidates
     }
 
     fun resolveCompatibleVideoConfig(
@@ -126,15 +191,26 @@ object EncodingSpec {
         requestedBitrateBps: Int,
         preferredFrameRate: Int = 60
     ): ResolvedVideoConfig {
-        val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
-        val capability = detectCodecCapability(tab, list)
-        val codecName = capability.codecName
-        check(capability.isSupported && !codecName.isNullOrBlank()) {
-            "${tab.displayName} encoder is unavailable on this device."
-        }
+        return resolveVideoConfigCandidates(
+            tab = tab,
+            requestedWidth = requestedWidth,
+            requestedHeight = requestedHeight,
+            requestedBitrateBps = requestedBitrateBps,
+            preferredFrameRate = preferredFrameRate
+        ).firstOrNull()
+            ?: error("No compatible video encoder is available on this device.")
+    }
 
-        val matching = list.codecInfos.first { it.name == codecName }
-        val caps = matching.getCapabilitiesForType(tab.mimeType)
+    private fun buildResolvedConfig(
+        info: MediaCodecInfo,
+        tab: EncodingTab,
+        mimeType: String,
+        requestedWidth: Int,
+        requestedHeight: Int,
+        requestedBitrateBps: Int,
+        preferredFrameRate: Int
+    ): ResolvedVideoConfig? {
+        val caps = runCatching { info.getCapabilitiesForType(mimeType) }.getOrNull() ?: return null
         val videoCaps = caps.videoCapabilities
         val encoderCaps = caps.encoderCapabilities
 
@@ -165,7 +241,7 @@ object EncodingSpec {
             else -> null
         }
 
-        val desiredFps = preferredFrameRate.coerceIn(30, 60)
+        val desiredFps = preferredFrameRate.coerceIn(24, 60)
         val frameRate = if (videoCaps != null) {
             val achievable = runCatching {
                 videoCaps.getSupportedFrameRatesFor(alignedW, alignedH)
@@ -184,24 +260,25 @@ object EncodingSpec {
             desiredFps
         }
 
-        val selectedProfile = when (tab) {
-            EncodingTab.H265 -> caps.profileLevels?.firstOrNull {
+        val selectedProfile = when (mimeType) {
+            MediaFormat.MIMETYPE_VIDEO_HEVC -> caps.profileLevels?.firstOrNull {
                 it.profile == MediaCodecInfo.CodecProfileLevel.HEVCProfileMain
             }?.profile
-            EncodingTab.H264 -> null
+            else -> null
         }
 
         return ResolvedVideoConfig(
             tab = tab,
-            codecName = codecName,
-            isHardwareAccelerated = capability.isHardwareAccelerated,
+            codecName = info.name,
+            isHardwareAccelerated = info.isHardwareAccelerated,
             width = alignedW,
             height = alignedH,
             bitrateBps = clampedBitrate,
             bitrateMode = bitrateMode,
             frameRate = frameRate,
             profile = selectedProfile,
-            supportsMaxBFramesZero = capability.isHardwareAccelerated
+            supportsMaxBFramesZero = info.isHardwareAccelerated,
+            mimeType = mimeType
         )
     }
 

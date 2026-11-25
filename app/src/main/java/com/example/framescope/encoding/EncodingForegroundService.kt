@@ -18,6 +18,8 @@ import android.os.PowerManager
 import android.widget.RemoteViews
 import com.example.framescope.MainActivity
 import com.example.framescope.R
+import com.example.framescope.capability.DeviceCapabilityEngine
+import com.example.framescope.capability.EffectiveAudioStrategy
 import com.example.framescope.data.AudioSourceMode
 import com.example.framescope.data.RecordingsRepository
 import kotlinx.coroutines.CoroutineScope
@@ -220,30 +222,69 @@ class EncodingForegroundService : Service() {
 
             val targetWidth = vEncoder.configuredWidth
             val targetHeight = vEncoder.configuredHeight
-            val audioSampleRate = resolveSupportedAudioSampleRate()
-
-            val aEncoder = NativeAudioEncoder(
-                muxer = nativeMuxer,
-                sampleRate = audioSampleRate,
-                onFatalError = { err ->
-                    stopRecording(fatalError = err.message ?: "Audio encoder error")
-                }
-            )
-            audioEncoder = aEncoder
-            aEncoder.start()
-
-            val aCapture = NativeAudioCapture(
+            val (audioStrategy, audioSampleRate) = DeviceCapabilityEngine.resolveAudioExecutionStrategy(
                 context = applicationContext,
-                audioSourceMode = audioSource,
-                projection = mediaProjection,
-                encoder = aEncoder,
-                sampleRate = audioSampleRate,
-                onFatalError = { err ->
-                    stopRecording(fatalError = err.message ?: "Audio capture error")
-                }
+                requested = audioSource
             )
-            audioCapture = aCapture
-            aCapture.start()
+
+            var activeAudioLabel: String? = null
+            if (audioStrategy == EffectiveAudioStrategy.VIDEO_ONLY) {
+                nativeMuxer.disableAudioTrack()
+            } else {
+                val primaryMode = if (audioStrategy == EffectiveAudioStrategy.MICROPHONE) {
+                    AudioSourceMode.MICROPHONE
+                } else {
+                    AudioSourceMode.INTERNAL_AUDIO
+                }
+                val peerMode = if (primaryMode == AudioSourceMode.INTERNAL_AUDIO) {
+                    AudioSourceMode.MICROPHONE
+                } else {
+                    AudioSourceMode.INTERNAL_AUDIO
+                }
+
+                var startedAudio = false
+                for (candidateAudioMode in listOf(primaryMode, peerMode)) {
+                    var aEnc: NativeAudioEncoder? = null
+                    var aCap: NativeAudioCapture? = null
+                    val attempt = runCatching {
+                        aEnc = NativeAudioEncoder(
+                            muxer = nativeMuxer,
+                            sampleRate = audioSampleRate,
+                            onFatalError = {
+                                // Keep video capture alive gracefully if audio stream drops mid-session
+                            }
+                        ).also { it.start() }
+
+                        aCap = NativeAudioCapture(
+                            context = applicationContext,
+                            audioSourceMode = candidateAudioMode,
+                            projection = mediaProjection,
+                            encoder = aEnc!!,
+                            sampleRate = audioSampleRate,
+                            onFatalError = {
+                                // Keep video capture alive gracefully if audio capture drops
+                            }
+                        ).also { it.start() }
+                    }
+                    if (attempt.isSuccess) {
+                        audioEncoder = aEnc
+                        audioCapture = aCap
+                        activeAudioLabel = if (candidateAudioMode == AudioSourceMode.INTERNAL_AUDIO) {
+                            "Internal Audio"
+                        } else {
+                            "Microphone"
+                        }
+                        startedAudio = true
+                        break
+                    } else {
+                        runCatching { aCap?.stop() }
+                        runCatching { aEnc?.stop() }
+                    }
+                }
+                if (!startedAudio) {
+                    nativeMuxer.disableAudioTrack()
+                }
+            }
 
             val rotationCoordinator = SurfaceRotationCoordinator().apply {
                 updateInputSize(targetWidth, targetHeight)
@@ -280,7 +321,7 @@ class EncodingForegroundService : Service() {
                 height = targetHeight,
                 tab = vEncoder.activeTab,
                 orientation = orientation,
-                audioSource = audioSource,
+                audioLabelOverride = activeAudioLabel ?: "Video-Only",
                 fallbackSummary = intent.getStringExtra(EXTRA_SUMMARY)
             )
 
@@ -349,37 +390,20 @@ class EncodingForegroundService : Service() {
         }
     }
 
-    private fun resolveSupportedAudioSampleRate(): Int {
-        val candidates = listOf(EncodingSpec.AUDIO_SAMPLE_RATE, 44_100)
-        for (rate in candidates) {
-            val minBuf = AudioRecord.getMinBufferSize(
-                rate,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT
-            )
-            if (minBuf > 0) return rate
-        }
-        return EncodingSpec.AUDIO_SAMPLE_RATE
-    }
-
     private fun buildActiveSummary(
         width: Int,
         height: Int,
         tab: EncodingTab,
         orientation: RecordingOrientation,
-        audioSource: AudioSourceMode,
+        audioLabelOverride: String,
         fallbackSummary: String?
     ): String {
         val orientationLabel = when (orientation) {
             RecordingOrientation.PORTRAIT -> "Portrait"
             RecordingOrientation.LANDSCAPE -> "Landscape"
         }
-        val audioLabel = when (audioSource) {
-            AudioSourceMode.INTERNAL_AUDIO -> "Internal Audio"
-            AudioSourceMode.MICROPHONE -> "Microphone"
-        }
         return if (width > 0 && height > 0) {
-            "${tab.shortName} (${width}×${height}) • $orientationLabel • $audioLabel"
+            "${tab.shortName} (${width}×${height}) • $orientationLabel • $audioLabelOverride"
         } else {
             fallbackSummary ?: "${width}×${height}"
         }

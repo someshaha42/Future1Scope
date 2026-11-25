@@ -10,6 +10,7 @@ import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.provider.OpenableColumns
+import com.example.framescope.capability.DeviceCapabilityEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.Locale
@@ -100,7 +101,7 @@ object CropMediaInspector {
         }
 
         val resolvedExt = ext.ifBlank { mimeToDefaultExtension(detectedMime) }.ifBlank { "png" }
-        val exportOptions = buildImageExportOptions(resolvedExt, detectedMime)
+        val exportOptions = buildImageExportOptions(resolvedExt, detectedMime, hasAlpha)
 
         return ImportedMediaInfo(
             uri = uri,
@@ -224,7 +225,7 @@ object CropMediaInspector {
         check(videoMime != null && rawW > 0 && rawH > 0) {
             "No decodable video track found or unsupported video format."
         }
-        check(hasDecoderForMime(videoMime!!)) {
+        check(hasCompatibleDecoder(videoMime!!)) {
             "No decoder available on this device for $videoMime."
         }
 
@@ -282,15 +283,19 @@ object CropMediaInspector {
         return estimated.coerceIn(15, 120)
     }
 
-    private fun buildImageExportOptions(originalExt: String, originalMime: String): List<ImageExportFormatOption> {
+    private fun buildImageExportOptions(
+        originalExt: String,
+        originalMime: String,
+        sourceHasAlpha: Boolean
+    ): List<ImageExportFormatOption> {
         val upperExt = originalExt.uppercase(Locale.US)
         val (origMime, origSupportsAlpha) = when (originalExt.lowercase(Locale.US)) {
             "png" -> "image/png" to true
             "jpg", "jpeg" -> "image/jpeg" to false
             "webp" -> "image/webp" to true
-            else -> originalMime.ifBlank { "image/png" } to true
+            else -> originalMime.ifBlank { "image/png" } to sourceHasAlpha
         }
-        return listOf(
+        val rawOptions = listOf(
             ImageExportFormatOption(
                 id = ImageExportFormatId.PNG,
                 label = "PNG",
@@ -313,6 +318,14 @@ object CropMediaInspector {
                 supportsTransparency = origSupportsAlpha
             )
         )
+        return rawOptions.map { opt ->
+            opt.copy(
+                supportInfo = DeviceCapabilityEngine.probeImageExportSupport(
+                    option = opt,
+                    sourceHasAlpha = sourceHasAlpha
+                )
+            )
+        }
     }
 
     private fun buildVideoExportOptions(
@@ -320,55 +333,93 @@ object CropMediaInspector {
         originalMime: String
     ): List<VideoExportFormatOption> {
         val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
-        val canExportMp4 = hasEncoderForAny(list, listOf(MediaFormat.MIMETYPE_VIDEO_AVC, MediaFormat.MIMETYPE_VIDEO_HEVC))
-        val canExportWebm = hasEncoderForAny(list, listOf(MediaFormat.MIMETYPE_VIDEO_VP9, MediaFormat.MIMETYPE_VIDEO_VP8))
-        val canExport3gp = hasEncoderForAny(list, listOf(MediaFormat.MIMETYPE_VIDEO_AVC, MediaFormat.MIMETYPE_VIDEO_H263))
+        val canExportMp4 = hasSurfaceEncoderForAny(
+            list,
+            listOf(MediaFormat.MIMETYPE_VIDEO_AVC, MediaFormat.MIMETYPE_VIDEO_HEVC)
+        )
+        val canExportWebm = hasSurfaceEncoderForAny(
+            list,
+            listOf(MediaFormat.MIMETYPE_VIDEO_VP9, MediaFormat.MIMETYPE_VIDEO_VP8)
+        )
+        val canExport3gp = hasSurfaceEncoderForAny(
+            list,
+            listOf(MediaFormat.MIMETYPE_VIDEO_AVC, MediaFormat.MIMETYPE_VIDEO_H263)
+        )
+
+        val fallbackLabel = when {
+            canExportMp4 -> "MP4 (H.264)"
+            canExportWebm -> "WEBM (VP8/VP9)"
+            canExport3gp -> "3GP"
+            else -> "MP4 Software Safe"
+        }
 
         val isOriginalMp4 = originalExt.equals("mp4", ignoreCase = true) ||
             originalExt.equals("m4v", ignoreCase = true) ||
             originalMime.equals("video/mp4", ignoreCase = true)
+        val isOriginalWebm = originalExt.equals("webm", ignoreCase = true) ||
+            originalMime.equals("video/webm", ignoreCase = true)
+        val isOriginal3gp = originalExt.equals("3gp", ignoreCase = true) ||
+            originalExt.equals("3gpp", ignoreCase = true) ||
+            originalMime.equals("video/3gpp", ignoreCase = true)
 
-        val options = mutableListOf<VideoExportFormatOption>()
-        if (canExportMp4) {
-            options += VideoExportFormatOption(
-                label = if (isOriginalMp4) "MP4 (Original)" else "MP4",
+        val mp4Opt = VideoExportFormatOption(
+            label = if (isOriginalMp4) "MP4 (Original)" else "MP4",
+            container = VideoContainerFormat.MP4,
+            isOriginal = isOriginalMp4,
+            supportInfo = DeviceCapabilityEngine.probeVideoExportSupport(
                 container = VideoContainerFormat.MP4,
-                isOriginal = isOriginalMp4
+                fallbackLabel = fallbackLabel
             )
-        }
+        )
+        val webmOpt = VideoExportFormatOption(
+            label = if (isOriginalWebm) "Original (WEBM)" else "WEBM",
+            container = VideoContainerFormat.WEBM,
+            isOriginal = isOriginalWebm,
+            supportInfo = DeviceCapabilityEngine.probeVideoExportSupport(
+                container = VideoContainerFormat.WEBM,
+                fallbackLabel = fallbackLabel
+            )
+        )
+        val threeGpOpt = VideoExportFormatOption(
+            label = if (isOriginal3gp) "Original (3GP)" else "3GP",
+            container = VideoContainerFormat.THREE_GP,
+            isOriginal = isOriginal3gp,
+            supportInfo = DeviceCapabilityEngine.probeVideoExportSupport(
+                container = VideoContainerFormat.THREE_GP,
+                fallbackLabel = fallbackLabel
+            )
+        )
 
-        if (!isOriginalMp4) {
-            when {
-                (originalExt.equals("webm", ignoreCase = true) || originalMime == "video/webm") && canExportWebm -> {
-                    options += VideoExportFormatOption(
-                        label = "Original (WEBM)",
-                        container = VideoContainerFormat.WEBM,
-                        isOriginal = true
-                    )
-                }
-                (originalExt.equals("3gp", ignoreCase = true) ||
-                    originalExt.equals("3gpp", ignoreCase = true) ||
-                    originalMime == "video/3gpp") && canExport3gp -> {
-                    options += VideoExportFormatOption(
-                        label = "Original (3GP)",
-                        container = VideoContainerFormat.THREE_GP,
-                        isOriginal = true
-                    )
-                }
-            }
+        return when {
+            isOriginalWebm -> listOf(webmOpt, mp4Opt, threeGpOpt)
+            isOriginal3gp -> listOf(threeGpOpt, mp4Opt, webmOpt)
+            else -> listOf(mp4Opt, webmOpt, threeGpOpt)
         }
-        return options
+    }
+
+    private fun hasCompatibleDecoder(mime: String): Boolean {
+        if (hasDecoderForMime(mime)) return true
+        if (mime.equals("video/dolby-vision", ignoreCase = true)) {
+            return hasDecoderForMime(MediaFormat.MIMETYPE_VIDEO_HEVC)
+        }
+        return false
     }
 
     private fun hasDecoderForMime(mime: String): Boolean {
-        val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+        val list = MediaCodecList(MediaCodecList.ALL_CODECS)
         return list.codecInfos.any { !it.isEncoder && it.supportedTypes.any { t -> t.equals(mime, ignoreCase = true) } }
     }
 
-    private fun hasEncoderForAny(list: MediaCodecList, mimes: List<String>): Boolean {
+    private fun hasSurfaceEncoderForAny(list: MediaCodecList, mimes: List<String>): Boolean {
         return list.codecInfos.any { info ->
             info.isEncoder && info.supportedTypes.any { type ->
-                mimes.any { target -> type.equals(target, ignoreCase = true) }
+                mimes.any { target ->
+                    type.equals(target, ignoreCase = true) &&
+                        runCatching {
+                            MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface in
+                                info.getCapabilitiesForType(type).colorFormats
+                        }.getOrDefault(false)
+                }
             }
         }
     }
