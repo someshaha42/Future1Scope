@@ -29,33 +29,6 @@ import kotlin.math.roundToInt
 
 object ImageCropProcessor {
 
-    private val PRESERVABLE_EXIF_TAGS = listOf(
-        ExifInterface.TAG_DATETIME,
-        ExifInterface.TAG_DATETIME_ORIGINAL,
-        ExifInterface.TAG_DATETIME_DIGITIZED,
-        ExifInterface.TAG_MAKE,
-        ExifInterface.TAG_MODEL,
-        ExifInterface.TAG_F_NUMBER,
-        ExifInterface.TAG_EXPOSURE_TIME,
-        ExifInterface.TAG_ISO_SPEED_RATINGS,
-        ExifInterface.TAG_FOCAL_LENGTH,
-        ExifInterface.TAG_FLASH,
-        ExifInterface.TAG_WHITE_BALANCE,
-        ExifInterface.TAG_GPS_LATITUDE,
-        ExifInterface.TAG_GPS_LATITUDE_REF,
-        ExifInterface.TAG_GPS_LONGITUDE,
-        ExifInterface.TAG_GPS_LONGITUDE_REF,
-        ExifInterface.TAG_GPS_ALTITUDE,
-        ExifInterface.TAG_GPS_ALTITUDE_REF,
-        ExifInterface.TAG_GPS_TIMESTAMP,
-        ExifInterface.TAG_GPS_DATESTAMP,
-        ExifInterface.TAG_ARTIST,
-        ExifInterface.TAG_COPYRIGHT,
-        ExifInterface.TAG_USER_COMMENT,
-        ExifInterface.TAG_SOFTWARE,
-        ExifInterface.TAG_COLOR_SPACE
-    )
-
     suspend fun loadPreviewBitmap(
         context: Context,
         media: ImportedMediaInfo,
@@ -113,7 +86,7 @@ object ImageCropProcessor {
                 croppedBitmap
             }
 
-            BufferedOutputStream(FileOutputStream(outFile), 128 * 1024).use { bos ->
+            BufferedOutputStream(FileOutputStream(outFile), 256 * 1024).use { bos ->
                 val ok = if (outputSpec.useUncompressedPng) {
                     writeUncompressedPng(finalBitmap, bos)
                 } else {
@@ -122,13 +95,6 @@ object ImageCropProcessor {
                 if (!ok) {
                     return@withContext CropExportState.Error("Image encoder failed for ${outputSpec.extension.uppercase(Locale.US)}.")
                 }
-            }
-
-            // Preserve EXIF metadata for JPEG outputs without rewriting large lossless PNG/WebP files on disk
-            if (outputSpec.extension.equals("jpg", ignoreCase = true) ||
-                outputSpec.extension.equals("jpeg", ignoreCase = true)
-            ) {
-                preserveExifMetadata(context, media.uri, outFile, outW, outH)
             }
 
             val savedToGallery = exportImageToMediaStore(
@@ -164,7 +130,28 @@ object ImageCropProcessor {
             cropRect.right >= 0.999f &&
             cropRect.bottom >= 0.999f
 
-        // 1. Fastest path for unrotated cropped photos: BitmapRegionDecoder decodes ONLY the cropped region
+        // 1. Primary single-open native path: ImageDecoder handles crop rect + orientation directly in one pass
+        val decoderCropped = runCatching {
+            val source = ImageDecoder.createSource(resolver, uri)
+            ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                decoder.isMutableRequired = false
+                if (!isFullCrop) {
+                    val srcW = info.size.width
+                    val srcH = info.size.height
+                    if (srcW > 0 && srcH > 0) {
+                        val leftPx = (cropRect.left * srcW).roundToInt().coerceIn(0, srcW - 1)
+                        val topPx = (cropRect.top * srcH).roundToInt().coerceIn(0, srcH - 1)
+                        val rightPx = (cropRect.right * srcW).roundToInt().coerceIn(leftPx + 1, srcW)
+                        val bottomPx = (cropRect.bottom * srcH).roundToInt().coerceIn(topPx + 1, srcH)
+                        decoder.crop = Rect(leftPx, topPx, rightPx, bottomPx)
+                    }
+                }
+            }
+        }.getOrNull()
+        if (decoderCropped != null) return decoderCropped
+
+        // 2. Fallback region decode for streams ImageDecoder did not accept directly
         if (!isFullCrop) {
             val orientation = resolver.openInputStream(uri)?.use { input ->
                 runCatching {
@@ -204,27 +191,6 @@ object ImageCropProcessor {
                 }
             }
         }
-
-        // 2. Fast ImageDecoder path with native crop rect (handles EXIF orientation, HEIC, AVIF, WebP, PNG, JPG)
-        val decoderCropped = runCatching {
-            val source = ImageDecoder.createSource(resolver, uri)
-            ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
-                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
-                decoder.isMutableRequired = false
-                if (!isFullCrop) {
-                    val srcW = info.size.width
-                    val srcH = info.size.height
-                    if (srcW > 0 && srcH > 0) {
-                        val leftPx = (cropRect.left * srcW).roundToInt().coerceIn(0, srcW - 1)
-                        val topPx = (cropRect.top * srcH).roundToInt().coerceIn(0, srcH - 1)
-                        val rightPx = (cropRect.right * srcW).roundToInt().coerceIn(leftPx + 1, srcW)
-                        val bottomPx = (cropRect.bottom * srcH).roundToInt().coerceIn(topPx + 1, srcH)
-                        decoder.crop = Rect(leftPx, topPx, rightPx, bottomPx)
-                    }
-                }
-            }
-        }.getOrNull()
-        if (decoderCropped != null) return decoderCropped
 
         // 3. Safe fallback: full decode + sub-bitmap crop
         val sourceBitmap = decodeFullResolutionBitmap(context, uri) ?: return null
@@ -431,29 +397,29 @@ object ImageCropProcessor {
             val idatOut = IdatChunkOutputStream(out)
             val deflater = Deflater(Deflater.NO_COMPRESSION)
             try {
-                DeflaterOutputStream(idatOut, deflater, 64 * 1024).use { defStream ->
-                    val stripRows = 64
-                    val stripInts = IntArray(width * minOf(stripRows, height))
+                DeflaterOutputStream(idatOut, deflater, 128 * 1024).use { defStream ->
+                    val stripRows = minOf(64, height)
+                    val stripInts = IntArray(width * stripRows)
                     val rowStride = 1 + width * 4
-                    val rowBytes = ByteArray(rowStride)
-                    rowBytes[0] = 0
+                    val stripBytes = ByteArray(stripRows * rowStride)
 
                     var y = 0
                     while (y < height) {
                         val rows = minOf(stripRows, height - y)
                         rgbaBitmap.getPixels(stripInts, 0, width, 0, y, width, rows)
+                        var dst = 0
                         for (r in 0 until rows) {
+                            stripBytes[dst++] = 0
                             val srcOffset = r * width
-                            var dst = 1
                             for (x in 0 until width) {
                                 val argb = stripInts[srcOffset + x]
-                                rowBytes[dst++] = (argb ushr 16).toByte()
-                                rowBytes[dst++] = (argb ushr 8).toByte()
-                                rowBytes[dst++] = argb.toByte()
-                                rowBytes[dst++] = (argb ushr 24).toByte()
+                                stripBytes[dst++] = (argb ushr 16).toByte()
+                                stripBytes[dst++] = (argb ushr 8).toByte()
+                                stripBytes[dst++] = argb.toByte()
+                                stripBytes[dst++] = (argb ushr 24).toByte()
                             }
-                            defStream.write(rowBytes, 0, rowStride)
                         }
+                        defStream.write(stripBytes, 0, rows * rowStride)
                         y += rows
                     }
                     defStream.finish()
@@ -550,38 +516,6 @@ object ImageCropProcessor {
     private val IDAT_TAG = byteArrayOf('I'.code.toByte(), 'D'.code.toByte(), 'A'.code.toByte(), 'T'.code.toByte())
     private val IEND_TAG = byteArrayOf('I'.code.toByte(), 'E'.code.toByte(), 'N'.code.toByte(), 'D'.code.toByte())
     private val EMPTY_BYTES = ByteArray(0)
-
-    private fun preserveExifMetadata(
-        context: Context,
-        sourceUri: android.net.Uri,
-        destFile: File,
-        newWidth: Int,
-        newHeight: Int
-    ) {
-        runCatching {
-            val sourceTags = mutableMapOf<String, String>()
-            context.contentResolver.openInputStream(sourceUri)?.use { input ->
-                val srcExif = ExifInterface(input)
-                for (tag in PRESERVABLE_EXIF_TAGS) {
-                    val value = srcExif.getAttribute(tag)
-                    if (!value.isNullOrBlank()) {
-                        sourceTags[tag] = value
-                    }
-                }
-            }
-
-            val dstExif = ExifInterface(destFile.absolutePath)
-            sourceTags.forEach { (tag, value) ->
-                dstExif.setAttribute(tag, value)
-            }
-            dstExif.setAttribute(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL.toString())
-            dstExif.setAttribute(ExifInterface.TAG_IMAGE_WIDTH, newWidth.toString())
-            dstExif.setAttribute(ExifInterface.TAG_IMAGE_LENGTH, newHeight.toString())
-            dstExif.setAttribute(ExifInterface.TAG_PIXEL_X_DIMENSION, newWidth.toString())
-            dstExif.setAttribute(ExifInterface.TAG_PIXEL_Y_DIMENSION, newHeight.toString())
-            dstExif.saveAttributes()
-        }
-    }
 
     private fun exportImageToMediaStore(
         context: Context,

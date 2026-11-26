@@ -148,7 +148,7 @@ object CropMediaInspector {
         ext: String
     ): ImportedMediaInfo {
         val extractor = MediaExtractor()
-        val retriever = MediaMetadataRetriever()
+        var retriever: MediaMetadataRetriever? = null
 
         var rawW = 0
         var rawH = 0
@@ -156,60 +156,28 @@ object CropMediaInspector {
         var durationMs = 0L
         var fps = 0
         var originalBitrate: Long? = null
-        var colorStandard: Int? = null
-        var colorRange: Int? = null
-        var colorTransfer: Int? = null
         var videoMime: String? = null
-        var locationLat: Float? = null
-        var locationLon: Float? = null
 
         try {
-            runCatching {
-                retriever.setDataSource(context, uri)
-                rawW = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
-                    ?.toIntOrNull() ?: 0
-                rawH = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
-                    ?.toIntOrNull() ?: 0
-                rotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
-                    ?.toIntOrNull() ?: 0
-                durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-                    ?.toLongOrNull() ?: 0L
-                val retrieverBitrate = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)
-                    ?.toLongOrNull()
-                if (retrieverBitrate != null && retrieverBitrate > 0L) {
-                    originalBitrate = retrieverBitrate
-                }
-                val captureFps = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CAPTURE_FRAMERATE)
-                    ?.toFloatOrNull()?.roundToInt()
-                if (captureFps != null && captureFps > 0) {
-                    fps = captureFps
-                }
-                val locRaw = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_LOCATION)
-                parseIso6709Location(locRaw)?.let { (lat, lon) ->
-                    locationLat = lat
-                    locationLon = lon
-                }
-            }
-
             extractor.setDataSource(context, uri, null)
             for (i in 0 until extractor.trackCount) {
                 val format = extractor.getTrackFormat(i)
                 val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
                 if (mime.startsWith("video/")) {
                     videoMime = mime
-                    if (rawW <= 0 && format.containsKey(MediaFormat.KEY_WIDTH)) {
+                    if (format.containsKey(MediaFormat.KEY_WIDTH)) {
                         rawW = format.getInteger(MediaFormat.KEY_WIDTH)
                     }
-                    if (rawH <= 0 && format.containsKey(MediaFormat.KEY_HEIGHT)) {
+                    if (format.containsKey(MediaFormat.KEY_HEIGHT)) {
                         rawH = format.getInteger(MediaFormat.KEY_HEIGHT)
                     }
-                    if (rotation == 0 && format.containsKey(MediaFormat.KEY_ROTATION)) {
+                    if (format.containsKey(MediaFormat.KEY_ROTATION)) {
                         rotation = format.getInteger(MediaFormat.KEY_ROTATION)
                     }
-                    if (durationMs <= 0L && format.containsKey(MediaFormat.KEY_DURATION)) {
+                    if (format.containsKey(MediaFormat.KEY_DURATION)) {
                         durationMs = format.getLong(MediaFormat.KEY_DURATION) / 1_000L
                     }
-                    if (fps <= 0 && format.containsKey(MediaFormat.KEY_FRAME_RATE)) {
+                    if (format.containsKey(MediaFormat.KEY_FRAME_RATE)) {
                         fps = runCatching { format.getInteger(MediaFormat.KEY_FRAME_RATE) }
                             .getOrElse {
                                 runCatching { format.getFloat(MediaFormat.KEY_FRAME_RATE).roundToInt() }.getOrDefault(0)
@@ -221,25 +189,41 @@ object CropMediaInspector {
                             originalBitrate = trackBitrate
                         }
                     }
-                    if (format.containsKey(MediaFormat.KEY_COLOR_STANDARD)) {
-                        colorStandard = format.getInteger(MediaFormat.KEY_COLOR_STANDARD)
-                    }
-                    if (format.containsKey(MediaFormat.KEY_COLOR_RANGE)) {
-                        colorRange = format.getInteger(MediaFormat.KEY_COLOR_RANGE)
-                    }
-                    if (format.containsKey(MediaFormat.KEY_COLOR_TRANSFER)) {
-                        colorTransfer = format.getInteger(MediaFormat.KEY_COLOR_TRANSFER)
-                    }
-
-                    // Estimate FPS from sample timestamps if metadata omitted it
-                    if (fps <= 0) {
-                        fps = estimateFpsFromSamples(extractor, i)
-                    }
                     break
                 }
             }
+
+            if (rawW <= 0 || rawH <= 0 || durationMs <= 0L || originalBitrate == null) {
+                runCatching {
+                    val mmr = MediaMetadataRetriever().also { retriever = it }
+                    mmr.setDataSource(context, uri)
+                    if (rawW <= 0) {
+                        rawW = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+                            ?.toIntOrNull() ?: 0
+                    }
+                    if (rawH <= 0) {
+                        rawH = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                            ?.toIntOrNull() ?: 0
+                    }
+                    if (rotation == 0) {
+                        rotation = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
+                            ?.toIntOrNull() ?: 0
+                    }
+                    if (durationMs <= 0L) {
+                        durationMs = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                            ?.toLongOrNull() ?: 0L
+                    }
+                    if (originalBitrate == null) {
+                        val retrieverBitrate = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)
+                            ?.toLongOrNull()
+                        if (retrieverBitrate != null && retrieverBitrate > 0L) {
+                            originalBitrate = retrieverBitrate
+                        }
+                    }
+                }
+            }
         } finally {
-            runCatching { retriever.release() }
+            runCatching { retriever?.release() }
             runCatching { extractor.release() }
         }
 
@@ -272,36 +256,11 @@ object CropMediaInspector {
             displayWidth = dispW,
             displayHeight = dispH,
             durationMs = durationMs.coerceAtLeast(0L),
-            fps = fps.coerceIn(15, 120),
+            fps = if (fps > 0) fps.coerceIn(15, 120) else 30,
             originalBitrateBps = originalBitrate,
-            colorStandard = colorStandard,
-            colorRange = colorRange,
-            colorTransfer = colorTransfer,
-            locationLat = locationLat,
-            locationLon = locationLon,
             sourceVideoMime = videoMime,
             videoExportOptions = videoExportOptions
         )
-    }
-
-    private fun estimateFpsFromSamples(extractor: MediaExtractor, videoTrackIndex: Int): Int {
-        extractor.selectTrack(videoTrackIndex)
-        val ptsList = mutableListOf<Long>()
-        var count = 0
-        while (count < 20) {
-            val pts = extractor.sampleTime
-            if (pts < 0L) break
-            ptsList.add(pts)
-            if (!extractor.advance()) break
-            count++
-        }
-        extractor.unselectTrack(videoTrackIndex)
-        if (ptsList.size < 3) return 30
-        val sorted = ptsList.sorted()
-        val spanUs = sorted.last() - sorted.first()
-        if (spanUs <= 0L) return 30
-        val estimated = (((sorted.size - 1) * 1_000_000.0) / spanUs).roundToInt()
-        return estimated.coerceIn(15, 120)
     }
 
     private fun buildImageExportOptions(
@@ -558,13 +517,5 @@ object CropMediaInspector {
             "video/x-matroska" -> "mkv"
             else -> ""
         }
-    }
-
-    private fun parseIso6709Location(raw: String?): Pair<Float, Float>? {
-        if (raw.isNullOrBlank()) return null
-        val match = Regex("([+-]\\d+(?:\\.\\d+)?)([+-]\\d+(?:\\.\\d+)?)").find(raw) ?: return null
-        val lat = match.groupValues[1].toFloatOrNull() ?: return null
-        val lon = match.groupValues[2].toFloatOrNull() ?: return null
-        return lat to lon
     }
 }
