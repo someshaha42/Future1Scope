@@ -32,24 +32,30 @@ import java.nio.FloatBuffer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.coroutineContext
 import kotlin.math.roundToInt
 
 object VideoCropProcessor {
 
     private const val MIN_SAFE_ENCODER_BITRATE_BPS = 250_000
-    private const val TIMEOUT_US = 10_000L
+    private const val CODEC_WAIT_US = 25_000L
+    private const val PROGRESS_UPDATE_INTERVAL_MS = 60L
 
     private data class SelectedVideoEncoder(
         val codecName: String,
         val mimeType: String,
         val isHardware: Boolean,
+        val isSoftwareOnly: Boolean,
         val width: Int,
         val height: Int,
         val bitrateBps: Int,
         val bitrateMode: Int?,
         val frameRate: Int,
-        val profile: Int?
+        val profile: Int?,
+        val fastestComplexity: Int?
     )
 
     suspend fun exportCroppedVideo(
@@ -60,6 +66,7 @@ object VideoCropProcessor {
         targetBitrateBps: Int,
         trimStartMs: Long = 0L,
         trimEndMs: Long = media.durationMs,
+        allowLosslessPassthrough: Boolean = false,
         onProgress: (Float, String) -> Unit
     ): CropExportState = withContext(Dispatchers.IO) {
         var outFile: File? = null
@@ -100,6 +107,46 @@ object VideoCropProcessor {
 
             check(videoTrackIndex >= 0 && videoInputFormat != null) {
                 "Unable to locate a decodable video track."
+            }
+
+            val isFullCrop = cropRect.left <= 0.002f &&
+                cropRect.top <= 0.002f &&
+                cropRect.right >= 0.998f &&
+                cropRect.bottom >= 0.998f
+            val isFullStart = trimStartMs <= 50L
+            val isFullEnd = media.durationMs <= 0L || trimEndMs <= 0L || trimEndMs >= media.durationMs - 50L
+            val sourceMime = videoInputFormat.getString(MediaFormat.KEY_MIME)
+            if (allowLosslessPassthrough &&
+                isFullCrop &&
+                isFullStart &&
+                isFullEnd &&
+                isVideoCompatibleWithContainer(sourceMime, formatOption.container)
+            ) {
+                val compatibleAudio = audioInputFormat?.takeIf {
+                    isAudioCompatibleWithContainer(
+                        it.getString(MediaFormat.KEY_MIME),
+                        formatOption.container
+                    )
+                }
+                val passthroughFile = CropExportsRepository(context).createVideoExportFile(formatOption.container.extension)
+                outFile = passthroughFile
+                val passthroughResult = runLosslessRemux(
+                    context = context,
+                    media = media,
+                    videoExtractor = videoExtractor,
+                    videoTrackIndex = videoTrackIndex,
+                    videoInputFormat = videoInputFormat,
+                    audioTrackIndex = audioTrackIndex,
+                    compatibleAudioFormat = compatibleAudio,
+                    container = formatOption.container,
+                    outFile = passthroughFile,
+                    onProgress = onProgress
+                )
+                if (passthroughResult != null) {
+                    return@withContext passthroughResult
+                }
+                runCatching { passthroughFile.delete() }
+                outFile = null
             }
 
             val rawOutW = (cropRect.widthFraction * media.displayWidth).roundToInt()
@@ -165,7 +212,10 @@ object VideoCropProcessor {
             )
             glContext.makeCurrent()
 
-            frameThread = HandlerThread("CropDecoderFrameThread").apply { start() }
+            frameThread = HandlerThread(
+                "CropDecoderFrameThread",
+                android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY
+            ).apply { start() }
             val frameHandler = Handler(frameThread.looper)
 
             surfaceTexture = glContext.createSurfaceTexture(frameHandler)
@@ -176,28 +226,13 @@ object VideoCropProcessor {
             val decoderCandidates = resolveCandidateDecoders(inputMime)
             var activeDecoder: MediaCodec? = null
             for ((codecName, overrideMime) in decoderCandidates) {
-                var probeDecoder: MediaCodec? = null
-                val ok = runCatching {
-                    probeDecoder = MediaCodec.createByCodecName(codecName)
-                    // Ensure SurfaceTexture receives raw frames cleanly without Surface-level rotation surprises
-                    val decoderFormat = MediaFormat(videoInputFormat).apply {
-                        if (overrideMime != null) {
-                            setString(MediaFormat.KEY_MIME, overrideMime)
-                        }
-                        if (containsKey(MediaFormat.KEY_ROTATION)) {
-                            setInteger(MediaFormat.KEY_ROTATION, 0)
-                        }
-                    }
-                    probeDecoder!!.configure(decoderFormat, decoderSurface, null, 0)
-                    probeDecoder!!.start()
-                }.isSuccess
-                if (ok && probeDecoder != null) {
-                    activeDecoder = probeDecoder
-                    break
-                } else {
-                    runCatching { probeDecoder?.stop() }
-                    runCatching { probeDecoder?.release() }
-                }
+                activeDecoder = tryConfigureAndStartDecoder(
+                    codecName = codecName,
+                    sourceFormat = videoInputFormat,
+                    overrideMime = overrideMime,
+                    decoderSurface = decoderSurface
+                )
+                if (activeDecoder != null) break
             }
             decoder = activeDecoder ?: return@withContext CropExportState.Error(
                 "No compatible video decoder could start for $inputMime."
@@ -229,122 +264,182 @@ object VideoCropProcessor {
 
             var muxerVideoTrack = -1
             var muxerAudioTrack = -1
-            var lastVideoPtsUs = -1L
+            val lastVideoPtsUs = AtomicLong(-1L)
 
-            var inputDone = false
-            var decoderDone = false
-            var encoderDone = false
-            val bufferInfo = MediaCodec.BufferInfo()
+            val stopRequested = AtomicBoolean(false)
+            val asyncError = AtomicReference<Throwable?>(null)
+            val encoderFinished = AtomicBoolean(false)
 
             onProgress(0.05f, "Cropping video frames…")
 
-            while (!encoderDone) {
-                if (!coroutineContext.isActive) {
-                    throw InterruptedException("Export cancelled.")
-                }
+            // Stage 1: Dedicated decoder input feeder keeps hardware decoder input queue saturated
+            val feederThread = Thread({
+                var inputDone = false
+                var pastTrimCount = 0
+                try {
+                    while (!stopRequested.get() && !inputDone) {
+                        val inIndex = decoder.dequeueInputBuffer(CODEC_WAIT_US)
+                        if (inIndex < 0) continue
 
-                // 1. Feed compressed frames to decoder
-                if (!inputDone) {
-                    val inIndex = decoder.dequeueInputBuffer(TIMEOUT_US)
-                    if (inIndex >= 0) {
-                        val inBuf = decoder.getInputBuffer(inIndex)
-                        if (inBuf != null) {
-                            val sampleSize = videoExtractor.readSampleData(inBuf, 0)
-                            val samplePtsUs = videoExtractor.sampleTime.coerceAtLeast(0L)
-                            if (sampleSize < 0 || samplePtsUs > trimEndUs) {
-                                decoder.queueInputBuffer(
-                                    inIndex,
-                                    0,
-                                    0,
-                                    0L,
-                                    MediaCodec.BUFFER_FLAG_END_OF_STREAM
-                                )
-                                inputDone = true
-                            } else {
-                                decoder.queueInputBuffer(
-                                    inIndex,
-                                    0,
-                                    sampleSize,
-                                    samplePtsUs,
-                                    0
-                                )
-                                videoExtractor.advance()
+                        val inBuf = decoder.getInputBuffer(inIndex) ?: continue
+                        val sampleSize = videoExtractor.readSampleData(inBuf, 0)
+                        val samplePtsUs = videoExtractor.sampleTime.coerceAtLeast(0L)
+                        val pastTrimLimit = trimEndUs < Long.MAX_VALUE && samplePtsUs > trimEndUs + 250_000L
+                        if (pastTrimLimit) {
+                            pastTrimCount++
+                        } else {
+                            pastTrimCount = 0
+                        }
+
+                        if (sampleSize < 0 || pastTrimCount >= 4) {
+                            decoder.queueInputBuffer(
+                                inIndex,
+                                0,
+                                0,
+                                0L,
+                                MediaCodec.BUFFER_FLAG_END_OF_STREAM
+                            )
+                            inputDone = true
+                        } else {
+                            decoder.queueInputBuffer(
+                                inIndex,
+                                0,
+                                sampleSize,
+                                samplePtsUs,
+                                0
+                            )
+                            videoExtractor.advance()
+                        }
+                    }
+                } catch (t: Throwable) {
+                    if (!stopRequested.get()) {
+                        asyncError.compareAndSet(null, t)
+                        stopRequested.set(true)
+                    }
+                }
+            }, "CropDecoderFeeder").apply { start() }
+
+            // Stage 3: Dedicated encoder output drainer eliminates 10ms polling stalls per frame
+            val drainerThread = Thread({
+                val encInfo = MediaCodec.BufferInfo()
+                val videoWeight = if (compatibleAudioFormat != null) 0.88f else 0.96f
+                var lastProgressMs = 0L
+                try {
+                    while (!stopRequested.get() && !encoderFinished.get()) {
+                        val encIndex = encoder.dequeueOutputBuffer(encInfo, CODEC_WAIT_US)
+                        when {
+                            encIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
+                            encIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                                check(!muxerStarted) { "Encoder format changed after muxer started." }
+                                val encOutFormat = encoder.outputFormat
+                                muxerVideoTrack = muxer.addTrack(encOutFormat)
+                                if (compatibleAudioFormat != null) {
+                                    muxerAudioTrack = muxer.addTrack(compatibleAudioFormat)
+                                }
+                                muxer.start()
+                                muxerStarted = true
+                            }
+                            encIndex >= 0 -> {
+                                val encodedBuf = encoder.getOutputBuffer(encIndex)
+                                if (encodedBuf != null &&
+                                    (encInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0 &&
+                                    encInfo.size > 0 &&
+                                    muxerStarted &&
+                                    muxerVideoTrack >= 0
+                                ) {
+                                    val prevVideoPts = lastVideoPtsUs.get()
+                                    val pts = if (encInfo.presentationTimeUs <= prevVideoPts) {
+                                        prevVideoPts + 1L
+                                    } else {
+                                        encInfo.presentationTimeUs
+                                    }
+                                    lastVideoPtsUs.set(pts)
+                                    encInfo.presentationTimeUs = pts
+
+                                    encodedBuf.position(encInfo.offset)
+                                    encodedBuf.limit(encInfo.offset + encInfo.size)
+                                    muxer.writeSampleData(muxerVideoTrack, encodedBuf, encInfo)
+
+                                    val nowMs = System.currentTimeMillis()
+                                    val isEos = (encInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
+                                    if (isEos || nowMs - lastProgressMs >= PROGRESS_UPDATE_INTERVAL_MS) {
+                                        lastProgressMs = nowMs
+                                        val ratio = (pts.toFloat() / durationUs.toFloat()).coerceIn(0f, 1f)
+                                        onProgress(0.05f + ratio * videoWeight, "Cropping video frames…")
+                                    }
+                                }
+                                encoder.releaseOutputBuffer(encIndex, false)
+                                if ((encInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                                    encoderFinished.set(true)
+                                }
                             }
                         }
                     }
+                } catch (t: Throwable) {
+                    if (!stopRequested.get()) {
+                        asyncError.compareAndSet(null, t)
+                        stopRequested.set(true)
+                    }
                 }
+            }, "CropEncoderDrainer").apply { start() }
 
-                // 2. Drain decoder output to SurfaceTexture -> render cropped quad to encoder surface
-                if (!decoderDone) {
-                    val outIndex = decoder.dequeueOutputBuffer(bufferInfo, TIMEOUT_US)
+            try {
+                // Stage 2: GL render loop on EGL-current thread
+                val decInfo = MediaCodec.BufferInfo()
+                var decoderDone = false
+                while (!decoderDone && !stopRequested.get()) {
+                    if (!coroutineContext.isActive) {
+                        stopRequested.set(true)
+                        throw InterruptedException("Export cancelled.")
+                    }
+                    asyncError.get()?.let { err ->
+                        stopRequested.set(true)
+                        throw err
+                    }
+
+                    val outIndex = decoder.dequeueOutputBuffer(decInfo, CODEC_WAIT_US)
                     if (outIndex >= 0) {
-                        val ptsUs = bufferInfo.presentationTimeUs
+                        val ptsUs = decInfo.presentationTimeUs
                         val withinRange = ptsUs >= trimStartUs && ptsUs <= trimEndUs
-                        val doRender = bufferInfo.size > 0 &&
+                        val doRender = decInfo.size > 0 &&
                             withinRange &&
-                            (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0
+                            (decInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0
                         decoder.releaseOutputBuffer(outIndex, doRender)
                         if (doRender) {
-                            glContext.awaitNewImage()
+                            if (!glContext.awaitNewImage(stopRequested)) {
+                                if (!coroutineContext.isActive) {
+                                    stopRequested.set(true)
+                                    throw InterruptedException("Export cancelled.")
+                                }
+                                asyncError.get()?.let { throw it }
+                            }
                             glContext.drawCroppedFrame((ptsUs - trimStartUs).coerceAtLeast(0L))
                         }
-                        if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                        if ((decInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
                             decoderDone = true
                             encoder.signalEndOfInputStream()
                         }
                     }
                 }
 
-                // 3. Drain encoder output to MediaMuxer
-                var drainMore = true
-                while (drainMore) {
-                    val encIndex = encoder.dequeueOutputBuffer(bufferInfo, TIMEOUT_US)
-                    when {
-                        encIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> {
-                            drainMore = false
-                        }
-                        encIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                            check(!muxerStarted) { "Encoder format changed after muxer started." }
-                            val encOutFormat = encoder.outputFormat
-                            muxerVideoTrack = muxer.addTrack(encOutFormat)
-                            if (compatibleAudioFormat != null) {
-                                muxerAudioTrack = muxer.addTrack(compatibleAudioFormat)
-                            }
-                            muxer.start()
-                            muxerStarted = true
-                        }
-                        encIndex >= 0 -> {
-                            val encodedBuf = encoder.getOutputBuffer(encIndex)
-                            if (encodedBuf != null &&
-                                (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0 &&
-                                bufferInfo.size > 0 &&
-                                muxerStarted &&
-                                muxerVideoTrack >= 0
-                            ) {
-                                val pts = if (bufferInfo.presentationTimeUs <= lastVideoPtsUs) {
-                                    lastVideoPtsUs + 1L
-                                } else {
-                                    bufferInfo.presentationTimeUs
-                                }
-                                lastVideoPtsUs = pts
-                                bufferInfo.presentationTimeUs = pts
-
-                                encodedBuf.position(bufferInfo.offset)
-                                encodedBuf.limit(bufferInfo.offset + bufferInfo.size)
-                                muxer.writeSampleData(muxerVideoTrack, encodedBuf, bufferInfo)
-
-                                val videoWeight = if (muxerAudioTrack >= 0) 0.88f else 0.96f
-                                val ratio = (pts.toFloat() / durationUs.toFloat()).coerceIn(0f, 1f)
-                                onProgress(0.05f + ratio * videoWeight, "Cropping video frames…")
-                            }
-                            encoder.releaseOutputBuffer(encIndex, false)
-                            if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
-                                encoderDone = true
-                                drainMore = false
-                            }
-                        }
+                // Wait for encoder drainer to flush remaining encoded packets cleanly
+                while (drainerThread.isAlive && !stopRequested.get()) {
+                    if (!coroutineContext.isActive) {
+                        stopRequested.set(true)
+                        throw InterruptedException("Export cancelled.")
                     }
+                    asyncError.get()?.let { err ->
+                        stopRequested.set(true)
+                        throw err
+                    }
+                    drainerThread.join(40L)
                 }
+
+                asyncError.get()?.let { throw it }
+            } finally {
+                stopRequested.set(true)
+                runCatching { feederThread.join(500L) }
+                runCatching { drainerThread.join(500L) }
             }
 
             // 4. Copy compatible audio track cleanly within [trimStartUs, trimEndUs]
@@ -377,7 +472,8 @@ object VideoCropProcessor {
                         continue
                     }
                     val rebasedTime = (rawSampleTime - trimStartUs).coerceAtLeast(0L)
-                    if (lastVideoPtsUs > 0L && rebasedTime > lastVideoPtsUs + 100_000L) {
+                    val maxVideoPts = lastVideoPtsUs.get()
+                    if (maxVideoPts > 0L && rebasedTime > maxVideoPts + 100_000L) {
                         break
                     }
                     val pts = if (rebasedTime <= lastAudioPtsUs) lastAudioPtsUs + 1L else rebasedTime
@@ -440,13 +536,52 @@ object VideoCropProcessor {
         }
     }
 
+    private fun tryConfigureAndStartDecoder(
+        codecName: String,
+        sourceFormat: MediaFormat,
+        overrideMime: String?,
+        decoderSurface: Surface
+    ): MediaCodec? {
+        val operatingRates = listOf<Int?>(Short.MAX_VALUE.toInt(), 240, null)
+        for (rate in operatingRates) {
+            var probeDecoder: MediaCodec? = null
+            val ok = runCatching {
+                probeDecoder = MediaCodec.createByCodecName(codecName)
+                // Ensure SurfaceTexture receives raw frames cleanly without Surface-level rotation surprises
+                val decoderFormat = MediaFormat(sourceFormat).apply {
+                    if (overrideMime != null) {
+                        setString(MediaFormat.KEY_MIME, overrideMime)
+                    }
+                    if (containsKey(MediaFormat.KEY_ROTATION)) {
+                        setInteger(MediaFormat.KEY_ROTATION, 0)
+                    }
+                    if (rate != null) {
+                        setInteger(MediaFormat.KEY_OPERATING_RATE, rate)
+                        setInteger(MediaFormat.KEY_PRIORITY, 1)
+                    }
+                }
+                probeDecoder!!.configure(decoderFormat, decoderSurface, null, 0)
+                probeDecoder!!.start()
+            }.isSuccess
+            if (ok && probeDecoder != null) {
+                return probeDecoder
+            }
+            runCatching { probeDecoder?.stop() }
+            runCatching { probeDecoder?.release() }
+        }
+        return null
+    }
+
     private fun resolveCandidateDecoders(mimeType: String): List<Pair<String, String?>> {
         val list = MediaCodecList(MediaCodecList.ALL_CODECS)
         val primary = list.codecInfos
             .filter { info ->
-                !info.isEncoder && info.supportedTypes.any { it.equals(mimeType, ignoreCase = true) }
+                !info.isAlias && !info.isEncoder && info.supportedTypes.any { it.equals(mimeType, ignoreCase = true) }
             }
-            .sortedByDescending { it.isHardwareAccelerated }
+            .sortedWith(
+                compareByDescending<MediaCodecInfo> { it.isHardwareAccelerated }
+                    .thenBy { it.isSoftwareOnly }
+            )
             .map { it.name to null }
 
         if (!mimeType.equals("video/dolby-vision", ignoreCase = true)) {
@@ -454,9 +589,12 @@ object VideoCropProcessor {
         }
         val hevcFallbacks = list.codecInfos
             .filter { info ->
-                !info.isEncoder && info.supportedTypes.any { it.equals(MediaFormat.MIMETYPE_VIDEO_HEVC, ignoreCase = true) }
+                !info.isAlias && !info.isEncoder && info.supportedTypes.any { it.equals(MediaFormat.MIMETYPE_VIDEO_HEVC, ignoreCase = true) }
             }
-            .sortedByDescending { it.isHardwareAccelerated }
+            .sortedWith(
+                compareByDescending<MediaCodecInfo> { it.isHardwareAccelerated }
+                    .thenBy { it.isSoftwareOnly }
+            )
             .map { it.name to MediaFormat.MIMETYPE_VIDEO_HEVC }
         return primary + hevcFallbacks
     }
@@ -482,6 +620,7 @@ object VideoCropProcessor {
         val seenKeys = HashSet<String>()
 
         for (container in containerOrder) {
+            val containerCandidates = mutableListOf<Pair<VideoContainerFormat, SelectedVideoEncoder>>()
             val candidateMimes = when (container) {
                 VideoContainerFormat.MP4 -> {
                     if (preferredMime.equals(MediaFormat.MIMETYPE_VIDEO_HEVC, ignoreCase = true)) {
@@ -507,8 +646,7 @@ object VideoCropProcessor {
                         info.supportedTypes.any { it.equals(mime, ignoreCase = true) } &&
                         supportsSurface(info, mime)
                 }
-                val ordered = encoders.sortedByDescending { it.isHardwareAccelerated }
-                for (info in ordered) {
+                for (info in encoders) {
                     if (!seenKeys.add("${container.name}|${info.name}|$mime")) continue
                     val caps = runCatching { info.getCapabilitiesForType(mime) }.getOrNull() ?: continue
                     val videoCaps = caps.videoCapabilities ?: continue
@@ -554,19 +692,29 @@ object VideoCropProcessor {
                         else -> null
                     }
 
-                    candidates += container to SelectedVideoEncoder(
+                    val fastestComplexity = runCatching { encoderCaps?.complexityRange?.lower }.getOrNull()
+
+                    containerCandidates += container to SelectedVideoEncoder(
                         codecName = info.name,
                         mimeType = mime,
                         isHardware = info.isHardwareAccelerated,
+                        isSoftwareOnly = info.isSoftwareOnly,
                         width = outW,
                         height = outH,
                         bitrateBps = safeBitrate,
                         bitrateMode = bitrateMode,
                         frameRate = safeFps,
-                        profile = profile
+                        profile = profile,
+                        fastestComplexity = fastestComplexity
                     )
                 }
             }
+
+            // Hardware encoders ALWAYS take precedence over software encoders across MIME types
+            candidates += containerCandidates.sortedWith(
+                compareByDescending<Pair<VideoContainerFormat, SelectedVideoEncoder>> { it.second.isHardware }
+                    .thenBy { it.second.isSoftwareOnly }
+            )
         }
         return candidates
     }
@@ -579,14 +727,21 @@ object VideoCropProcessor {
         data class Attempt(
             val bitrateMode: Int?,
             val profile: Int?,
-            val includeColor: Boolean
+            val includeColor: Boolean,
+            val operatingRate: Int?,
+            val disableBFrames: Boolean,
+            val useFastComplexity: Boolean
         )
 
         val attempts = listOf(
-            Attempt(spec.bitrateMode, spec.profile, includeColor = true),
-            Attempt(spec.bitrateMode, null, includeColor = true),
-            Attempt(spec.bitrateMode, null, includeColor = false),
-            Attempt(null, null, includeColor = false)
+            Attempt(spec.bitrateMode, spec.profile, includeColor = true, operatingRate = Short.MAX_VALUE.toInt(), disableBFrames = true, useFastComplexity = !spec.isHardware),
+            Attempt(spec.bitrateMode, spec.profile, includeColor = true, operatingRate = 240, disableBFrames = true, useFastComplexity = !spec.isHardware),
+            Attempt(spec.bitrateMode, spec.profile, includeColor = true, operatingRate = 240, disableBFrames = false, useFastComplexity = false),
+            Attempt(spec.bitrateMode, spec.profile, includeColor = true, operatingRate = null, disableBFrames = false, useFastComplexity = false),
+            Attempt(spec.bitrateMode, null, includeColor = true, operatingRate = 240, disableBFrames = false, useFastComplexity = false),
+            Attempt(spec.bitrateMode, null, includeColor = true, operatingRate = null, disableBFrames = false, useFastComplexity = false),
+            Attempt(spec.bitrateMode, null, includeColor = false, operatingRate = null, disableBFrames = false, useFastComplexity = false),
+            Attempt(null, null, includeColor = false, operatingRate = null, disableBFrames = false, useFastComplexity = false)
         )
 
         var lastError: Throwable? = null
@@ -599,6 +754,16 @@ object VideoCropProcessor {
                 setInteger(MediaFormat.KEY_BIT_RATE, spec.bitrateBps)
                 setInteger(MediaFormat.KEY_FRAME_RATE, spec.frameRate)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
+                if (attempt.operatingRate != null) {
+                    setInteger(MediaFormat.KEY_OPERATING_RATE, attempt.operatingRate)
+                    setInteger(MediaFormat.KEY_PRIORITY, 1)
+                }
+                if (attempt.disableBFrames) {
+                    setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
+                }
+                if (attempt.useFastComplexity && spec.fastestComplexity != null) {
+                    setInteger(MediaFormat.KEY_COMPLEXITY, spec.fastestComplexity)
+                }
                 if (attempt.bitrateMode != null) {
                     setInteger(MediaFormat.KEY_BITRATE_MODE, attempt.bitrateMode)
                 }
@@ -622,6 +787,146 @@ object VideoCropProcessor {
             runCatching { encoder.reset() }
         }
         throw lastError ?: IllegalStateException("Unable to configure video encoder.")
+    }
+
+    private suspend fun runLosslessRemux(
+        context: Context,
+        media: ImportedMediaInfo,
+        videoExtractor: MediaExtractor,
+        videoTrackIndex: Int,
+        videoInputFormat: MediaFormat,
+        audioTrackIndex: Int,
+        compatibleAudioFormat: MediaFormat?,
+        container: VideoContainerFormat,
+        outFile: File,
+        onProgress: (Float, String) -> Unit
+    ): CropExportState? {
+        var muxer: MediaMuxer? = null
+        var audioExtractor: MediaExtractor? = null
+        var muxerStarted = false
+        return try {
+            muxer = MediaMuxer(outFile.absolutePath, container.muxerOutputFormat)
+            if (media.rotationDegrees != 0) {
+                runCatching { muxer.setOrientationHint(media.rotationDegrees) }
+            }
+            if (media.locationLat != null && media.locationLon != null) {
+                runCatching { muxer.setLocation(media.locationLat, media.locationLon) }
+            }
+            val muxerVideoTrack = muxer.addTrack(videoInputFormat)
+            val muxerAudioTrack = if (compatibleAudioFormat != null && audioTrackIndex >= 0) {
+                muxer.addTrack(compatibleAudioFormat)
+            } else {
+                -1
+            }
+            muxer.start()
+            muxerStarted = true
+
+            onProgress(0.15f, "Copying lossless video stream…")
+            videoExtractor.selectTrack(videoTrackIndex)
+            val maxVideoSize = (if (videoInputFormat.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) {
+                videoInputFormat.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE)
+            } else {
+                1024 * 1024
+            }).coerceAtLeast(512 * 1024)
+            val videoBuf = ByteBuffer.allocateDirect(maxVideoSize)
+            val info = MediaCodec.BufferInfo()
+            var lastVideoPts = -1L
+            val durationUs = (media.durationMs * 1_000L).coerceAtLeast(1L)
+            var lastProgressMs = 0L
+
+            while (coroutineContext.isActive) {
+                val sampleSize = videoExtractor.readSampleData(videoBuf, 0)
+                if (sampleSize < 0) break
+                val rawPts = videoExtractor.sampleTime.coerceAtLeast(0L)
+                val pts = if (rawPts <= lastVideoPts) lastVideoPts + 1L else rawPts
+                lastVideoPts = pts
+                info.set(0, sampleSize, pts, videoExtractor.sampleFlags)
+                videoBuf.position(0)
+                videoBuf.limit(sampleSize)
+                muxer.writeSampleData(muxerVideoTrack, videoBuf, info)
+
+                val nowMs = System.currentTimeMillis()
+                if (nowMs - lastProgressMs >= PROGRESS_UPDATE_INTERVAL_MS) {
+                    lastProgressMs = nowMs
+                    val ratio = (pts.toFloat() / durationUs.toFloat()).coerceIn(0f, 1f)
+                    onProgress(0.15f + ratio * 0.72f, "Copying lossless video stream…")
+                }
+                if (!videoExtractor.advance()) break
+            }
+
+            if (muxerAudioTrack >= 0 && compatibleAudioFormat != null && audioTrackIndex >= 0) {
+                onProgress(0.90f, "Muxing audio track…")
+                audioExtractor = MediaExtractor().apply {
+                    setDataSource(context, media.uri, null)
+                    selectTrack(audioTrackIndex)
+                }
+                val maxAudioSize = (if (compatibleAudioFormat.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) {
+                    compatibleAudioFormat.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE)
+                } else {
+                    256 * 1024
+                }).coerceAtLeast(64 * 1024)
+                val audioBuf = ByteBuffer.allocateDirect(maxAudioSize)
+                var lastAudioPts = -1L
+                while (coroutineContext.isActive) {
+                    val sampleSize = audioExtractor.readSampleData(audioBuf, 0)
+                    if (sampleSize < 0) break
+                    val rawPts = audioExtractor.sampleTime.coerceAtLeast(0L)
+                    val pts = if (rawPts <= lastAudioPts) lastAudioPts + 1L else rawPts
+                    lastAudioPts = pts
+                    info.set(0, sampleSize, pts, audioExtractor.sampleFlags)
+                    audioBuf.position(0)
+                    audioBuf.limit(sampleSize)
+                    muxer.writeSampleData(muxerAudioTrack, audioBuf, info)
+                    if (!audioExtractor.advance()) break
+                }
+            }
+
+            muxer.stop()
+            muxerStarted = false
+
+            onProgress(0.98f, "Saving to gallery…")
+            val savedToGallery = exportVideoToMediaStore(
+                context = context,
+                file = outFile,
+                mimeType = container.mimeType
+            )
+            CropExportState.Success(
+                outputPath = outFile.absolutePath,
+                fileName = outFile.name,
+                savedToGallery = savedToGallery,
+                mediaType = CropMediaType.VIDEO
+            )
+        } catch (t: Throwable) {
+            if (t is InterruptedException || t is kotlinx.coroutines.CancellationException) {
+                throw t
+            }
+            runCatching {
+                videoExtractor.seekTo(0L, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+                videoExtractor.unselectTrack(videoTrackIndex)
+            }
+            null
+        } finally {
+            runCatching { audioExtractor?.release() }
+            if (muxerStarted) {
+                runCatching { muxer?.stop() }
+            }
+            runCatching { muxer?.release() }
+        }
+    }
+
+    private fun isVideoCompatibleWithContainer(
+        videoMime: String?,
+        container: VideoContainerFormat
+    ): Boolean {
+        if (videoMime.isNullOrBlank()) return false
+        return when (container) {
+            VideoContainerFormat.MP4 -> videoMime.equals(MediaFormat.MIMETYPE_VIDEO_AVC, ignoreCase = true) ||
+                videoMime.equals(MediaFormat.MIMETYPE_VIDEO_HEVC, ignoreCase = true)
+            VideoContainerFormat.WEBM -> videoMime.equals(MediaFormat.MIMETYPE_VIDEO_VP9, ignoreCase = true) ||
+                videoMime.equals(MediaFormat.MIMETYPE_VIDEO_VP8, ignoreCase = true)
+            VideoContainerFormat.THREE_GP -> videoMime.equals(MediaFormat.MIMETYPE_VIDEO_AVC, ignoreCase = true) ||
+                videoMime.equals(MediaFormat.MIMETYPE_VIDEO_H263, ignoreCase = true)
+        }
     }
 
     private fun supportsSurface(info: MediaCodecInfo, mimeType: String): Boolean {
@@ -693,7 +998,7 @@ object VideoCropProcessor {
         val uri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values) ?: return false
         return try {
             resolver.openOutputStream(uri)?.use { out ->
-                file.inputStream().use { input -> input.copyTo(out, bufferSize = 256 * 1024) }
+                file.inputStream().use { input -> input.copyTo(out, bufferSize = 512 * 1024) }
             }
             resolver.update(uri, ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }, null, null)
             true
@@ -833,42 +1138,29 @@ object VideoCropProcessor {
             }
         }
 
-        fun awaitNewImage() {
+        fun awaitNewImage(stopRequested: AtomicBoolean): Boolean {
             synchronized(frameSync) {
-                val deadline = System.currentTimeMillis() + 2_500L
+                val deadline = System.currentTimeMillis() + 3_000L
                 while (!frameAvailable) {
+                    if (stopRequested.get()) return false
                     val remaining = deadline - System.currentTimeMillis()
                     if (remaining <= 0L) {
                         error("Timed out waiting for decoded video frame.")
                     }
-                    frameSync.wait(remaining)
+                    frameSync.wait(minOf(remaining, 50L))
                 }
                 frameAvailable = false
             }
             surfaceTexture?.updateTexImage()
+            return true
         }
 
         fun drawCroppedFrame(ptsUs: Long) {
             val st = surfaceTexture ?: return
             st.getTransformMatrix(stMatrix)
 
-            GLES20.glClearColor(0f, 0f, 0f, 1f)
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-
-            GLES20.glUseProgram(program)
-            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId)
-
             GLES20.glUniformMatrix4fv(uStMatrixHandle, 1, false, stMatrix, 0)
-
-            vertexBuffer.position(0)
-            GLES20.glVertexAttribPointer(aPosHandle, 2, GLES20.GL_FLOAT, false, 0, vertexBuffer)
-            GLES20.glEnableVertexAttribArray(aPosHandle)
-
-            texBuffer.position(0)
-            GLES20.glVertexAttribPointer(aTexHandle, 2, GLES20.GL_FLOAT, false, 0, texBuffer)
-            GLES20.glEnableVertexAttribArray(aTexHandle)
-
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
 
             EGLExt.eglPresentationTimeANDROID(eglDisplay, eglSurface, ptsUs * 1_000L)
@@ -913,6 +1205,18 @@ object VideoCropProcessor {
             aPosHandle = GLES20.glGetAttribLocation(program, "aPosition")
             aTexHandle = GLES20.glGetAttribLocation(program, "aTextureCoord")
             uStMatrixHandle = GLES20.glGetUniformLocation(program, "uSTMatrix")
+
+            GLES20.glClearColor(0f, 0f, 0f, 1f)
+            GLES20.glUseProgram(program)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+
+            vertexBuffer.position(0)
+            GLES20.glVertexAttribPointer(aPosHandle, 2, GLES20.GL_FLOAT, false, 0, vertexBuffer)
+            GLES20.glEnableVertexAttribArray(aPosHandle)
+
+            texBuffer.position(0)
+            GLES20.glVertexAttribPointer(aTexHandle, 2, GLES20.GL_FLOAT, false, 0, texBuffer)
+            GLES20.glEnableVertexAttribArray(aTexHandle)
         }
 
         private fun compileShader(type: Int, src: String): Int {

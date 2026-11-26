@@ -1038,6 +1038,7 @@ class CropToolViewModel(
                             targetBitrateBps = targetBps,
                             trimStartMs = state.trimStartMs,
                             trimEndMs = state.trimEndMs,
+                            allowLosslessPassthrough = (state.bitrateMode == VideoBitrateMode.ORIGINAL_PRESERVATION),
                             onProgress = { progress, text ->
                                 _uiState.update {
                                     it.copy(exportState = CropExportState.Exporting(progress, text))

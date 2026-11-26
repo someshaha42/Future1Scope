@@ -4,20 +4,27 @@ import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.BitmapRegionDecoder
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.ImageDecoder
 import android.graphics.Matrix
+import android.graphics.Rect
 import android.media.ExifInterface
 import android.os.Environment
 import android.provider.MediaStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.io.OutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.zip.CRC32
+import java.util.zip.Deflater
+import java.util.zip.DeflaterOutputStream
 import kotlin.math.roundToInt
 
 object ImageCropProcessor {
@@ -81,26 +88,15 @@ object ImageCropProcessor {
         cropRect: NormalizedCropRect,
         formatOption: ImageExportFormatOption
     ): CropExportState = withContext(Dispatchers.IO) {
-        var sourceBitmap: Bitmap? = null
         var croppedBitmap: Bitmap? = null
         var finalBitmap: Bitmap? = null
 
         try {
-            sourceBitmap = decodeFullResolutionBitmap(context, media.uri)
+            croppedBitmap = decodeCroppedBitmapFast(context, media.uri, cropRect)
                 ?: return@withContext CropExportState.Error("Unable to decode the selected image.")
 
-            val srcW = sourceBitmap.width
-            val srcH = sourceBitmap.height
-
-            val leftPx = (cropRect.left * srcW).roundToInt().coerceIn(0, srcW - 1)
-            val topPx = (cropRect.top * srcH).roundToInt().coerceIn(0, srcH - 1)
-            val rightPx = (cropRect.right * srcW).roundToInt().coerceIn(leftPx + 1, srcW)
-            val bottomPx = (cropRect.bottom * srcH).roundToInt().coerceIn(topPx + 1, srcH)
-
-            val outW = (rightPx - leftPx).coerceIn(1, srcW)
-            val outH = (bottomPx - topPx).coerceIn(1, srcH)
-
-            croppedBitmap = Bitmap.createBitmap(sourceBitmap, leftPx, topPx, outW, outH)
+            val outW = croppedBitmap.width.coerceAtLeast(1)
+            val outH = croppedBitmap.height.coerceAtLeast(1)
 
             val outputSpec = resolveCompressSpec(formatOption, croppedBitmap.hasAlpha())
             val outFile = CropExportsRepository(context).createImageExportFile(outputSpec.extension)
@@ -117,15 +113,23 @@ object ImageCropProcessor {
                 croppedBitmap
             }
 
-            FileOutputStream(outFile).use { fos ->
-                val ok = finalBitmap.compress(outputSpec.compressFormat, outputSpec.quality, fos)
+            BufferedOutputStream(FileOutputStream(outFile), 128 * 1024).use { bos ->
+                val ok = if (outputSpec.useUncompressedPng) {
+                    writeUncompressedPng(finalBitmap, bos)
+                } else {
+                    finalBitmap.compress(outputSpec.compressFormat, outputSpec.quality, bos)
+                }
                 if (!ok) {
                     return@withContext CropExportState.Error("Image encoder failed for ${outputSpec.extension.uppercase(Locale.US)}.")
                 }
             }
 
-            // Preserve compatible EXIF metadata while accurately updating dimensions & orientation
-            preserveExifMetadata(context, media.uri, outFile, outW, outH)
+            // Preserve EXIF metadata for JPEG outputs without rewriting large lossless PNG/WebP files on disk
+            if (outputSpec.extension.equals("jpg", ignoreCase = true) ||
+                outputSpec.extension.equals("jpeg", ignoreCase = true)
+            ) {
+                preserveExifMetadata(context, media.uri, outFile, outW, outH)
+            }
 
             val savedToGallery = exportImageToMediaStore(
                 context = context,
@@ -145,10 +149,102 @@ object ImageCropProcessor {
             if (finalBitmap != null && finalBitmap !== croppedBitmap) {
                 runCatching { finalBitmap.recycle() }
             }
-            if (croppedBitmap != null && croppedBitmap !== sourceBitmap) {
-                runCatching { croppedBitmap.recycle() }
+            runCatching { croppedBitmap?.recycle() }
+        }
+    }
+
+    private fun decodeCroppedBitmapFast(
+        context: Context,
+        uri: android.net.Uri,
+        cropRect: NormalizedCropRect
+    ): Bitmap? {
+        val resolver = context.contentResolver
+        val isFullCrop = cropRect.left <= 0.001f &&
+            cropRect.top <= 0.001f &&
+            cropRect.right >= 0.999f &&
+            cropRect.bottom >= 0.999f
+
+        // 1. Fastest path for unrotated cropped photos: BitmapRegionDecoder decodes ONLY the cropped region
+        if (!isFullCrop) {
+            val orientation = resolver.openInputStream(uri)?.use { input ->
+                runCatching {
+                    ExifInterface(input).getAttributeInt(
+                        ExifInterface.TAG_ORIENTATION,
+                        ExifInterface.ORIENTATION_NORMAL
+                    )
+                }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
+            } ?: ExifInterface.ORIENTATION_NORMAL
+
+            if (orientation == ExifInterface.ORIENTATION_NORMAL ||
+                orientation == ExifInterface.ORIENTATION_UNDEFINED
+            ) {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+                if (bounds.outWidth > 0 && bounds.outHeight > 0) {
+                    val leftPx = (cropRect.left * bounds.outWidth).roundToInt().coerceIn(0, bounds.outWidth - 1)
+                    val topPx = (cropRect.top * bounds.outHeight).roundToInt().coerceIn(0, bounds.outHeight - 1)
+                    val rightPx = (cropRect.right * bounds.outWidth).roundToInt().coerceIn(leftPx + 1, bounds.outWidth)
+                    val bottomPx = (cropRect.bottom * bounds.outHeight).roundToInt().coerceIn(topPx + 1, bounds.outHeight)
+                    val regionBitmap = runCatching {
+                        resolver.openInputStream(uri)?.use { stream ->
+                            val regionDecoder = BitmapRegionDecoder.newInstance(stream, false)
+                            try {
+                                regionDecoder?.decodeRegion(
+                                    Rect(leftPx, topPx, rightPx, bottomPx),
+                                    BitmapFactory.Options().apply {
+                                        inPreferredConfig = Bitmap.Config.ARGB_8888
+                                    }
+                                )
+                            } finally {
+                                regionDecoder?.recycle()
+                            }
+                        }
+                    }.getOrNull()
+                    if (regionBitmap != null) return regionBitmap
+                }
             }
-            runCatching { sourceBitmap?.recycle() }
+        }
+
+        // 2. Fast ImageDecoder path with native crop rect (handles EXIF orientation, HEIC, AVIF, WebP, PNG, JPG)
+        val decoderCropped = runCatching {
+            val source = ImageDecoder.createSource(resolver, uri)
+            ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                decoder.isMutableRequired = false
+                if (!isFullCrop) {
+                    val srcW = info.size.width
+                    val srcH = info.size.height
+                    if (srcW > 0 && srcH > 0) {
+                        val leftPx = (cropRect.left * srcW).roundToInt().coerceIn(0, srcW - 1)
+                        val topPx = (cropRect.top * srcH).roundToInt().coerceIn(0, srcH - 1)
+                        val rightPx = (cropRect.right * srcW).roundToInt().coerceIn(leftPx + 1, srcW)
+                        val bottomPx = (cropRect.bottom * srcH).roundToInt().coerceIn(topPx + 1, srcH)
+                        decoder.crop = Rect(leftPx, topPx, rightPx, bottomPx)
+                    }
+                }
+            }
+        }.getOrNull()
+        if (decoderCropped != null) return decoderCropped
+
+        // 3. Safe fallback: full decode + sub-bitmap crop
+        val sourceBitmap = decodeFullResolutionBitmap(context, uri) ?: return null
+        return try {
+            val srcW = sourceBitmap.width
+            val srcH = sourceBitmap.height
+            val leftPx = (cropRect.left * srcW).roundToInt().coerceIn(0, srcW - 1)
+            val topPx = (cropRect.top * srcH).roundToInt().coerceIn(0, srcH - 1)
+            val rightPx = (cropRect.right * srcW).roundToInt().coerceIn(leftPx + 1, srcW)
+            val bottomPx = (cropRect.bottom * srcH).roundToInt().coerceIn(topPx + 1, srcH)
+            val outW = (rightPx - leftPx).coerceIn(1, srcW)
+            val outH = (bottomPx - topPx).coerceIn(1, srcH)
+            val sub = Bitmap.createBitmap(sourceBitmap, leftPx, topPx, outW, outH)
+            if (sub !== sourceBitmap) {
+                runCatching { sourceBitmap.recycle() }
+            }
+            sub
+        } catch (t: Throwable) {
+            runCatching { sourceBitmap.recycle() }
+            throw t
         }
     }
 
@@ -252,7 +348,8 @@ object ImageCropProcessor {
         val quality: Int,
         val extension: String,
         val mimeType: String,
-        val supportsAlpha: Boolean
+        val supportsAlpha: Boolean,
+        val useUncompressedPng: Boolean = false
     )
 
     private fun resolveCompressSpec(
@@ -265,11 +362,12 @@ object ImageCropProcessor {
                 quality = 100,
                 extension = "png",
                 mimeType = "image/png",
-                supportsAlpha = true
+                supportsAlpha = true,
+                useUncompressedPng = true
             )
             ImageExportFormatId.JPG -> CompressSpec(
                 compressFormat = Bitmap.CompressFormat.JPEG,
-                quality = 95,
+                quality = 100,
                 extension = "jpg",
                 mimeType = "image/jpeg",
                 supportsAlpha = false
@@ -278,14 +376,14 @@ object ImageCropProcessor {
                 when (option.extension.lowercase(Locale.US)) {
                     "jpg", "jpeg" -> CompressSpec(
                         compressFormat = Bitmap.CompressFormat.JPEG,
-                        quality = 95,
+                        quality = 100,
                         extension = option.extension,
                         mimeType = "image/jpeg",
                         supportsAlpha = false
                     )
                     "webp" -> CompressSpec(
-                        compressFormat = if (sourceHasAlpha) Bitmap.CompressFormat.WEBP_LOSSLESS else Bitmap.CompressFormat.WEBP_LOSSY,
-                        quality = if (sourceHasAlpha) 100 else 95,
+                        compressFormat = Bitmap.CompressFormat.WEBP_LOSSLESS,
+                        quality = 0,
                         extension = "webp",
                         mimeType = "image/webp",
                         supportsAlpha = true
@@ -295,12 +393,163 @@ object ImageCropProcessor {
                         quality = 100,
                         extension = "png",
                         mimeType = "image/png",
-                        supportsAlpha = true
+                        supportsAlpha = true,
+                        useUncompressedPng = true
                     )
                 }
             }
         }
     }
+
+    private fun writeUncompressedPng(bitmap: Bitmap, out: OutputStream): Boolean {
+        val width = bitmap.width
+        val height = bitmap.height
+        if (width <= 0 || height <= 0) return false
+
+        val rgbaBitmap = if (bitmap.config == Bitmap.Config.ARGB_8888) {
+            bitmap
+        } else {
+            bitmap.copy(Bitmap.Config.ARGB_8888, false) ?: return false
+        }
+
+        return try {
+            // PNG signature
+            out.write(byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A))
+
+            // IHDR chunk: 8-bit RGBA (color type 6), no compression filter overhead, non-interlaced
+            val ihdr = ByteArray(13)
+            writeIntBigEndian(ihdr, 0, width)
+            writeIntBigEndian(ihdr, 4, height)
+            ihdr[8] = 8
+            ihdr[9] = 6
+            ihdr[10] = 0
+            ihdr[11] = 0
+            ihdr[12] = 0
+            writePngChunk(out, IHDR_TAG, ihdr, 13)
+
+            // IDAT chunks using stored DEFLATE (NO_COMPRESSION) so pixels are 100% lossless with zero CPU compression
+            val idatOut = IdatChunkOutputStream(out)
+            val deflater = Deflater(Deflater.NO_COMPRESSION)
+            try {
+                DeflaterOutputStream(idatOut, deflater, 64 * 1024).use { defStream ->
+                    val stripRows = 64
+                    val stripInts = IntArray(width * minOf(stripRows, height))
+                    val rowStride = 1 + width * 4
+                    val rowBytes = ByteArray(rowStride)
+                    rowBytes[0] = 0
+
+                    var y = 0
+                    while (y < height) {
+                        val rows = minOf(stripRows, height - y)
+                        rgbaBitmap.getPixels(stripInts, 0, width, 0, y, width, rows)
+                        for (r in 0 until rows) {
+                            val srcOffset = r * width
+                            var dst = 1
+                            for (x in 0 until width) {
+                                val argb = stripInts[srcOffset + x]
+                                rowBytes[dst++] = (argb ushr 16).toByte()
+                                rowBytes[dst++] = (argb ushr 8).toByte()
+                                rowBytes[dst++] = argb.toByte()
+                                rowBytes[dst++] = (argb ushr 24).toByte()
+                            }
+                            defStream.write(rowBytes, 0, rowStride)
+                        }
+                        y += rows
+                    }
+                    defStream.finish()
+                }
+                idatOut.flushBuffer()
+            } finally {
+                deflater.end()
+            }
+
+            // IEND chunk
+            writePngChunk(out, IEND_TAG, EMPTY_BYTES, 0)
+            out.flush()
+            true
+        } finally {
+            if (rgbaBitmap !== bitmap) {
+                runCatching { rgbaBitmap.recycle() }
+            }
+        }
+    }
+
+    private class IdatChunkOutputStream(
+        private val out: OutputStream,
+        bufferCapacity: Int = 256 * 1024
+    ) : OutputStream() {
+        private val buffer = ByteArray(bufferCapacity)
+        private var count = 0
+
+        override fun write(b: Int) {
+            if (count >= buffer.size) {
+                flushBuffer()
+            }
+            buffer[count++] = b.toByte()
+        }
+
+        override fun write(b: ByteArray, off: Int, len: Int) {
+            var offset = off
+            var remaining = len
+            while (remaining > 0) {
+                if (count >= buffer.size) {
+                    flushBuffer()
+                }
+                val chunk = minOf(remaining, buffer.size - count)
+                System.arraycopy(b, offset, buffer, count, chunk)
+                count += chunk
+                offset += chunk
+                remaining -= chunk
+            }
+        }
+
+        fun flushBuffer() {
+            if (count > 0) {
+                writePngChunk(out, IDAT_TAG, buffer, count)
+                count = 0
+            }
+        }
+
+        override fun flush() {
+            flushBuffer()
+            out.flush()
+        }
+
+        override fun close() {
+            flushBuffer()
+        }
+    }
+
+    private fun writePngChunk(out: OutputStream, tag: ByteArray, data: ByteArray, length: Int) {
+        val lenBytes = ByteArray(4)
+        writeIntBigEndian(lenBytes, 0, length)
+        out.write(lenBytes)
+        out.write(tag)
+        if (length > 0) {
+            out.write(data, 0, length)
+        }
+        val crc = CRC32()
+        crc.update(tag)
+        if (length > 0) {
+            crc.update(data, 0, length)
+        }
+        val crcVal = crc.value.toInt()
+        val crcBytes = ByteArray(4)
+        writeIntBigEndian(crcBytes, 0, crcVal)
+        out.write(crcBytes)
+    }
+
+    private fun writeIntBigEndian(dst: ByteArray, offset: Int, value: Int) {
+        dst[offset] = (value ushr 24).toByte()
+        dst[offset + 1] = (value ushr 16).toByte()
+        dst[offset + 2] = (value ushr 8).toByte()
+        dst[offset + 3] = value.toByte()
+    }
+
+    private val IHDR_TAG = byteArrayOf('I'.code.toByte(), 'H'.code.toByte(), 'D'.code.toByte(), 'R'.code.toByte())
+    private val IDAT_TAG = byteArrayOf('I'.code.toByte(), 'D'.code.toByte(), 'A'.code.toByte(), 'T'.code.toByte())
+    private val IEND_TAG = byteArrayOf('I'.code.toByte(), 'E'.code.toByte(), 'N'.code.toByte(), 'D'.code.toByte())
+    private val EMPTY_BYTES = ByteArray(0)
 
     private fun preserveExifMetadata(
         context: Context,
@@ -350,7 +599,7 @@ object ImageCropProcessor {
         val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return false
         return try {
             resolver.openOutputStream(uri)?.use { out ->
-                file.inputStream().use { input -> input.copyTo(out, bufferSize = 256 * 1024) }
+                file.inputStream().use { input -> input.copyTo(out, bufferSize = 512 * 1024) }
             }
             resolver.update(uri, ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }, null, null)
             true

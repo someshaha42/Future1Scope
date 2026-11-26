@@ -3,6 +3,7 @@ package com.example.framescope.crop
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
+import android.media.ExifInterface
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaExtractor
@@ -18,6 +19,10 @@ import kotlin.math.pow
 import kotlin.math.roundToInt
 
 object CropMediaInspector {
+
+    private val cachedCodecInfos: Array<MediaCodecInfo> by lazy {
+        MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos
+    }
 
     private val IMAGE_EXTENSIONS = setOf(
         "png", "jpg", "jpeg", "webp", "heic", "heif", "avif", "bmp", "gif", "wbmp", "dng", "tiff", "tif"
@@ -63,27 +68,43 @@ object CropMediaInspector {
         var hasAlpha = false
         var detectedMime = rawMime
 
-        // Probe with ImageDecoder first for modern formats (HEIC, AVIF, WebP, PNG, JPG, etc.)
+        // Fast header-only bounds probe first (avoids full-image pixel decode during inspection)
+        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         runCatching {
-            val source = ImageDecoder.createSource(resolver, uri)
-            ImageDecoder.decodeDrawable(source) { decoder, info, _ ->
-                width = info.size.width
-                height = info.size.height
-                detectedMime = info.mimeType.ifBlank { detectedMime }
-                decoder.setTargetSize(1, 1)
-            }
-        }
-
-        // Fallback to BitmapFactory bounds if ImageDecoder header failed
-        if (width <= 0 || height <= 0) {
-            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             resolver.openInputStream(uri)?.use { input ->
                 BitmapFactory.decodeStream(input, null, opts)
             }
-            width = opts.outWidth
-            height = opts.outHeight
+        }
+        if (opts.outWidth > 0 && opts.outHeight > 0) {
+            val orientation = runCatching {
+                resolver.openInputStream(uri)?.use { input ->
+                    ExifInterface(input).getAttributeInt(
+                        ExifInterface.TAG_ORIENTATION,
+                        ExifInterface.ORIENTATION_NORMAL
+                    )
+                }
+            }.getOrNull() ?: ExifInterface.ORIENTATION_NORMAL
+            val swapsAxes = orientation == ExifInterface.ORIENTATION_ROTATE_90 ||
+                orientation == ExifInterface.ORIENTATION_ROTATE_270 ||
+                orientation == ExifInterface.ORIENTATION_TRANSPOSE ||
+                orientation == ExifInterface.ORIENTATION_TRANSVERSE
+            width = if (swapsAxes) opts.outHeight else opts.outWidth
+            height = if (swapsAxes) opts.outWidth else opts.outHeight
             if (!opts.outMimeType.isNullOrBlank()) {
                 detectedMime = opts.outMimeType
+            }
+        }
+
+        // Fallback to ImageDecoder header probe for formats BitmapFactory bounds didn't recognize
+        if (width <= 0 || height <= 0) {
+            runCatching {
+                val source = ImageDecoder.createSource(resolver, uri)
+                ImageDecoder.decodeDrawable(source) { decoder, info, _ ->
+                    width = info.size.width
+                    height = info.size.height
+                    detectedMime = info.mimeType.ifBlank { detectedMime }
+                    decoder.setTargetSize(1, 1)
+                }
             }
         }
 
@@ -332,17 +353,17 @@ object CropMediaInspector {
         originalExt: String,
         originalMime: String
     ): List<VideoExportFormatOption> {
-        val list = MediaCodecList(MediaCodecList.ALL_CODECS)
+        val codecInfos = cachedCodecInfos
         val canExportMp4 = hasSurfaceEncoderForAny(
-            list,
+            codecInfos,
             listOf(MediaFormat.MIMETYPE_VIDEO_AVC, MediaFormat.MIMETYPE_VIDEO_HEVC)
         )
         val canExportWebm = hasSurfaceEncoderForAny(
-            list,
+            codecInfos,
             listOf(MediaFormat.MIMETYPE_VIDEO_VP9, MediaFormat.MIMETYPE_VIDEO_VP8)
         )
         val canExport3gp = hasSurfaceEncoderForAny(
-            list,
+            codecInfos,
             listOf(MediaFormat.MIMETYPE_VIDEO_AVC, MediaFormat.MIMETYPE_VIDEO_H263)
         )
 
@@ -406,12 +427,11 @@ object CropMediaInspector {
     }
 
     private fun hasDecoderForMime(mime: String): Boolean {
-        val list = MediaCodecList(MediaCodecList.ALL_CODECS)
-        return list.codecInfos.any { !it.isEncoder && it.supportedTypes.any { t -> t.equals(mime, ignoreCase = true) } }
+        return cachedCodecInfos.any { !it.isEncoder && it.supportedTypes.any { t -> t.equals(mime, ignoreCase = true) } }
     }
 
-    private fun hasSurfaceEncoderForAny(list: MediaCodecList, mimes: List<String>): Boolean {
-        return list.codecInfos.any { info ->
+    private fun hasSurfaceEncoderForAny(codecInfos: Array<MediaCodecInfo>, mimes: List<String>): Boolean {
+        return codecInfos.any { info ->
             !info.isAlias && info.isEncoder && info.supportedTypes.any { type ->
                 mimes.any { target ->
                     type.equals(target, ignoreCase = true) &&
@@ -428,10 +448,10 @@ object CropMediaInspector {
         sourceVideoMime: String?,
         container: VideoContainerFormat?
     ): CodecPipelineSupport {
-        val list = MediaCodecList(MediaCodecList.ALL_CODECS)
+        val codecInfos = cachedCodecInfos
 
         val decoderInfo = if (!sourceVideoMime.isNullOrBlank()) {
-            val decoders = list.codecInfos.filter { info ->
+            val decoders = codecInfos.filter { info ->
                 !info.isAlias && !info.isEncoder && info.supportedTypes.any { it.equals(sourceVideoMime, ignoreCase = true) }
             }
             decoders.firstOrNull { it.isHardwareAccelerated } ?: decoders.firstOrNull()
@@ -453,7 +473,7 @@ object CropMediaInspector {
         }
 
         val matchingEncoders = encoderMimes.flatMap { mime ->
-            list.codecInfos.filter { info ->
+            codecInfos.filter { info ->
                 !info.isAlias &&
                     info.isEncoder &&
                     info.supportedTypes.any { it.equals(mime, ignoreCase = true) } &&

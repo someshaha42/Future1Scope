@@ -62,6 +62,10 @@ data class CropCapabilitiesSnapshot(
 
 object DeviceCapabilityEngine {
 
+    private val cachedCodecInfos: Array<MediaCodecInfo> by lazy {
+        MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos
+    }
+
     fun probeHomeCapabilities(
         context: Context,
         screenWidth: Int,
@@ -71,8 +75,8 @@ object DeviceCapabilityEngine {
         val codecList = MediaCodecList(MediaCodecList.ALL_CODECS)
         val rawCodecs = EncodingSpec.detectAllVideoCodecs()
 
-        val hasFallbackMpeg4 = hasAnyVideoEncoder(codecList, MediaFormat.MIMETYPE_VIDEO_MPEG4)
-        val hasFallbackAvcSw = hasAnyVideoEncoder(codecList, MediaFormat.MIMETYPE_VIDEO_AVC, requireSurface = false)
+        val hasFallbackMpeg4 = hasAnyVideoEncoder(cachedCodecInfos, MediaFormat.MIMETYPE_VIDEO_MPEG4)
+        val hasFallbackAvcSw = hasAnyVideoEncoder(cachedCodecInfos, MediaFormat.MIMETYPE_VIDEO_AVC, requireSurface = false)
         val minimalVideoFallbackLabel = when {
             hasFallbackAvcSw -> "H.264 Software Safe (720p)"
             hasFallbackMpeg4 -> "MPEG-4 Visual Safe (720p)"
@@ -408,8 +412,7 @@ object DeviceCapabilityEngine {
 
     fun probeCropCapabilities(context: Context): CropCapabilitiesSnapshot {
         val pm = context.packageManager
-        val list = MediaCodecList(MediaCodecList.ALL_CODECS)
-        val hasAnyVideoCodec = list.codecInfos.any { info ->
+        val hasAnyVideoCodec = cachedCodecInfos.any { info ->
             info.isEncoder && !info.isAlias && (
                 info.supportedTypes.any { it.equals(MediaFormat.MIMETYPE_VIDEO_AVC, ignoreCase = true) } ||
                     info.supportedTypes.any { it.equals(MediaFormat.MIMETYPE_VIDEO_HEVC, ignoreCase = true) } ||
@@ -546,8 +549,7 @@ object DeviceCapabilityEngine {
         customBitrateMbps: Float,
         container: VideoContainerFormat?
     ): Map<VideoBitrateMode, OptionSupportInfo> {
-        val list = MediaCodecList(MediaCodecList.ALL_CODECS)
-        val range = findPrimaryEncoderBitrateRange(list, media?.sourceVideoMime, container)
+        val range = findPrimaryEncoderBitrateRange(cachedCodecInfos, media?.sourceVideoMime, container)
         val lowerMbps = (range.first / 1_000_000f).coerceAtLeast(0.25f)
         val upperMbps = (range.second / 1_000_000f).coerceAtLeast(lowerMbps)
 
@@ -585,7 +587,7 @@ object DeviceCapabilityEngine {
     }
 
     private fun findPrimaryEncoderBitrateRange(
-        list: MediaCodecList,
+        codecInfos: Array<MediaCodecInfo>,
         sourceVideoMime: String?,
         container: VideoContainerFormat?
     ): Pair<Int, Int> {
@@ -602,7 +604,7 @@ object DeviceCapabilityEngine {
         }
 
         for (mime in mimes) {
-            val infos = list.codecInfos.filter { info ->
+            val infos = codecInfos.filter { info ->
                 !info.isAlias && info.isEncoder && info.supportedTypes.any { it.equals(mime, ignoreCase = true) }
             }.sortedByDescending { it.isHardwareAccelerated }
 
@@ -643,22 +645,22 @@ object DeviceCapabilityEngine {
         container: VideoContainerFormat,
         fallbackLabel: String
     ): OptionSupportInfo {
-        val list = MediaCodecList(MediaCodecList.ALL_CODECS)
+        val codecInfos = cachedCodecInfos
         val hasSurfaceForContainer = when (container) {
             VideoContainerFormat.MP4 -> hasAnyVideoEncoder(
-                list, MediaFormat.MIMETYPE_VIDEO_AVC, requireSurface = true
+                codecInfos, MediaFormat.MIMETYPE_VIDEO_AVC, requireSurface = true
             ) || hasAnyVideoEncoder(
-                list, MediaFormat.MIMETYPE_VIDEO_HEVC, requireSurface = true
+                codecInfos, MediaFormat.MIMETYPE_VIDEO_HEVC, requireSurface = true
             )
             VideoContainerFormat.WEBM -> hasAnyVideoEncoder(
-                list, MediaFormat.MIMETYPE_VIDEO_VP9, requireSurface = true
+                codecInfos, MediaFormat.MIMETYPE_VIDEO_VP9, requireSurface = true
             ) || hasAnyVideoEncoder(
-                list, MediaFormat.MIMETYPE_VIDEO_VP8, requireSurface = true
+                codecInfos, MediaFormat.MIMETYPE_VIDEO_VP8, requireSurface = true
             )
             VideoContainerFormat.THREE_GP -> hasAnyVideoEncoder(
-                list, MediaFormat.MIMETYPE_VIDEO_AVC, requireSurface = true
+                codecInfos, MediaFormat.MIMETYPE_VIDEO_AVC, requireSurface = true
             ) || hasAnyVideoEncoder(
-                list, MediaFormat.MIMETYPE_VIDEO_H263, requireSurface = true
+                codecInfos, MediaFormat.MIMETYPE_VIDEO_H263, requireSurface = true
             )
         }
 
@@ -673,11 +675,11 @@ object DeviceCapabilityEngine {
     }
 
     private fun hasAnyVideoEncoder(
-        list: MediaCodecList,
+        codecInfos: Array<MediaCodecInfo>,
         mime: String,
         requireSurface: Boolean = true
     ): Boolean {
-        return list.codecInfos.any { info ->
+        return codecInfos.any { info ->
             if (!info.isEncoder || info.isAlias || !info.supportedTypes.any { it.equals(mime, ignoreCase = true) }) {
                 return@any false
             }
