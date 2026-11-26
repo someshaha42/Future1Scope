@@ -549,39 +549,27 @@ object DeviceCapabilityEngine {
         customBitrateMbps: Float,
         container: VideoContainerFormat?
     ): Map<VideoBitrateMode, OptionSupportInfo> {
-        val range = findPrimaryEncoderBitrateRange(cachedCodecInfos, media?.sourceVideoMime, container)
-        val lowerMbps = (range.first / 1_000_000f).coerceAtLeast(0.25f)
-        val upperMbps = (range.second / 1_000_000f).coerceAtLeast(lowerMbps)
-
-        val customSupported = customBitrateMbps in 0.25f..upperMbps
-        val customInfo = if (customSupported) {
-            OptionSupportInfo(true)
-        } else {
-            val clamped = customBitrateMbps.coerceIn(lowerMbps, upperMbps)
-            OptionSupportInfo(
-                isSupported = false,
-                alternativeName = String.format(Locale.US, "%.1f Mbps Encoder Safe", clamped)
-            )
-        }
-
+        val range = findPrimaryEncoderBitrateRange(cachedCodecInfos, media?.sourceVideoMime, container ?: VideoContainerFormat.MP4)
         val origBps = media?.originalBitrateBps
-        val origSupported = origBps != null &&
-            origBps > 0L &&
-            origBps in range.first.toLong()..range.second.toLong()
-
-        val origInfo = if (origSupported) {
-            OptionSupportInfo(true)
-        } else {
-            val reason = if (origBps == null || origBps <= 0L) "No metadata" else "Out of range"
-            OptionSupportInfo(
-                isSupported = false,
-                detailText = reason,
-                alternativeName = String.format(Locale.US, "Custom (%.1f Mbps)", customBitrateMbps.coerceIn(0.25f, upperMbps))
+        val origInfo = when {
+            origBps == null || origBps <= 0L -> OptionSupportInfo(
+                isSupported = true,
+                detailText = "Auto Original"
             )
+            origBps in range.first.toLong()..range.second.toLong() -> OptionSupportInfo(
+                isSupported = true,
+                detailText = String.format(Locale.US, "%.1f Mbps", origBps / 1_000_000.0)
+            )
+            else -> {
+                val clampedMbps = origBps.coerceIn(range.first.toLong(), range.second.toLong()) / 1_000_000.0
+                OptionSupportInfo(
+                    isSupported = true,
+                    detailText = String.format(Locale.US, "%.1f Mbps (Codec Clamped)", clampedMbps)
+                )
+            }
         }
 
         return mapOf(
-            VideoBitrateMode.CUSTOM to customInfo,
             VideoBitrateMode.ORIGINAL_PRESERVATION to origInfo
         )
     }

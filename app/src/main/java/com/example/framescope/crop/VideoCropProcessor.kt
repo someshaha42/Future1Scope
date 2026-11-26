@@ -111,6 +111,7 @@ object VideoCropProcessor {
                 "Unable to locate a decodable video track."
             }
 
+            val targetContainer = VideoContainerFormat.MP4
             val isFullCrop = cropRect.left <= 0.002f &&
                 cropRect.top <= 0.002f &&
                 cropRect.right >= 0.998f &&
@@ -122,15 +123,15 @@ object VideoCropProcessor {
                 isFullCrop &&
                 isFullStart &&
                 isFullEnd &&
-                isVideoCompatibleWithContainer(sourceMime, formatOption.container)
+                isVideoCompatibleWithContainer(sourceMime, targetContainer)
             ) {
                 val compatibleAudio = audioInputFormat?.takeIf {
                     isAudioCompatibleWithContainer(
                         it.getString(MediaFormat.KEY_MIME),
-                        formatOption.container
+                        targetContainer
                     )
                 }
-                val passthroughFile = CropExportsRepository(context).createVideoExportFile(formatOption.container.extension)
+                val passthroughFile = CropExportsRepository(context).createVideoExportFile(targetContainer.extension)
                 outFile = passthroughFile
                 val passthroughResult = runLosslessRemux(
                     context = context,
@@ -140,7 +141,7 @@ object VideoCropProcessor {
                     videoInputFormat = videoInputFormat,
                     audioTrackIndex = audioTrackIndex,
                     compatibleAudioFormat = compatibleAudio,
-                    container = formatOption.container,
+                    container = targetContainer,
                     outFile = passthroughFile,
                     onProgress = onProgress
                 )
@@ -151,13 +152,13 @@ object VideoCropProcessor {
                 outFile = null
             }
 
-            val rawOutW = (cropRect.widthFraction * media.displayWidth).roundToInt()
+            val rawOutW = ((cropRect.widthFraction * media.displayWidth).roundToInt() and 1.inv())
                 .coerceIn(16, media.displayWidth)
-            val rawOutH = (cropRect.heightFraction * media.displayHeight).roundToInt()
+            val rawOutH = ((cropRect.heightFraction * media.displayHeight).roundToInt() and 1.inv())
                 .coerceIn(16, media.displayHeight)
 
             val encoderCandidates = resolveVideoEncoderCandidates(
-                requestedContainer = formatOption.container,
+                requestedContainer = targetContainer,
                 preferredMime = media.sourceVideoMime,
                 requestedWidth = rawOutW,
                 requestedHeight = rawOutH,

@@ -884,176 +884,52 @@ private fun AspectRatioGlyph(
 
 @Composable
 internal fun VideoBitrateModeSection(
-    mode: VideoBitrateMode,
-    customBitrateMbps: Float,
     originalBitrateBps: Long?,
-    bitrateModeSupport: Map<VideoBitrateMode, OptionSupportInfo> = emptyMap(),
-    onSelectMode: (VideoBitrateMode) -> Unit,
-    onSliderChanged: (Float) -> Unit
+    bitrateModeSupport: Map<VideoBitrateMode, OptionSupportInfo> = emptyMap()
 ) {
     val origMbpsText = if (originalBitrateBps != null && originalBitrateBps > 0L) {
         String.format(Locale.US, "%.1f Mbps", originalBitrateBps / 1_000_000.0)
     } else {
-        "Unavailable"
+        "Auto (Original)"
     }
-    val customSupport = bitrateModeSupport[VideoBitrateMode.CUSTOM] ?: OptionSupportInfo(true)
     val origSupport = bitrateModeSupport[VideoBitrateMode.ORIGINAL_PRESERVATION]
-        ?: OptionSupportInfo(originalBitrateBps != null && originalBitrateBps > 0L)
+        ?: OptionSupportInfo(isSupported = true)
 
-    SectionCard(title = "Bitrate Mode") {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            val customSelected = mode == VideoBitrateMode.CUSTOM
-            val customBorder by animateColorAsState(
-                if (customSelected) FrameScopeColors.SelectionBlue else FrameScopeColors.BorderSubtle,
-                label = "custom_bitrate_border"
-            )
-            Surface(
+    SectionCard(title = "Bitrate") {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("bitrate_mode_original"),
+            shape = RoundedCornerShape(12.dp),
+            color = FrameScopeColors.InnerSurface,
+            border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle)
+        ) {
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable { onSelectMode(VideoBitrateMode.CUSTOM) }
-                    .testTag("bitrate_mode_custom"),
-                shape = RoundedCornerShape(12.dp),
-                color = if (customSelected) FrameScopeColors.SelectionBlueTint else FrameScopeColors.InnerSurface,
-                border = BorderStroke(if (customSelected) 1.5.dp else 1.dp, customBorder)
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Text(
-                                text = "Custom",
-                                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
-                                color = FrameScopeColors.TextPrimary
-                            )
-                            Text(
-                                text = String.format(Locale.US, "%.1f Mbps", customBitrateMbps),
-                                style = MaterialTheme.typography.bodyMedium.copy(
-                                    fontFamily = FontFamily.Monospace,
-                                    fontWeight = FontWeight.SemiBold
-                                ),
-                                color = FrameScopeColors.SelectionBlue
-                            )
-                        }
-                        SupportStatusPill(isSupported = customSupport.isSupported)
-                    }
-
-                    if (!customSupport.isSupported && !customSupport.alternativeName.isNullOrBlank()) {
-                        AlternativeInUseBanner(alternativeName = customSupport.alternativeName)
-                    }
-
-                    Slider(
-                        value = customBitrateMbps.coerceIn(0f, 50f),
-                        onValueChange = onSliderChanged,
-                        valueRange = 0f..50f,
-                        colors = SliderDefaults.colors(
-                            thumbColor = FrameScopeColors.SelectionBlue,
-                            activeTrackColor = FrameScopeColors.SelectionBlue,
-                            inactiveTrackColor = FrameScopeColors.ElevatedSurface
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("crop_bitrate_slider")
+                    Text(
+                        text = "Original Bitrate",
+                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                        color = FrameScopeColors.TextPrimary
                     )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = "0 Mbps",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = FrameScopeColors.TextMuted
-                        )
-                        Text(
-                            text = "50 Mbps",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = FrameScopeColors.TextMuted
-                        )
-                    }
+                    Text(
+                        text = origMbpsText,
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.SemiBold
+                        ),
+                        color = FrameScopeColors.ReadyGreen
+                    )
                 }
-            }
-
-            val origSelected = mode == VideoBitrateMode.ORIGINAL_PRESERVATION
-            val origBorder by animateColorAsState(
-                if (origSelected) FrameScopeColors.SelectionBlue else FrameScopeColors.BorderSubtle,
-                label = "orig_bitrate_border"
-            )
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .minimumInteractiveComponentSize()
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable { onSelectMode(VideoBitrateMode.ORIGINAL_PRESERVATION) }
-                    .testTag("bitrate_mode_original"),
-                shape = RoundedCornerShape(12.dp),
-                color = if (origSelected) FrameScopeColors.SelectionBlueTint else FrameScopeColors.InnerSurface,
-                border = BorderStroke(if (origSelected) 1.5.dp else 1.dp, origBorder)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(2.dp)
-                        ) {
-                            Text(
-                                text = "Original Preservation",
-                                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
-                                color = FrameScopeColors.TextPrimary
-                            )
-                            Text(
-                                text = origMbpsText,
-                                style = MaterialTheme.typography.bodyMedium.copy(
-                                    fontFamily = FontFamily.Monospace,
-                                    fontWeight = FontWeight.SemiBold
-                                ),
-                                color = if (originalBitrateBps != null && originalBitrateBps > 0L) {
-                                    FrameScopeColors.ReadyGreen
-                                } else {
-                                    FrameScopeColors.SpecRedText
-                                }
-                            )
-                        }
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            SupportStatusPill(isSupported = origSupport.isSupported)
-                            if (origSelected) {
-                                Icon(
-                                    imageVector = Icons.Rounded.CheckCircle,
-                                    contentDescription = "Selected",
-                                    tint = FrameScopeColors.SelectionBlue,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        }
-                    }
-
-                    if (!origSupport.isSupported && !origSupport.alternativeName.isNullOrBlank()) {
-                        AlternativeInUseBanner(alternativeName = origSupport.alternativeName)
-                    }
-                }
+                SupportStatusPill(isSupported = origSupport.isSupported)
             }
         }
     }
@@ -1095,39 +971,51 @@ internal fun ImageFormatSection(
 @Composable
 internal fun VideoFormatSection(
     options: List<VideoExportFormatOption>,
-    selected: VideoExportFormatOption?,
-    onSelect: (VideoExportFormatOption) -> Unit
+    sourceExtension: String
 ) {
-    SectionCard(title = "Export Format") {
-        if (options.isEmpty()) {
-            Text(
-                text = "No supported video export muxer/encoder found on this device.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = FrameScopeColors.SpecRedText
-            )
-        } else {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    options.forEach { option ->
-                        val isSelected = selected == option
-                        FormatChip(
-                            label = option.label,
-                            selected = isSelected,
-                            supportInfo = option.supportInfo,
-                            testTag = "video_format_${option.container.name.lowercase()}",
-                            onClick = { onSelect(option) }
-                        )
-                    }
-                }
+    val mp4Option = options.firstOrNull()
+    val supportInfo = mp4Option?.supportInfo ?: OptionSupportInfo(isSupported = true)
+    val isAlreadyMp4 = mp4Option?.isOriginal == true ||
+        sourceExtension.equals("mp4", ignoreCase = true) ||
+        sourceExtension.equals("m4v", ignoreCase = true)
+    val statusDetail = if (isAlreadyMp4) {
+        "Original MP4 format"
+    } else {
+        "${sourceExtension.uppercase(Locale.US).ifBlank { "Video" }} → MP4"
+    }
 
-                if (selected != null && !selected.supportInfo.isSupported && !selected.supportInfo.alternativeName.isNullOrBlank()) {
-                    AlternativeInUseBanner(alternativeName = selected.supportInfo.alternativeName)
+    SectionCard(title = "Export Format") {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("video_format_mp4"),
+            shape = RoundedCornerShape(12.dp),
+            color = FrameScopeColors.InnerSurface,
+            border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text(
+                        text = "MP4",
+                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                        color = FrameScopeColors.TextPrimary
+                    )
+                    Text(
+                        text = statusDetail,
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                        color = FrameScopeColors.TextSecondary
+                    )
                 }
+                SupportStatusPill(isSupported = supportInfo.isSupported)
             }
         }
     }

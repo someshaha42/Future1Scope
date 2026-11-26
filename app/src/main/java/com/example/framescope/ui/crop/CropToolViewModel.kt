@@ -68,7 +68,7 @@ data class CropToolUiState(
     val trimEndMs: Long = 0L,
     val currentVideoPositionMs: Long = 0L,
     val seekRequestMs: Long? = null,
-    val bitrateMode: VideoBitrateMode = VideoBitrateMode.CUSTOM,
+    val bitrateMode: VideoBitrateMode = VideoBitrateMode.ORIGINAL_PRESERVATION,
     val customBitrateMbps: Float = 12f,
     val selectedImageFormat: ImageExportFormatOption? = null,
     val selectedVideoFormat: VideoExportFormatOption? = null,
@@ -513,7 +513,7 @@ class CropToolViewModel(
                         trimEndMs = info.durationMs,
                         currentVideoPositionMs = 0L,
                         seekRequestMs = null,
-                        bitrateMode = VideoBitrateMode.CUSTOM,
+                        bitrateMode = VideoBitrateMode.ORIGINAL_PRESERVATION,
                         customBitrateMbps = initialCustomMbps,
                         selectedImageFormat = info.imageExportOptions.firstOrNull(),
                         selectedVideoFormat = firstVideoFormat,
@@ -605,15 +605,13 @@ class CropToolViewModel(
                     it.label == project.selectedFormatLabel
                 } ?: info.imageExportOptions.firstOrNull()
 
-                val savedVideoFormat = info.videoExportOptions.firstOrNull {
-                    it.label == project.selectedFormatLabel
-                } ?: info.videoExportOptions.firstOrNull()
+                val savedVideoFormat = info.videoExportOptions.firstOrNull()
 
                 val pipelineSupport = withContext(Dispatchers.Default) {
                     if (info.mediaType == CropMediaType.VIDEO) {
                         CropMediaInspector.inspectVideoPipelineSupport(
                             sourceVideoMime = info.sourceVideoMime,
-                            container = savedVideoFormat?.container
+                            container = com.example.framescope.crop.VideoContainerFormat.MP4
                         )
                     } else {
                         CodecPipelineSupport(
@@ -638,9 +636,6 @@ class CropToolViewModel(
                 val restoredCanvasMode = runCatching {
                     CanvasAspectMode.valueOf(project.canvasAspectModeName)
                 }.getOrDefault(CanvasAspectMode.ORIGINAL)
-                val restoredBitrateMode = runCatching {
-                    VideoBitrateMode.valueOf(project.bitrateModeName)
-                }.getOrDefault(VideoBitrateMode.CUSTOM)
 
                 val restoredTrimStart = project.trimStartMs.coerceIn(0L, info.durationMs)
                 val restoredTrimEnd = if (project.trimEndMs > restoredTrimStart) {
@@ -649,11 +644,11 @@ class CropToolViewModel(
                     info.durationMs
                 }
 
-                val restoredBitrateMbps = if (project.customBitrateMbps > 0f || restoredBitrateMode == VideoBitrateMode.CUSTOM) {
-                    project.customBitrateMbps.coerceIn(0f, 50f)
+                val origBps = info.originalBitrateBps
+                val restoredBitrateMbps = if (origBps != null && origBps > 0L) {
+                    (origBps / 1_000_000f).coerceIn(0f, 50f)
                 } else {
-                    val origBps = info.originalBitrateBps
-                    if (origBps != null && origBps > 0L) (origBps / 1_000_000f).coerceIn(0f, 50f) else 12f
+                    12f
                 }
 
                 _uiState.update { prev ->
@@ -689,7 +684,7 @@ class CropToolViewModel(
                         } else {
                             null
                         },
-                        bitrateMode = restoredBitrateMode,
+                        bitrateMode = VideoBitrateMode.ORIGINAL_PRESERVATION,
                         customBitrateMbps = restoredBitrateMbps,
                         selectedImageFormat = savedImageFormat,
                         selectedVideoFormat = savedVideoFormat,
@@ -978,12 +973,7 @@ class CropToolViewModel(
             }
 
             val formatLabel = if (media.mediaType == CropMediaType.VIDEO) {
-                val chosen = state.selectedVideoFormat
-                if (chosen != null && !chosen.supportInfo.isSupported && !chosen.supportInfo.alternativeName.isNullOrBlank()) {
-                    chosen.supportInfo.alternativeName
-                } else {
-                    chosen?.label ?: "MP4"
-                }
+                "MP4"
             } else {
                 val chosen = state.selectedImageFormat
                 if (chosen != null && !chosen.supportInfo.isSupported && !chosen.supportInfo.alternativeName.isNullOrBlank()) {
@@ -1007,45 +997,36 @@ class CropToolViewModel(
                     )
                 }
                 CropMediaType.VIDEO -> {
-                    val chosenFormat = state.selectedVideoFormat ?: media.videoExportOptions.firstOrNull()
-                    val effectiveFormat = if (chosenFormat != null && !chosenFormat.supportInfo.isSupported) {
-                        media.videoExportOptions.firstOrNull { it.supportInfo.isSupported } ?: chosenFormat
-                    } else {
-                        chosenFormat
-                    }
-                    if (effectiveFormat == null) {
-                        CropExportState.Error("No compatible video export format found on this device.")
-                    } else {
-                        val fallbackCustomBps = (state.customBitrateMbps * 1_000_000f).roundToInt()
-                            .coerceAtLeast(250_000)
-                        val targetBps = when (state.bitrateMode) {
-                            VideoBitrateMode.ORIGINAL_PRESERVATION -> {
-                                val orig = media.originalBitrateBps
-                                if (orig != null && orig > 0L) {
-                                    orig.coerceIn(250_000L, 50_000_000L).toInt()
-                                } else {
-                                    fallbackCustomBps
-                                }
-                            }
-                            VideoBitrateMode.CUSTOM -> fallbackCustomBps
-                        }
-
-                        VideoCropProcessor.exportCroppedVideo(
-                            context = appContext,
-                            media = media,
-                            cropRect = state.cropRect,
-                            formatOption = effectiveFormat,
-                            targetBitrateBps = targetBps,
-                            trimStartMs = state.trimStartMs,
-                            trimEndMs = state.trimEndMs,
-                            allowLosslessPassthrough = (state.bitrateMode == VideoBitrateMode.ORIGINAL_PRESERVATION),
-                            onProgress = { progress, text ->
-                                _uiState.update {
-                                    it.copy(exportState = CropExportState.Exporting(progress, text))
-                                }
-                            }
+                    val effectiveFormat = media.videoExportOptions.firstOrNull()
+                        ?: com.example.framescope.crop.VideoExportFormatOption(
+                            label = "MP4",
+                            container = com.example.framescope.crop.VideoContainerFormat.MP4,
+                            isOriginal = media.extension.equals("mp4", ignoreCase = true)
                         )
+                    val orig = media.originalBitrateBps
+                    val targetBps = if (orig != null && orig > 0L) {
+                        orig.coerceIn(250_000L, 100_000_000L).toInt()
+                    } else {
+                        (state.outputWidth.toLong() * state.outputHeight.toLong() * 6L)
+                            .coerceIn(1_500_000L, 25_000_000L)
+                            .toInt()
                     }
+
+                    VideoCropProcessor.exportCroppedVideo(
+                        context = appContext,
+                        media = media,
+                        cropRect = state.cropRect,
+                        formatOption = effectiveFormat,
+                        targetBitrateBps = targetBps,
+                        trimStartMs = state.trimStartMs,
+                        trimEndMs = state.trimEndMs,
+                        allowLosslessPassthrough = true,
+                        onProgress = { progress, text ->
+                            _uiState.update {
+                                it.copy(exportState = CropExportState.Exporting(progress, text))
+                            }
+                        }
+                    )
                 }
             }
 

@@ -679,18 +679,13 @@ fun CropToolScreen(
                             )
 
                             VideoBitrateModeSection(
-                                mode = state.bitrateMode,
-                                customBitrateMbps = state.customBitrateMbps,
                                 originalBitrateBps = media.originalBitrateBps,
-                                bitrateModeSupport = state.bitrateModeSupport,
-                                onSelectMode = viewModel::selectBitrateMode,
-                                onSliderChanged = viewModel::setManualCustomBitrate
+                                bitrateModeSupport = state.bitrateModeSupport
                             )
 
                             VideoFormatSection(
                                 options = media.videoExportOptions,
-                                selected = state.selectedVideoFormat,
-                                onSelect = viewModel::selectVideoFormat
+                                sourceExtension = media.extension
                             )
                         } else {
                             ImageFormatSection(
@@ -701,7 +696,7 @@ fun CropToolScreen(
                         }
 
                         val formatLabel = if (media.mediaType == CropMediaType.VIDEO) {
-                            state.selectedVideoFormat?.label ?: "MP4"
+                            "MP4"
                         } else {
                             state.selectedImageFormat?.label ?: "PNG"
                         }

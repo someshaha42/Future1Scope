@@ -317,33 +317,19 @@ object CropMediaInspector {
             codecInfos,
             listOf(MediaFormat.MIMETYPE_VIDEO_AVC, MediaFormat.MIMETYPE_VIDEO_HEVC)
         )
-        val canExportWebm = hasSurfaceEncoderForAny(
-            codecInfos,
-            listOf(MediaFormat.MIMETYPE_VIDEO_VP9, MediaFormat.MIMETYPE_VIDEO_VP8)
-        )
-        val canExport3gp = hasSurfaceEncoderForAny(
-            codecInfos,
-            listOf(MediaFormat.MIMETYPE_VIDEO_AVC, MediaFormat.MIMETYPE_VIDEO_H263)
-        )
 
-        val fallbackLabel = when {
-            canExportMp4 -> "MP4 (H.264)"
-            canExportWebm -> "WEBM (VP8/VP9)"
-            canExport3gp -> "3GP"
-            else -> "MP4 Software Safe"
+        val fallbackLabel = if (canExportMp4) {
+            "MP4 (H.264)"
+        } else {
+            "MP4 Software Safe"
         }
 
         val isOriginalMp4 = originalExt.equals("mp4", ignoreCase = true) ||
             originalExt.equals("m4v", ignoreCase = true) ||
             originalMime.equals("video/mp4", ignoreCase = true)
-        val isOriginalWebm = originalExt.equals("webm", ignoreCase = true) ||
-            originalMime.equals("video/webm", ignoreCase = true)
-        val isOriginal3gp = originalExt.equals("3gp", ignoreCase = true) ||
-            originalExt.equals("3gpp", ignoreCase = true) ||
-            originalMime.equals("video/3gpp", ignoreCase = true)
 
         val mp4Opt = VideoExportFormatOption(
-            label = if (isOriginalMp4) "MP4 (Original)" else "MP4",
+            label = "MP4",
             container = VideoContainerFormat.MP4,
             isOriginal = isOriginalMp4,
             supportInfo = DeviceCapabilityEngine.probeVideoExportSupport(
@@ -351,30 +337,8 @@ object CropMediaInspector {
                 fallbackLabel = fallbackLabel
             )
         )
-        val webmOpt = VideoExportFormatOption(
-            label = if (isOriginalWebm) "Original (WEBM)" else "WEBM",
-            container = VideoContainerFormat.WEBM,
-            isOriginal = isOriginalWebm,
-            supportInfo = DeviceCapabilityEngine.probeVideoExportSupport(
-                container = VideoContainerFormat.WEBM,
-                fallbackLabel = fallbackLabel
-            )
-        )
-        val threeGpOpt = VideoExportFormatOption(
-            label = if (isOriginal3gp) "Original (3GP)" else "3GP",
-            container = VideoContainerFormat.THREE_GP,
-            isOriginal = isOriginal3gp,
-            supportInfo = DeviceCapabilityEngine.probeVideoExportSupport(
-                container = VideoContainerFormat.THREE_GP,
-                fallbackLabel = fallbackLabel
-            )
-        )
 
-        return when {
-            isOriginalWebm -> listOf(webmOpt, mp4Opt, threeGpOpt)
-            isOriginal3gp -> listOf(threeGpOpt, mp4Opt, webmOpt)
-            else -> listOf(mp4Opt, webmOpt, threeGpOpt)
-        }
+        return listOf(mp4Opt)
     }
 
     private fun hasCompatibleDecoder(mime: String): Boolean {
