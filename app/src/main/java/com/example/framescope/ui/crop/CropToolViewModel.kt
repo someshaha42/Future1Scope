@@ -3,7 +3,9 @@ package com.example.framescope.ui.crop
 import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
+import android.webkit.MimeTypeMap
 import androidx.compose.ui.geometry.Offset
+import androidx.core.content.FileProvider
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -36,6 +38,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Locale
 import java.util.UUID
 import kotlin.math.roundToInt
 
@@ -66,6 +69,7 @@ data class CropToolUiState(
     val canRedo: Boolean = false,
     val canReset: Boolean = false,
     val isVideoPlaying: Boolean = false,
+    val isVideoMuted: Boolean = false,
     val trimStartMs: Long = 0L,
     val trimEndMs: Long = 0L,
     val currentVideoPositionMs: Long = 0L,
@@ -81,6 +85,9 @@ data class CropToolUiState(
     val recentProjects: List<CropProjectRecord> = emptyList(),
     val projectThumbnails: Map<String, Bitmap> = emptyMap(),
     val exportState: CropExportState = CropExportState.Idle,
+    val isSharingProjectExport: Boolean = false,
+    val shareExportProgress: Float = 0f,
+    val shareExportStatus: String = "",
     val message: String? = null
 ) {
     val outputWidth: Int
@@ -158,6 +165,7 @@ class CropToolViewModel(
     val uiState: StateFlow<CropToolUiState> = _uiState.asStateFlow()
 
     private var exportJob: Job? = null
+    private var shareExportJob: Job? = null
 
     private val initialSnapshot = CropEditSnapshot()
     private val undoStack = ArrayDeque<CropEditSnapshot>()
@@ -306,6 +314,7 @@ class CropToolViewModel(
             prev.copy(
                 isPreviewMode = true,
                 showCanvasOptions = false,
+                isZoomEnabled = false,
                 seekRequestMs = if (needsSeek) start else prev.seekRequestMs
             )
         }
@@ -511,6 +520,7 @@ class CropToolViewModel(
                         canRedo = false,
                         canReset = false,
                         isVideoPlaying = false,
+                        isVideoMuted = false,
                         trimStartMs = 0L,
                         trimEndMs = info.durationMs,
                         currentVideoPositionMs = 0L,
@@ -679,6 +689,7 @@ class CropToolViewModel(
                         canUndo = false,
                         canRedo = false,
                         isVideoPlaying = false,
+                        isVideoMuted = false,
                         trimStartMs = restoredTrimStart,
                         trimEndMs = restoredTrimEnd,
                         currentVideoPositionMs = restoredTrimStart,
@@ -765,6 +776,10 @@ class CropToolViewModel(
 
     fun setVideoPlaying(playing: Boolean) {
         _uiState.update { it.copy(isVideoPlaying = playing) }
+    }
+
+    fun toggleVideoMuted() {
+        _uiState.update { it.copy(isVideoMuted = !it.isVideoMuted) }
     }
 
     fun updateVideoPosition(positionMs: Long) {
@@ -1069,6 +1084,233 @@ class CropToolViewModel(
 
     fun dismissExportState() {
         _uiState.update { it.copy(exportState = CropExportState.Idle) }
+    }
+
+    fun cancelShareProjectExport() {
+        shareExportJob?.cancel()
+        shareExportJob = null
+        _uiState.update {
+            it.copy(
+                isSharingProjectExport = false,
+                shareExportProgress = 0f,
+                shareExportStatus = ""
+            )
+        }
+    }
+
+    fun shareProjectFromViewer(
+        project: CropProjectRecord,
+        onShareReady: (Uri, String, CropProjectRecord) -> Unit
+    ) {
+        if (_uiState.value.isSharingProjectExport) return
+        val authority = "${appContext.packageName}.fileprovider"
+        val defaultMime = if (project.mediaType == CropMediaType.VIDEO) "video/mp4" else "image/*"
+
+        val expPath = project.exportedFilePath
+        if (!expPath.isNullOrBlank()) {
+            val file = File(expPath)
+            if (file.exists() && file.length() > 0L) {
+                val uri = runCatching { FileProvider.getUriForFile(appContext, authority, file) }.getOrNull()
+                if (uri != null) {
+                    val mime = MimeTypeMap.getSingleton()
+                        .getMimeTypeFromExtension(file.extension.lowercase(Locale.US))
+                        ?: defaultMime
+                    onShareReady(uri, mime, project)
+                    return
+                }
+            }
+        }
+
+        val galleryStr = project.exportedGalleryUriString
+        if (!galleryStr.isNullOrBlank()) {
+            val uri = runCatching { Uri.parse(galleryStr) }.getOrNull()
+            if (uri != null) {
+                val readable = runCatching {
+                    appContext.contentResolver.openAssetFileDescriptor(uri, "r")?.use { true } ?: false
+                }.getOrDefault(false)
+                if (readable) {
+                    val mime = appContext.contentResolver.getType(uri) ?: defaultMime
+                    onShareReady(uri, mime, project)
+                    return
+                }
+            }
+        }
+
+        // Draft project has not been exported yet: export with saved crop & trim, then launch Share
+        shareExportJob = viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isSharingProjectExport = true,
+                    shareExportProgress = 0.05f,
+                    shareExportStatus = "Exporting project to share…",
+                    message = null
+                )
+            }
+
+            val localFile = project.localCopyPath?.let { File(it) }?.takeIf { it.exists() && it.length() > 0L }
+            val sourceUri = if (localFile != null) {
+                Uri.fromFile(localFile)
+            } else {
+                Uri.parse(project.sourceUriString)
+            }
+
+            val inspectedResult = CropMediaInspector.inspect(appContext, sourceUri)
+            val inspected = inspectedResult.getOrNull()?.copy(uri = sourceUri)
+            if (inspected == null) {
+                _uiState.update {
+                    it.copy(
+                        isSharingProjectExport = false,
+                        message = "Unable to access source media for export."
+                    )
+                }
+                return@launch
+            }
+
+            val crop = NormalizedCropRect(
+                left = project.cropLeft.coerceIn(0f, 0.96f),
+                top = project.cropTop.coerceIn(0f, 0.96f),
+                right = project.cropRight.coerceIn(0.04f, 1f),
+                bottom = project.cropBottom.coerceIn(0.04f, 1f)
+            )
+            val outW = (crop.widthFraction * inspected.displayWidth).roundToInt().let { raw ->
+                if (inspected.mediaType == CropMediaType.VIDEO) (raw and 1.inv()).coerceIn(16, inspected.displayWidth)
+                else raw.coerceIn(1, inspected.displayWidth)
+            }
+            val outH = (crop.heightFraction * inspected.displayHeight).roundToInt().let { raw ->
+                if (inspected.mediaType == CropMediaType.VIDEO) (raw and 1.inv()).coerceIn(16, inspected.displayHeight)
+                else raw.coerceIn(1, inspected.displayHeight)
+            }
+
+            val formatLabel = if (inspected.mediaType == CropMediaType.VIDEO) {
+                "MP4"
+            } else {
+                inspected.imageExportOptions.firstOrNull { it.label == project.selectedFormatLabel }?.label
+                    ?: inspected.imageExportOptions.firstOrNull()?.label
+                    ?: "PNG"
+            }
+
+            val result = when (inspected.mediaType) {
+                CropMediaType.IMAGE -> {
+                    val format = inspected.imageExportOptions.firstOrNull {
+                        it.label == project.selectedFormatLabel
+                    } ?: inspected.imageExportOptions.first()
+                    _uiState.update {
+                        it.copy(shareExportProgress = 0.4f, shareExportStatus = "Exporting photo…")
+                    }
+                    ImageCropProcessor.exportCroppedImage(
+                        context = appContext,
+                        media = inspected,
+                        cropRect = crop,
+                        formatOption = format
+                    )
+                }
+
+                CropMediaType.VIDEO -> {
+                    val format = inspected.videoExportOptions.firstOrNull()
+                        ?: com.example.framescope.crop.VideoExportFormatOption(
+                            label = "MP4",
+                            container = com.example.framescope.crop.VideoContainerFormat.MP4,
+                            isOriginal = inspected.extension.equals("mp4", ignoreCase = true)
+                        )
+                    val orig = inspected.originalBitrateBps
+                    val targetBps = if (orig != null && orig > 0L) {
+                        orig.coerceIn(250_000L, 100_000_000L).toInt()
+                    } else {
+                        (outW.toLong() * outH.toLong() * 6L).coerceIn(1_500_000L, 25_000_000L).toInt()
+                    }
+                    val trimStart = project.trimStartMs.coerceIn(0L, inspected.durationMs)
+                    val trimEnd = if (project.trimEndMs > trimStart) {
+                        project.trimEndMs.coerceAtMost(inspected.durationMs)
+                    } else {
+                        inspected.durationMs
+                    }
+                    VideoCropProcessor.exportCroppedVideo(
+                        context = appContext,
+                        media = inspected,
+                        cropRect = crop,
+                        formatOption = format,
+                        targetBitrateBps = targetBps,
+                        trimStartMs = trimStart,
+                        trimEndMs = trimEnd,
+                        allowLosslessPassthrough = true,
+                        onProgress = { progress, text ->
+                            _uiState.update {
+                                it.copy(
+                                    shareExportProgress = progress,
+                                    shareExportStatus = text
+                                )
+                            }
+                        }
+                    )
+                }
+            }
+
+            when (result) {
+                is CropExportState.Success -> {
+                    val now = System.currentTimeMillis()
+                    val trimDuration = if (inspected.mediaType == CropMediaType.VIDEO) {
+                        val s = project.trimStartMs.coerceIn(0L, inspected.durationMs)
+                        val e = if (project.trimEndMs > s) project.trimEndMs.coerceAtMost(inspected.durationMs) else inspected.durationMs
+                        (e - s).coerceAtLeast(0L)
+                    } else {
+                        0L
+                    }
+                    val updatedRecord = project.copy(
+                        exportedFilePath = result.outputPath,
+                        exportedGalleryUriString = result.galleryUriString,
+                        exportedFormatLabel = formatLabel,
+                        exportedWidth = outW,
+                        exportedHeight = outH,
+                        exportedDurationMs = trimDuration,
+                        updatedAtMs = now,
+                        exportedAtMs = now
+                    )
+                    projectsRepository.upsertProject(updatedRecord)
+                    refreshRecentProjects()
+
+                    val outFile = File(result.outputPath)
+                    val shareUri = runCatching { FileProvider.getUriForFile(appContext, authority, outFile) }.getOrNull()
+                        ?: result.galleryUriString?.let { runCatching { Uri.parse(it) }.getOrNull() }
+                    val mime = MimeTypeMap.getSingleton()
+                        .getMimeTypeFromExtension(outFile.extension.lowercase(Locale.US))
+                        ?: defaultMime
+
+                    _uiState.update {
+                        it.copy(
+                            isSharingProjectExport = false,
+                            shareExportProgress = 0f,
+                            shareExportStatus = ""
+                        )
+                    }
+                    if (shareUri != null) {
+                        onShareReady(shareUri, mime, updatedRecord)
+                    } else {
+                        _uiState.update { it.copy(message = "Export finished, but unable to prepare share link.") }
+                    }
+                }
+
+                is CropExportState.Error -> {
+                    _uiState.update {
+                        it.copy(
+                            isSharingProjectExport = false,
+                            shareExportProgress = 0f,
+                            shareExportStatus = "",
+                            message = result.message
+                        )
+                    }
+                }
+
+                else -> {
+                    _uiState.update {
+                        it.copy(
+                            isSharingProjectExport = false,
+                            shareExportProgress = 0f,
+                            shareExportStatus = ""
+                        )
+                    }
+                }
+            }
+        }
     }
 
     fun clearMessage() {

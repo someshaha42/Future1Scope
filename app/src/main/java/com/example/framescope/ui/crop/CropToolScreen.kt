@@ -5,12 +5,10 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
-import android.webkit.MimeTypeMap
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.content.FileProvider
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -40,6 +38,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Redo
 import androidx.compose.material.icons.automirrored.rounded.Undo
+import androidx.compose.material.icons.automirrored.rounded.VolumeOff
+import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Crop
 import androidx.compose.material.icons.rounded.DownloadDone
@@ -107,8 +107,6 @@ import com.example.framescope.ui.theme.FrameScopeColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
-import java.util.Locale
 
 @Composable
 fun CropToolScreen(
@@ -123,6 +121,7 @@ fun CropToolScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     var previewImageProject by remember { mutableStateOf<CropProjectRecord?>(null) }
+    var viewingRecentProject by remember { mutableStateOf<CropProjectRecord?>(null) }
     var showProjectSettingsDialog by remember { mutableStateOf(false) }
     var pendingDeleteProject by remember { mutableStateOf<CropProjectRecord?>(null) }
     var canvasMenuExpanded by remember { mutableStateOf(false) }
@@ -173,11 +172,11 @@ fun CropToolScreen(
         viewModel.clearMessage()
     }
 
-    BackHandler(enabled = state.isPreviewMode) {
+    BackHandler(enabled = state.isPreviewMode && viewingRecentProject == null) {
         viewModel.exitPreviewMode()
     }
 
-    BackHandler(enabled = !state.isPreviewMode && state.showImportPanel && state.media != null) {
+    BackHandler(enabled = !state.isPreviewMode && state.showImportPanel && state.media != null && viewingRecentProject == null) {
         viewModel.closeImportPanelIfLoaded()
     }
 
@@ -292,7 +291,8 @@ fun CropToolScreen(
 
     val isWorkspaceEditingVisible = state.media != null && !state.showImportPanel
 
-    Scaffold(
+    Box(modifier = Modifier.fillMaxSize()) {
+        Scaffold(
         containerColor = FrameScopeColors.Background,
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         snackbarHost = {
@@ -447,12 +447,7 @@ fun CropToolScreen(
                             thumbnails = state.projectThumbnails,
                             onOpenSettings = { showProjectSettingsDialog = true },
                             onOpenInGallery = { project ->
-                                val errorMsg = openProjectInDefaultGallery(context, project)
-                                if (errorMsg != null) {
-                                    coroutineScope.launch {
-                                        snackbarHostState.showSnackbar(errorMsg)
-                                    }
-                                }
+                                viewingRecentProject = project
                             },
                             onEditProject = viewModel::openProject,
                             onRequestDelete = { project ->
@@ -486,6 +481,7 @@ fun CropToolScreen(
                             lockedAspectRatio = state.activeAspectRatioValue,
                             maxWorkspaceHeightDp = maxWorkspaceHeightDp,
                             isVideoPlaying = state.isVideoPlaying,
+                            isVideoMuted = state.isVideoMuted,
                             trimStartMs = state.trimStartMs,
                             trimEndMs = state.trimEndMs,
                             seekRequestMs = state.seekRequestMs,
@@ -499,7 +495,9 @@ fun CropToolScreen(
                             onVideoPlaybackEnded = { viewModel.setVideoPlaying(false) }
                         )
 
-                        // Action Strip directly below Workspace: Dimensions + Import (left) & Play/Pause + Preview/Stop (right)
+                        // Action Strip directly below Workspace:
+                        // Left: Dimensions + (Import when editing OR Volume Mute/Unmute in Preview Mode)
+                        // Right: Play/Pause + Preview/Stop
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -523,36 +521,94 @@ fun CropToolScreen(
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
-                                Surface(
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = FrameScopeColors.InnerSurface,
-                                    border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle),
-                                    modifier = Modifier
-                                        .minimumInteractiveComponentSize()
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .clickable(onClick = viewModel::openImportPanel)
-                                        .testTag("crop_change_media_button")
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                if (!state.isPreviewMode) {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = FrameScopeColors.InnerSurface,
+                                        border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle),
+                                        modifier = Modifier
+                                            .minimumInteractiveComponentSize()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable(onClick = viewModel::openImportPanel)
+                                            .testTag("crop_change_media_button")
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Rounded.FolderOpen,
-                                            contentDescription = "Import media",
-                                            tint = FrameScopeColors.SelectionBlue,
-                                            modifier = Modifier.size(14.dp)
-                                        )
-                                        Text(
-                                            text = "Import",
-                                            style = MaterialTheme.typography.labelMedium.copy(
-                                                fontSize = 11.5.sp,
-                                                fontWeight = FontWeight.SemiBold
-                                            ),
-                                            color = FrameScopeColors.TextPrimary,
-                                            maxLines = 1
-                                        )
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.FolderOpen,
+                                                contentDescription = "Import media",
+                                                tint = FrameScopeColors.SelectionBlue,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Text(
+                                                text = "Import",
+                                                style = MaterialTheme.typography.labelMedium.copy(
+                                                    fontSize = 11.5.sp,
+                                                    fontWeight = FontWeight.SemiBold
+                                                ),
+                                                color = FrameScopeColors.TextPrimary,
+                                                maxLines = 1
+                                            )
+                                        }
+                                    }
+                                } else if (media.mediaType == CropMediaType.VIDEO) {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (state.isVideoMuted) {
+                                            FrameScopeColors.SpecRedContainer.copy(alpha = 0.7f)
+                                        } else {
+                                            FrameScopeColors.SelectionBlueTint
+                                        },
+                                        border = BorderStroke(
+                                            1.dp,
+                                            if (state.isVideoMuted) {
+                                                FrameScopeColors.SpecRedBorder
+                                            } else {
+                                                FrameScopeColors.SelectionBlue
+                                            }
+                                        ),
+                                        modifier = Modifier
+                                            .minimumInteractiveComponentSize()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable(onClick = viewModel::toggleVideoMuted)
+                                            .testTag("crop_preview_mute_button")
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = if (state.isVideoMuted) {
+                                                    Icons.AutoMirrored.Rounded.VolumeOff
+                                                } else {
+                                                    Icons.AutoMirrored.Rounded.VolumeUp
+                                                },
+                                                contentDescription = if (state.isVideoMuted) "Unmute volume" else "Mute volume",
+                                                tint = if (state.isVideoMuted) {
+                                                    FrameScopeColors.SpecRedText
+                                                } else {
+                                                    FrameScopeColors.SelectionBlue
+                                                },
+                                                modifier = Modifier.size(15.dp)
+                                            )
+                                            Text(
+                                                text = if (state.isVideoMuted) "Muted" else "Sound",
+                                                style = MaterialTheme.typography.labelMedium.copy(
+                                                    fontSize = 11.5.sp,
+                                                    fontWeight = FontWeight.SemiBold
+                                                ),
+                                                color = if (state.isVideoMuted) {
+                                                    FrameScopeColors.SpecRedText
+                                                } else {
+                                                    FrameScopeColors.TextPrimary
+                                                },
+                                                maxLines = 1
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -723,6 +779,36 @@ fun CropToolScreen(
                     }
                 }
             }
+        }
+        }
+
+        val activeViewerProject = viewingRecentProject?.let { selected ->
+            state.recentProjects.firstOrNull { it.id == selected.id } ?: selected
+        }
+        if (activeViewerProject != null) {
+            ProjectMediaViewer(
+                project = activeViewerProject,
+                isExportingForShare = state.isSharingProjectExport,
+                exportProgress = state.shareExportProgress,
+                exportStatusText = state.shareExportStatus,
+                onBack = { viewingRecentProject = null },
+                onOpenProject = { proj ->
+                    viewingRecentProject = null
+                    viewModel.openProject(proj)
+                },
+                onShareProject = { proj ->
+                    viewModel.shareProjectFromViewer(proj) { shareUri, mimeType, updated ->
+                        viewingRecentProject = updated
+                        val err = launchShareSheet(context, shareUri, mimeType)
+                        if (err != null) {
+                            coroutineScope.launch {
+                                snackbarHostState.showSnackbar(err)
+                            }
+                        }
+                    }
+                },
+                onCancelShareExport = viewModel::cancelShareProjectExport
+            )
         }
     }
 }
@@ -1169,85 +1255,20 @@ private fun ExportedImagePreviewDialog(
     }
 }
 
-private fun openProjectInDefaultGallery(
+private fun launchShareSheet(
     context: Context,
-    project: CropProjectRecord
+    shareUri: Uri,
+    mimeType: String
 ): String? {
-    val defaultMime = if (project.mediaType == CropMediaType.VIDEO) "video/*" else "image/*"
-    val authority = "${context.packageName}.fileprovider"
-
-    fun resolveUriAndMime(): Pair<Uri, String>? {
-        val galleryUriStr = project.exportedGalleryUriString
-        if (!galleryUriStr.isNullOrBlank()) {
-            val uri = runCatching { Uri.parse(galleryUriStr) }.getOrNull()
-            if (uri != null) {
-                val readable = runCatching {
-                    context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { true } ?: false
-                }.getOrDefault(false)
-                if (readable) {
-                    val mime = context.contentResolver.getType(uri) ?: defaultMime
-                    return uri to mime
-                }
-            }
-        }
-
-        val expPath = project.exportedFilePath
-        if (!expPath.isNullOrBlank()) {
-            val file = File(expPath)
-            if (file.exists() && file.length() > 0L) {
-                val uri = runCatching { FileProvider.getUriForFile(context, authority, file) }.getOrNull()
-                if (uri != null) {
-                    val ext = file.extension.lowercase(Locale.US)
-                    val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: defaultMime
-                    return uri to mime
-                }
-            }
-        }
-
-        val localPath = project.localCopyPath
-        if (!localPath.isNullOrBlank()) {
-            val file = File(localPath)
-            if (file.exists() && file.length() > 0L) {
-                val uri = runCatching { FileProvider.getUriForFile(context, authority, file) }.getOrNull()
-                if (uri != null) {
-                    val ext = file.extension.lowercase(Locale.US)
-                    val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: defaultMime
-                    return uri to mime
-                }
-            }
-        }
-
-        val srcUri = runCatching { Uri.parse(project.sourceUriString) }.getOrNull()
-        if (srcUri != null) {
-            if (srcUri.scheme == "file") {
-                val file = srcUri.path?.let { File(it) }
-                if (file != null && file.exists() && file.length() > 0L) {
-                    val uri = runCatching { FileProvider.getUriForFile(context, authority, file) }.getOrNull()
-                    if (uri != null) {
-                        val ext = file.extension.lowercase(Locale.US)
-                        val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: defaultMime
-                        return uri to mime
-                    }
-                }
-            } else {
-                val mime = context.contentResolver.getType(srcUri) ?: defaultMime
-                return srcUri to mime
-            }
-        }
-        return null
-    }
-
-    val (targetUri, mimeType) = resolveUriAndMime()
-        ?: return "Media file is no longer accessible."
-
-    val intent = Intent(Intent.ACTION_VIEW).apply {
-        setDataAndType(targetUri, mimeType)
+    val sendIntent = Intent(Intent.ACTION_SEND).apply {
+        type = mimeType
+        putExtra(Intent.EXTRA_STREAM, shareUri)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
     return runCatching {
-        context.startActivity(intent)
+        context.startActivity(Intent.createChooser(sendIntent, "Share"))
         null
     }.getOrElse {
-        "No Gallery or media viewer app found to open this file."
+        "Unable to open share sheet."
     }
 }
