@@ -22,6 +22,7 @@ import com.example.framescope.crop.CropMediaInspector
 import com.example.framescope.crop.CropMediaType
 import com.example.framescope.crop.CropProjectRecord
 import com.example.framescope.crop.CropProjectsRepository
+import com.example.framescope.crop.EightKVp9Pipeline
 import com.example.framescope.crop.ImageCropProcessor
 import com.example.framescope.crop.ImageExportFormatOption
 import com.example.framescope.crop.ImportedMediaInfo
@@ -429,11 +430,33 @@ class CropToolViewModel(
                     uri
                 }
 
-                val info = if (activeUri != uri) {
+                val baseInfo = if (activeUri != uri) {
                     CropMediaInspector.inspect(appContext, activeUri).getOrDefault(inspectedInfo)
                         .copy(uri = activeUri)
                 } else {
                     inspectedInfo
+                }
+
+                val info = if (baseInfo.is8kUhd) {
+                    val wsResult = EightKVp9Pipeline.prepare8kVp9Workspace(
+                        context = appContext,
+                        projectId = projectId,
+                        media = baseInfo
+                    )
+                    if (wsResult.isFailure) {
+                        if (localCopyPath != null) runCatching { File(localCopyPath).delete() }
+                        _uiState.update {
+                            it.copy(
+                                isLoadingMedia = false,
+                                message = wsResult.exceptionOrNull()?.message
+                                    ?: "8K Software VP9 import processing failed."
+                            )
+                        }
+                        return@onSuccess
+                    }
+                    baseInfo.copy(vp9WorkspacePath = wsResult.getOrNull())
+                } else {
+                    baseInfo
                 }
 
                 val bitmap = if (info.mediaType == CropMediaType.IMAGE) {
@@ -468,7 +491,8 @@ class CropToolViewModel(
                     if (info.mediaType == CropMediaType.VIDEO) {
                         CropMediaInspector.inspectVideoPipelineSupport(
                             sourceVideoMime = info.sourceVideoMime,
-                            container = firstVideoFormat?.container
+                            container = firstVideoFormat?.container,
+                            is8kUhd = info.is8kUhd
                         )
                     } else {
                         CodecPipelineSupport(
@@ -581,17 +605,49 @@ class CropToolViewModel(
             }
 
             val result = CropMediaInspector.inspect(appContext, uriToLoad)
-            result.onFailure {
-                projectsRepository.deleteProject(project.id)
-                refreshRecentProjects()
-                _uiState.update {
-                    it.copy(
-                        isLoadingMedia = false,
-                        message = "Unable to open project media; project removed."
-                    )
+            result.onFailure { err ->
+                val msg = err.message
+                if (msg != null && msg.contains("8K", ignoreCase = true)) {
+                    _uiState.update {
+                        it.copy(
+                            isLoadingMedia = false,
+                            message = msg
+                        )
+                    }
+                } else {
+                    projectsRepository.deleteProject(project.id)
+                    refreshRecentProjects()
+                    _uiState.update {
+                        it.copy(
+                            isLoadingMedia = false,
+                            message = "Unable to open project media; project removed."
+                        )
+                    }
                 }
             }.onSuccess { inspected ->
-                val info = inspected.copy(uri = uriToLoad)
+                val baseInfo = inspected.copy(uri = uriToLoad)
+                val info = if (baseInfo.is8kUhd) {
+                    val wsResult = EightKVp9Pipeline.prepare8kVp9Workspace(
+                        context = appContext,
+                        projectId = project.id,
+                        media = baseInfo,
+                        existingWorkspacePath = project.vp9WorkspacePath
+                    )
+                    if (wsResult.isFailure) {
+                        _uiState.update {
+                            it.copy(
+                                isLoadingMedia = false,
+                                message = wsResult.exceptionOrNull()?.message
+                                    ?: "8K Software VP9 playback preparation failed."
+                            )
+                        }
+                        return@onSuccess
+                    }
+                    baseInfo.copy(vp9WorkspacePath = wsResult.getOrNull())
+                } else {
+                    baseInfo
+                }
+
                 val bitmap = if (info.mediaType == CropMediaType.IMAGE) {
                     ImageCropProcessor.loadPreviewBitmap(appContext, info)
                 } else {
@@ -623,7 +679,8 @@ class CropToolViewModel(
                     if (info.mediaType == CropMediaType.VIDEO) {
                         CropMediaInspector.inspectVideoPipelineSupport(
                             sourceVideoMime = info.sourceVideoMime,
-                            container = com.example.framescope.crop.VideoContainerFormat.MP4
+                            container = com.example.framescope.crop.VideoContainerFormat.MP4,
+                            is8kUhd = info.is8kUhd
                         )
                     } else {
                         CodecPipelineSupport(
@@ -960,7 +1017,8 @@ class CropToolViewModel(
             val support = withContext(Dispatchers.Default) {
                 CropMediaInspector.inspectVideoPipelineSupport(
                     sourceVideoMime = media?.sourceVideoMime,
-                    container = effectiveContainer
+                    container = effectiveContainer,
+                    is8kUhd = media?.is8kUhd == true
                 )
             }
             _uiState.update {
@@ -1050,10 +1108,15 @@ class CropToolViewModel(
             if (result is CropExportState.Success) {
                 val now = System.currentTimeMillis()
                 val currentSnapshotState = _uiState.value
+                val resolvedFormatLabel = if (media.is8kUhd && result.fileName.endsWith(".webm", ignoreCase = true)) {
+                    "VP9"
+                } else {
+                    formatLabel
+                }
                 val record = buildProjectRecordFromState(currentSnapshotState)?.copy(
                     exportedFilePath = result.outputPath,
                     exportedGalleryUriString = result.galleryUriString,
-                    exportedFormatLabel = formatLabel,
+                    exportedFormatLabel = resolvedFormatLabel,
                     exportedWidth = currentSnapshotState.outputWidth,
                     exportedHeight = currentSnapshotState.outputHeight,
                     exportedDurationMs = if (media.mediaType == CropMediaType.VIDEO) {
@@ -1255,10 +1318,15 @@ class CropToolViewModel(
                     } else {
                         0L
                     }
+                    val resolvedFormatLabel = if (inspected.is8kUhd && result.fileName.endsWith(".webm", ignoreCase = true)) {
+                        "VP9"
+                    } else {
+                        formatLabel
+                    }
                     val updatedRecord = project.copy(
                         exportedFilePath = result.outputPath,
                         exportedGalleryUriString = result.galleryUriString,
-                        exportedFormatLabel = formatLabel,
+                        exportedFormatLabel = resolvedFormatLabel,
                         exportedWidth = outW,
                         exportedHeight = outH,
                         exportedDurationMs = trimDuration,
@@ -1315,6 +1383,15 @@ class CropToolViewModel(
 
     fun clearMessage() {
         _uiState.update { it.copy(message = null) }
+    }
+
+    fun reportPlaybackError(errorMsg: String) {
+        _uiState.update {
+            it.copy(
+                isVideoPlaying = false,
+                message = errorMsg
+            )
+        }
     }
 
     private fun saveProjectNowAsync() {
@@ -1387,7 +1464,8 @@ class CropToolViewModel(
             exportedHeight = existing?.exportedHeight ?: 0,
             exportedDurationMs = existing?.exportedDurationMs ?: 0L,
             updatedAtMs = System.currentTimeMillis(),
-            exportedAtMs = existing?.exportedAtMs
+            exportedAtMs = existing?.exportedAtMs,
+            vp9WorkspacePath = media.vp9WorkspacePath
         )
     }
 

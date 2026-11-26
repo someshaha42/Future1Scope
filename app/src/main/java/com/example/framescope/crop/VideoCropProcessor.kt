@@ -72,6 +72,17 @@ object VideoCropProcessor {
         allowLosslessPassthrough: Boolean = false,
         onProgress: (Float, String) -> Unit
     ): CropExportState = withContext(Dispatchers.IO) {
+        if (media.is8kUhd) {
+            return@withContext EightKVp9Pipeline.export8kVp9Video(
+                context = context,
+                media = media,
+                cropRect = cropRect,
+                trimStartMs = trimStartMs,
+                trimEndMs = trimEndMs,
+                onProgress = onProgress
+            )
+        }
+
         var outFile: File? = null
 
         val videoExtractor = MediaExtractor()

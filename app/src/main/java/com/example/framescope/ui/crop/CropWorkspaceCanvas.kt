@@ -60,9 +60,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.framescope.crop.CropMediaType
+import com.example.framescope.crop.EightKVp9SoftwarePlayer
 import com.example.framescope.crop.ImportedMediaInfo
 import com.example.framescope.crop.NormalizedCropRect
 import com.example.framescope.ui.theme.FrameScopeColors
+import java.io.File
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlin.math.abs
@@ -108,6 +110,7 @@ fun CropWorkspaceCanvas(
     onVideoPositionChanged: (Long) -> Unit,
     onSeekHandled: () -> Unit,
     onVideoPlaybackEnded: () -> Unit,
+    onVideoPlaybackError: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val density = LocalDensity.current
@@ -509,7 +512,8 @@ fun CropWorkspaceCanvas(
                             seekRequestMs = seekRequestMs,
                             onPositionChanged = onVideoPositionChanged,
                             onSeekHandled = onSeekHandled,
-                            onPlaybackError = onVideoPlaybackEnded
+                            onPlaybackError = onVideoPlaybackEnded,
+                            onPlaybackErrorMessage = onVideoPlaybackError
                         )
                     }
                 }
@@ -701,8 +705,27 @@ private fun CropVideoTexturePreview(
     seekRequestMs: Long?,
     onPositionChanged: (Long) -> Unit,
     onSeekHandled: () -> Unit,
-    onPlaybackError: () -> Unit
+    onPlaybackError: () -> Unit,
+    onPlaybackErrorMessage: ((String) -> Unit)? = null
 ) {
+    if (media.is8kUhd) {
+        EightKVp9SoftwareVideoPreview(
+            media = media,
+            isPlaying = isPlaying,
+            isMuted = isMuted,
+            trimStartMs = trimStartMs,
+            trimEndMs = trimEndMs,
+            seekRequestMs = seekRequestMs,
+            onPositionChanged = onPositionChanged,
+            onSeekHandled = onSeekHandled,
+            onPlaybackError = { errMsg ->
+                onPlaybackErrorMessage?.invoke(errMsg)
+                onPlaybackError()
+            }
+        )
+        return
+    }
+
     val context = LocalContext.current
     var mediaPlayer by remember(media.uri) { mutableStateOf<MediaPlayer?>(null) }
     var isPrepared by remember(media.uri) { mutableStateOf(false) }
@@ -808,6 +831,102 @@ private fun CropVideoTexturePreview(
                         runCatching { mediaPlayer?.stop() }
                         runCatching { mediaPlayer?.release() }
                         mediaPlayer = null
+                        return true
+                    }
+
+                    override fun onSurfaceTextureUpdated(surface: SurfaceTexture) = Unit
+                }
+            }
+        },
+        update = { view ->
+            view.requestLayout()
+        }
+    )
+}
+
+@Composable
+private fun EightKVp9SoftwareVideoPreview(
+    media: ImportedMediaInfo,
+    isPlaying: Boolean,
+    isMuted: Boolean,
+    trimStartMs: Long,
+    trimEndMs: Long,
+    seekRequestMs: Long?,
+    onPositionChanged: (Long) -> Unit,
+    onSeekHandled: () -> Unit,
+    onPlaybackError: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val playbackUri = remember(media.uri, media.vp9WorkspacePath) {
+        val ws = media.vp9WorkspacePath?.let { File(it) }?.takeIf { it.exists() && it.length() > 0L }
+        if (ws != null) android.net.Uri.fromFile(ws) else media.uri
+    }
+    var swPlayer by remember(playbackUri) { mutableStateOf<EightKVp9SoftwarePlayer?>(null) }
+
+    DisposableEffect(playbackUri) {
+        onDispose {
+            swPlayer?.release()
+            swPlayer = null
+        }
+    }
+
+    LaunchedEffect(isPlaying, swPlayer) {
+        swPlayer?.setPlaying(isPlaying)
+    }
+
+    LaunchedEffect(isMuted, swPlayer) {
+        swPlayer?.setMuted(isMuted)
+    }
+
+    LaunchedEffect(trimStartMs, trimEndMs, swPlayer) {
+        swPlayer?.updateTrimRange(trimStartMs, trimEndMs)
+    }
+
+    LaunchedEffect(seekRequestMs, swPlayer) {
+        val targetMs = seekRequestMs ?: return@LaunchedEffect
+        val player = swPlayer ?: return@LaunchedEffect
+        player.seekTo(targetMs)
+        onPositionChanged(targetMs)
+        onSeekHandled()
+    }
+
+    AndroidView(
+        modifier = Modifier.fillMaxSize(),
+        factory = { ctx ->
+            TextureView(ctx).apply {
+                isOpaque = false
+                surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                    override fun onSurfaceTextureAvailable(
+                        surfaceTexture: SurfaceTexture,
+                        width: Int,
+                        height: Int
+                    ) {
+                        val surface = Surface(surfaceTexture)
+                        val player = EightKVp9SoftwarePlayer(
+                            context = context.applicationContext,
+                            videoUri = playbackUri,
+                            audioFallbackUri = if (playbackUri != media.uri) media.uri else null,
+                            surface = surface,
+                            initialTrimStartMs = trimStartMs,
+                            initialTrimEndMs = trimEndMs,
+                            initialMuted = isMuted,
+                            initialPlaying = isPlaying,
+                            onPositionChanged = onPositionChanged,
+                            onError = onPlaybackError
+                        )
+                        swPlayer = player
+                        player.start()
+                    }
+
+                    override fun onSurfaceTextureSizeChanged(
+                        surface: SurfaceTexture,
+                        width: Int,
+                        height: Int
+                    ) = Unit
+
+                    override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
+                        swPlayer?.release()
+                        swPlayer = null
                         return true
                     }
 

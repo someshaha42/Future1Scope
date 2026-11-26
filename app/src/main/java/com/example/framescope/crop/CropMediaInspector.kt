@@ -155,6 +155,12 @@ object CropMediaInspector {
         var rotation = 0
         var durationMs = 0L
         var fps = 0
+        var exactFps: Float? = null
+        var videoProfile: Int? = null
+        var colorStandard: Int? = null
+        var colorRange: Int? = null
+        var colorTransfer: Int? = null
+        var bitDepth = 8
         var originalBitrate: Long? = null
         var videoMime: String? = null
 
@@ -178,11 +184,28 @@ object CropMediaInspector {
                         durationMs = format.getLong(MediaFormat.KEY_DURATION) / 1_000L
                     }
                     if (format.containsKey(MediaFormat.KEY_FRAME_RATE)) {
-                        fps = runCatching { format.getInteger(MediaFormat.KEY_FRAME_RATE) }
+                        val fVal = runCatching { format.getFloat(MediaFormat.KEY_FRAME_RATE) }
                             .getOrElse {
-                                runCatching { format.getFloat(MediaFormat.KEY_FRAME_RATE).roundToInt() }.getOrDefault(0)
+                                runCatching { format.getInteger(MediaFormat.KEY_FRAME_RATE).toFloat() }.getOrDefault(0f)
                             }
+                        if (fVal > 0f) {
+                            exactFps = fVal
+                            fps = fVal.roundToInt()
+                        }
                     }
+                    if (format.containsKey(MediaFormat.KEY_PROFILE)) {
+                        videoProfile = runCatching { format.getInteger(MediaFormat.KEY_PROFILE) }.getOrNull()
+                    }
+                    if (format.containsKey(MediaFormat.KEY_COLOR_STANDARD)) {
+                        colorStandard = runCatching { format.getInteger(MediaFormat.KEY_COLOR_STANDARD) }.getOrNull()
+                    }
+                    if (format.containsKey(MediaFormat.KEY_COLOR_RANGE)) {
+                        colorRange = runCatching { format.getInteger(MediaFormat.KEY_COLOR_RANGE) }.getOrNull()
+                    }
+                    if (format.containsKey(MediaFormat.KEY_COLOR_TRANSFER)) {
+                        colorTransfer = runCatching { format.getInteger(MediaFormat.KEY_COLOR_TRANSFER) }.getOrNull()
+                    }
+                    bitDepth = EightKVp9Pipeline.detectBitDepth(videoMime, videoProfile, colorTransfer, format)
                     if (format.containsKey(MediaFormat.KEY_BIT_RATE)) {
                         val trackBitrate = format.getInteger(MediaFormat.KEY_BIT_RATE).toLong()
                         if (trackBitrate > 0L) {
@@ -230,8 +253,26 @@ object CropMediaInspector {
         check(videoMime != null && rawW > 0 && rawH > 0) {
             "No decodable video track found or unsupported video format."
         }
-        check(hasCompatibleDecoder(videoMime!!)) {
-            "No decoder available on this device for $videoMime."
+        val is8kUhd = EightKVp9Pipeline.is8kResolution(rawW, rawH)
+        if (is8kUhd) {
+            val swDecoders = EightKVp9Pipeline.resolveSoftwareDecoders(videoMime!!)
+            check(swDecoders.isNotEmpty()) {
+                "8K (7680×4320) requires a compatible Software Decoder, but none is available on this device for $videoMime."
+            }
+            val swVp9Decoders = EightKVp9Pipeline.resolveSoftwareVp9Decoders()
+            check(swVp9Decoders.isNotEmpty()) {
+                "8K editing playback requires a VP9 Software Decoder, but none is available on this device."
+            }
+            if (!videoMime.equals(MediaFormat.MIMETYPE_VIDEO_VP9, ignoreCase = true)) {
+                val swVp9Encoders = EightKVp9Pipeline.resolveSoftwareVp9Encoders()
+                check(swVp9Encoders.isNotEmpty()) {
+                    "8K Software VP9 transcoding requires a VP9 Software Encoder, but none is available on this device."
+                }
+            }
+        } else {
+            check(hasCompatibleDecoder(videoMime!!)) {
+                "No decoder available on this device for $videoMime."
+            }
         }
 
         val normalizedRot = ((rotation % 360) + 360) % 360
@@ -256,10 +297,16 @@ object CropMediaInspector {
             displayWidth = dispW,
             displayHeight = dispH,
             durationMs = durationMs.coerceAtLeast(0L),
-            fps = if (fps > 0) fps.coerceIn(15, 120) else 30,
+            fps = if (is8kUhd && fps > 0) fps else if (fps > 0) fps.coerceIn(15, 120) else 30,
             originalBitrateBps = originalBitrate,
+            colorStandard = colorStandard,
+            colorRange = colorRange,
+            colorTransfer = colorTransfer,
             sourceVideoMime = videoMime,
-            videoExportOptions = videoExportOptions
+            videoExportOptions = videoExportOptions,
+            exactFps = exactFps,
+            videoProfile = videoProfile,
+            bitDepth = bitDepth
         )
     }
 
@@ -369,8 +416,24 @@ object CropMediaInspector {
 
     fun inspectVideoPipelineSupport(
         sourceVideoMime: String?,
-        container: VideoContainerFormat?
+        container: VideoContainerFormat?,
+        is8kUhd: Boolean = false
     ): CodecPipelineSupport {
+        if (is8kUhd) {
+            val swDecName = if (!sourceVideoMime.isNullOrBlank()) {
+                EightKVp9Pipeline.resolveSoftwareDecoders(sourceVideoMime).firstOrNull()?.first
+            } else {
+                EightKVp9Pipeline.resolveSoftwareVp9Decoders().firstOrNull()
+            }
+            val swVp9EncName = EightKVp9Pipeline.resolveSoftwareVp9Encoders().firstOrNull()?.name
+            return CodecPipelineSupport(
+                isHardwareDecoder = false,
+                isHardwareEncoder = false,
+                decoderName = swDecName,
+                encoderName = swVp9EncName,
+                statusText = "✓ 8K Software Decoder & Software VP9 Encoder"
+            )
+        }
         val codecInfos = cachedCodecInfos
 
         val decoderInfo = if (!sourceVideoMime.isNullOrBlank()) {

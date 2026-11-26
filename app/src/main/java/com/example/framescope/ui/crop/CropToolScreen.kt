@@ -492,7 +492,8 @@ fun CropToolScreen(
                             onPanChanged = viewModel::updatePan,
                             onVideoPositionChanged = viewModel::updateVideoPosition,
                             onSeekHandled = viewModel::clearSeekRequest,
-                            onVideoPlaybackEnded = { viewModel.setVideoPlaying(false) }
+                            onVideoPlaybackEnded = { viewModel.setVideoPlaying(false) },
+                            onVideoPlaybackError = viewModel::reportPlaybackError
                         )
 
                         // Action Strip directly below Workspace:
