@@ -15,6 +15,7 @@ import com.example.framescope.crop.CodecPipelineSupport
 import com.example.framescope.crop.CropAspectRatio
 import com.example.framescope.crop.CropEditSnapshot
 import com.example.framescope.crop.CropExportState
+import com.example.framescope.crop.CropExportsRepository
 import com.example.framescope.crop.CropMediaInspector
 import com.example.framescope.crop.CropMediaType
 import com.example.framescope.crop.CropProjectRecord
@@ -44,6 +45,7 @@ data class CropToolUiState(
     val previewBitmap: Bitmap? = null,
     val showImportPanel: Boolean = true,
     val currentProjectId: String? = null,
+    val currentProjectTitle: String? = null,
     val currentSourceUriString: String? = null,
     val currentLocalCopyPath: String? = null,
     val copyOriginalSourceEnabled: Boolean = false,
@@ -240,7 +242,7 @@ class CropToolViewModel(
     }
 
     fun undo() {
-        if (_uiState.value.isPreviewMode || undoStack.isEmpty()) return
+        if (undoStack.isEmpty()) return
         pendingGestureStartSnapshot = null
         val prevSnap = undoStack.removeLast()
         val curSnap = _uiState.value.toSnapshot()
@@ -258,7 +260,7 @@ class CropToolViewModel(
     }
 
     fun redo() {
-        if (_uiState.value.isPreviewMode || redoStack.isEmpty()) return
+        if (redoStack.isEmpty()) return
         pendingGestureStartSnapshot = null
         val nextSnap = redoStack.removeLast()
         val curSnap = _uiState.value.toSnapshot()
@@ -276,7 +278,6 @@ class CropToolViewModel(
     }
 
     fun resetCropSelection() {
-        if (_uiState.value.isPreviewMode) return
         pendingGestureStartSnapshot = null
         val curSnap = _uiState.value.toSnapshot()
         if (curSnap == initialSnapshot) return
@@ -305,7 +306,6 @@ class CropToolViewModel(
             prev.copy(
                 isPreviewMode = true,
                 showCanvasOptions = false,
-                isVideoPlaying = media.mediaType == CropMediaType.VIDEO,
                 seekRequestMs = if (needsSeek) start else prev.seekRequestMs
             )
         }
@@ -315,8 +315,7 @@ class CropToolViewModel(
         if (!_uiState.value.isPreviewMode) return
         _uiState.update { prev ->
             prev.copy(
-                isPreviewMode = false,
-                isVideoPlaying = false
+                isPreviewMode = false
             )
         }
     }
@@ -485,6 +484,8 @@ class CropToolViewModel(
                     12f
                 }
 
+                val projectTitle = CropExportsRepository(appContext).formatClockDateTitle(System.currentTimeMillis())
+
                 _uiState.update { prev ->
                     prev.copy(
                         isLoadingMedia = false,
@@ -492,6 +493,7 @@ class CropToolViewModel(
                         previewBitmap = bitmap,
                         showImportPanel = false,
                         currentProjectId = projectId,
+                        currentProjectTitle = projectTitle,
                         currentSourceUriString = uri.toString(),
                         currentLocalCopyPath = localCopyPath,
                         cropRect = NormalizedCropRect(0f, 0f, 1f, 1f),
@@ -658,6 +660,7 @@ class CropToolViewModel(
                         previewBitmap = bitmap,
                         showImportPanel = false,
                         currentProjectId = project.id,
+                        currentProjectTitle = project.title,
                         currentSourceUriString = project.sourceUriString,
                         currentLocalCopyPath = project.localCopyPath,
                         cropRect = restoredCrop,
@@ -697,7 +700,6 @@ class CropToolViewModel(
     }
 
     fun toggleZoomMode() {
-        if (_uiState.value.isPreviewMode) return
         _uiState.update { state ->
             val nextEnabled = !state.isZoomEnabled
             state.copy(
@@ -719,6 +721,7 @@ class CropToolViewModel(
     }
 
     fun selectCanvasAspectMode(mode: CanvasAspectMode) {
+        if (_uiState.value.isPreviewMode) return
         _uiState.update { state ->
             state.copy(
                 canvasAspectMode = mode,
@@ -829,7 +832,6 @@ class CropToolViewModel(
     fun selectAspectRatio(ratio: CropAspectRatio) {
         val stateBefore = _uiState.value
         val info = stateBefore.media ?: return
-        if (stateBefore.isPreviewMode) return
 
         val prevSnap = stateBefore.toSnapshot()
         if (ratio == CropAspectRatio.CUSTOM) {
@@ -870,7 +872,6 @@ class CropToolViewModel(
 
     fun updateCustomAspectRatio(widthStr: String, heightStr: String) {
         val stateBefore = _uiState.value
-        if (stateBefore.isPreviewMode) return
         val cleanW = widthStr.filter { it.isDigit() || it == '.' }
         val cleanH = heightStr.filter { it.isDigit() || it == '.' }
         val wVal = cleanW.toFloatOrNull()
@@ -1036,6 +1037,7 @@ class CropToolViewModel(
                 val currentSnapshotState = _uiState.value
                 val record = buildProjectRecordFromState(currentSnapshotState)?.copy(
                     exportedFilePath = result.outputPath,
+                    exportedGalleryUriString = result.galleryUriString,
                     exportedFormatLabel = formatLabel,
                     exportedWidth = currentSnapshotState.outputWidth,
                     exportedHeight = currentSnapshotState.outputHeight,
@@ -1108,9 +1110,13 @@ class CropToolViewModel(
             state.selectedImageFormat?.label
         }
 
+        val resolvedTitle = existing?.title
+            ?: state.currentProjectTitle
+            ?: CropExportsRepository(appContext).formatClockDateTitle(System.currentTimeMillis())
+
         return CropProjectRecord(
             id = projectId,
-            title = media.displayName,
+            title = resolvedTitle,
             mediaTypeName = media.mediaType.name,
             sourceUriString = sourceUriStr,
             localCopyPath = state.currentLocalCopyPath,
@@ -1133,6 +1139,7 @@ class CropToolViewModel(
             outputHeight = state.outputHeight,
             durationMs = media.durationMs,
             exportedFilePath = existing?.exportedFilePath,
+            exportedGalleryUriString = existing?.exportedGalleryUriString,
             exportedFormatLabel = existing?.exportedFormatLabel,
             exportedWidth = existing?.exportedWidth ?: 0,
             exportedHeight = existing?.exportedHeight ?: 0,

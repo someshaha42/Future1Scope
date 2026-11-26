@@ -1,12 +1,16 @@
 package com.example.framescope.ui.crop
 
+import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.net.Uri
+import android.webkit.MimeTypeMap
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.FileProvider
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -70,6 +74,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -100,7 +105,10 @@ import com.example.framescope.crop.CropProjectRecord
 import com.example.framescope.ui.components.SupportStatusPill
 import com.example.framescope.ui.theme.FrameScopeColors
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.util.Locale
 
 @Composable
 fun CropToolScreen(
@@ -113,6 +121,7 @@ fun CropToolScreen(
     )
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+    val coroutineScope = rememberCoroutineScope()
     var previewImageProject by remember { mutableStateOf<CropProjectRecord?>(null) }
     var showProjectSettingsDialog by remember { mutableStateOf(false) }
     var pendingDeleteProject by remember { mutableStateOf<CropProjectRecord?>(null) }
@@ -437,17 +446,15 @@ fun CropToolScreen(
                             projects = state.recentProjects,
                             thumbnails = state.projectThumbnails,
                             onOpenSettings = { showProjectSettingsDialog = true },
-                            onOpenProject = viewModel::openProject,
-                            onPlayExported = { project ->
-                                val path = project.exportedFilePath
-                                if (!path.isNullOrBlank()) {
-                                    if (project.mediaType == CropMediaType.VIDEO) {
-                                        onPlayVideo(path)
-                                    } else {
-                                        previewImageProject = project
+                            onOpenInGallery = { project ->
+                                val errorMsg = openProjectInDefaultGallery(context, project)
+                                if (errorMsg != null) {
+                                    coroutineScope.launch {
+                                        snackbarHostState.showSnackbar(errorMsg)
                                     }
                                 }
                             },
+                            onEditProject = viewModel::openProject,
                             onRequestDelete = { project ->
                                 pendingDeleteProject = project
                             }
@@ -492,7 +499,7 @@ fun CropToolScreen(
                             onVideoPlaybackEnded = { viewModel.setVideoPlaying(false) }
                         )
 
-                        // Action Strip directly below Workspace: Dimensions + Import (left) & Preview / Stop (right)
+                        // Action Strip directly below Workspace: Dimensions + Import (left) & Play/Pause + Preview/Stop (right)
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -501,6 +508,7 @@ fun CropToolScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Row(
+                                modifier = Modifier.weight(1f, fill = false),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
@@ -512,114 +520,116 @@ fun CropToolScreen(
                                         fontWeight = FontWeight.SemiBold
                                     ),
                                     color = FrameScopeColors.TextSecondary,
-                                    maxLines = 1
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
-                                if (!state.isPreviewMode) {
-                                    Surface(
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = FrameScopeColors.InnerSurface,
-                                        border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle),
-                                        modifier = Modifier
-                                            .minimumInteractiveComponentSize()
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .clickable(onClick = viewModel::openImportPanel)
-                                            .testTag("crop_change_media_button")
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = FrameScopeColors.InnerSurface,
+                                    border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle),
+                                    modifier = Modifier
+                                        .minimumInteractiveComponentSize()
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable(onClick = viewModel::openImportPanel)
+                                        .testTag("crop_change_media_button")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                                     ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.FolderOpen,
-                                                contentDescription = "Import media",
-                                                tint = FrameScopeColors.SelectionBlue,
-                                                modifier = Modifier.size(14.dp)
-                                            )
-                                            Text(
-                                                text = "Import",
-                                                style = MaterialTheme.typography.labelMedium.copy(
-                                                    fontSize = 11.5.sp,
-                                                    fontWeight = FontWeight.SemiBold
-                                                ),
-                                                color = FrameScopeColors.TextPrimary
-                                            )
-                                        }
+                                        Icon(
+                                            imageVector = Icons.Rounded.FolderOpen,
+                                            contentDescription = "Import media",
+                                            tint = FrameScopeColors.SelectionBlue,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Text(
+                                            text = "Import",
+                                            style = MaterialTheme.typography.labelMedium.copy(
+                                                fontSize = 11.5.sp,
+                                                fontWeight = FontWeight.SemiBold
+                                            ),
+                                            color = FrameScopeColors.TextPrimary,
+                                            maxLines = 1
+                                        )
                                     }
                                 }
                             }
 
-                            if (!state.isPreviewMode) {
-                                Surface(
-                                    shape = RoundedCornerShape(10.dp),
-                                    color = FrameScopeColors.SelectionBlueTint,
-                                    border = BorderStroke(1.25.dp, FrameScopeColors.SelectionBlue),
-                                    modifier = Modifier
-                                        .minimumInteractiveComponentSize()
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .clickable(onClick = viewModel::enterPreviewMode)
-                                        .testTag("crop_preview_button")
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                if (media.mediaType == CropMediaType.VIDEO) {
+                                    Surface(
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = FrameScopeColors.SelectionBlueTint,
+                                        border = BorderStroke(1.25.dp, FrameScopeColors.SelectionBlue),
+                                        modifier = Modifier
+                                            .minimumInteractiveComponentSize()
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .clickable(onClick = viewModel::toggleVideoPlayPause)
+                                            .testTag("crop_preview_play_pause_button")
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Rounded.PlayArrow,
-                                            contentDescription = "Preview cropped media",
-                                            tint = Color.White,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Text(
-                                            text = "Preview",
-                                            style = MaterialTheme.typography.labelMedium.copy(
-                                                fontSize = 13.sp,
-                                                fontWeight = FontWeight.Bold
-                                            ),
-                                            color = FrameScopeColors.TextPrimary
-                                        )
-                                    }
-                                }
-                            } else {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    if (media.mediaType == CropMediaType.VIDEO) {
-                                        Surface(
-                                            shape = RoundedCornerShape(10.dp),
-                                            color = FrameScopeColors.SelectionBlueTint,
-                                            border = BorderStroke(1.25.dp, FrameScopeColors.SelectionBlue),
-                                            modifier = Modifier
-                                                .minimumInteractiveComponentSize()
-                                                .clip(RoundedCornerShape(10.dp))
-                                                .clickable(onClick = viewModel::toggleVideoPlayPause)
-                                                .testTag("crop_preview_play_pause_button")
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
                                         ) {
-                                            Row(
-                                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                            ) {
-                                                Icon(
-                                                    imageVector = if (state.isVideoPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                                                    contentDescription = if (state.isVideoPlaying) "Pause preview" else "Play preview",
-                                                    tint = Color.White,
-                                                    modifier = Modifier.size(18.dp)
-                                                )
-                                                Text(
-                                                    text = if (state.isVideoPlaying) "Pause" else "Play",
-                                                    style = MaterialTheme.typography.labelMedium.copy(
-                                                        fontSize = 12.5.sp,
-                                                        fontWeight = FontWeight.Bold
-                                                    ),
-                                                    color = FrameScopeColors.TextPrimary
-                                                )
-                                            }
+                                            Icon(
+                                                imageVector = if (state.isVideoPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                                                contentDescription = if (state.isVideoPlaying) "Pause" else "Play",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Text(
+                                                text = if (state.isVideoPlaying) "Pause" else "Play",
+                                                style = MaterialTheme.typography.labelMedium.copy(
+                                                    fontSize = 12.5.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                ),
+                                                color = FrameScopeColors.TextPrimary,
+                                                maxLines = 1
+                                            )
                                         }
                                     }
+                                }
 
+                                if (!state.isPreviewMode) {
+                                    Surface(
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = FrameScopeColors.SelectionBlueTint,
+                                        border = BorderStroke(1.25.dp, FrameScopeColors.SelectionBlue),
+                                        modifier = Modifier
+                                            .minimumInteractiveComponentSize()
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .clickable(onClick = viewModel::enterPreviewMode)
+                                            .testTag("crop_preview_button")
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.PlayArrow,
+                                                contentDescription = "Preview cropped media",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Text(
+                                                text = "Preview",
+                                                style = MaterialTheme.typography.labelMedium.copy(
+                                                    fontSize = 12.5.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                ),
+                                                color = FrameScopeColors.TextPrimary,
+                                                maxLines = 1
+                                            )
+                                        }
+                                    }
+                                } else {
                                     Surface(
                                         shape = RoundedCornerShape(10.dp),
                                         color = FrameScopeColors.SpecRedContainer,
@@ -647,7 +657,8 @@ fun CropToolScreen(
                                                     fontSize = 12.5.sp,
                                                     fontWeight = FontWeight.Bold
                                                 ),
-                                                color = FrameScopeColors.TextPrimary
+                                                color = FrameScopeColors.TextPrimary,
+                                                maxLines = 1
                                             )
                                         }
                                     }
@@ -660,7 +671,7 @@ fun CropToolScreen(
                             customWidth = state.customAspectWidth,
                             customHeight = state.customAspectHeight,
                             customError = state.customAspectError,
-                            enabled = !state.isPreviewMode,
+                            enabled = true,
                             aspectRatioSupport = state.aspectRatioSupport,
                             onSelectRatio = viewModel::selectAspectRatio,
                             onCustomChanged = viewModel::updateCustomAspectRatio
@@ -672,8 +683,6 @@ fun CropToolScreen(
                                 trimStartMs = state.trimStartMs,
                                 trimEndMs = state.trimEndMs,
                                 currentPositionMs = state.currentVideoPositionMs,
-                                isVideoPlaying = state.isVideoPlaying,
-                                onTogglePlayPause = viewModel::toggleVideoPlayPause,
                                 onSeek = viewModel::seekVideo,
                                 onTrimRangeChanged = viewModel::updateTrimRange
                             )
@@ -867,7 +876,7 @@ private fun CropWorkspaceTopToolbar(
         ToolbarIconLabelAction(
             label = "Undo",
             icon = Icons.AutoMirrored.Rounded.Undo,
-            enabled = canUndo && !isPreviewMode,
+            enabled = canUndo,
             active = false,
             testTag = "crop_undo_button",
             onClick = onUndo
@@ -876,7 +885,7 @@ private fun CropWorkspaceTopToolbar(
         ToolbarIconLabelAction(
             label = "Redo",
             icon = Icons.AutoMirrored.Rounded.Redo,
-            enabled = canRedo && !isPreviewMode,
+            enabled = canRedo,
             active = false,
             testTag = "crop_redo_button",
             onClick = onRedo
@@ -885,7 +894,7 @@ private fun CropWorkspaceTopToolbar(
         ToolbarIconLabelAction(
             label = "Reset",
             icon = Icons.Rounded.Refresh,
-            enabled = canReset && !isPreviewMode,
+            enabled = canReset,
             active = false,
             testTag = "crop_reset_button",
             onClick = onReset
@@ -902,7 +911,7 @@ private fun CropWorkspaceTopToolbar(
         ToolbarIconLabelAction(
             label = "Zoom",
             icon = Icons.Rounded.ZoomIn,
-            enabled = !isPreviewMode,
+            enabled = true,
             active = isZoomEnabled,
             activeColor = Color(0xFF38BDF8),
             testTag = "crop_zoom_toggle_button",
@@ -1157,5 +1166,88 @@ private fun ExportedImagePreviewDialog(
                 }
             }
         }
+    }
+}
+
+private fun openProjectInDefaultGallery(
+    context: Context,
+    project: CropProjectRecord
+): String? {
+    val defaultMime = if (project.mediaType == CropMediaType.VIDEO) "video/*" else "image/*"
+    val authority = "${context.packageName}.fileprovider"
+
+    fun resolveUriAndMime(): Pair<Uri, String>? {
+        val galleryUriStr = project.exportedGalleryUriString
+        if (!galleryUriStr.isNullOrBlank()) {
+            val uri = runCatching { Uri.parse(galleryUriStr) }.getOrNull()
+            if (uri != null) {
+                val readable = runCatching {
+                    context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { true } ?: false
+                }.getOrDefault(false)
+                if (readable) {
+                    val mime = context.contentResolver.getType(uri) ?: defaultMime
+                    return uri to mime
+                }
+            }
+        }
+
+        val expPath = project.exportedFilePath
+        if (!expPath.isNullOrBlank()) {
+            val file = File(expPath)
+            if (file.exists() && file.length() > 0L) {
+                val uri = runCatching { FileProvider.getUriForFile(context, authority, file) }.getOrNull()
+                if (uri != null) {
+                    val ext = file.extension.lowercase(Locale.US)
+                    val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: defaultMime
+                    return uri to mime
+                }
+            }
+        }
+
+        val localPath = project.localCopyPath
+        if (!localPath.isNullOrBlank()) {
+            val file = File(localPath)
+            if (file.exists() && file.length() > 0L) {
+                val uri = runCatching { FileProvider.getUriForFile(context, authority, file) }.getOrNull()
+                if (uri != null) {
+                    val ext = file.extension.lowercase(Locale.US)
+                    val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: defaultMime
+                    return uri to mime
+                }
+            }
+        }
+
+        val srcUri = runCatching { Uri.parse(project.sourceUriString) }.getOrNull()
+        if (srcUri != null) {
+            if (srcUri.scheme == "file") {
+                val file = srcUri.path?.let { File(it) }
+                if (file != null && file.exists() && file.length() > 0L) {
+                    val uri = runCatching { FileProvider.getUriForFile(context, authority, file) }.getOrNull()
+                    if (uri != null) {
+                        val ext = file.extension.lowercase(Locale.US)
+                        val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: defaultMime
+                        return uri to mime
+                    }
+                }
+            } else {
+                val mime = context.contentResolver.getType(srcUri) ?: defaultMime
+                return srcUri to mime
+            }
+        }
+        return null
+    }
+
+    val (targetUri, mimeType) = resolveUriAndMime()
+        ?: return "Media file is no longer accessible."
+
+    val intent = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(targetUri, mimeType)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    return runCatching {
+        context.startActivity(intent)
+        null
+    }.getOrElse {
+        "No Gallery or media viewer app found to open this file."
     }
 }

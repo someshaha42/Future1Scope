@@ -7,6 +7,7 @@ import android.view.Surface
 import android.view.TextureView
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -131,14 +132,16 @@ fun CropWorkspaceCanvas(
         val targetCanvasWidthDp = minOf(availW, widthFromH)
         val targetCanvasHeightDp = (targetCanvasWidthDp / targetWorkspaceRatio).coerceAtLeast(100.dp)
 
+        var isDraggingPreviewCrop by remember { mutableStateOf(false) }
+
         val canvasWidthDp by animateDpAsState(
             targetValue = targetCanvasWidthDp,
-            animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+            animationSpec = if (isDraggingPreviewCrop) snap() else tween(durationMillis = 220, easing = FastOutSlowInEasing),
             label = "preview_canvas_width"
         )
         val canvasHeightDp by animateDpAsState(
             targetValue = targetCanvasHeightDp,
-            animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+            animationSpec = if (isDraggingPreviewCrop) snap() else tween(durationMillis = 220, easing = FastOutSlowInEasing),
             label = "preview_canvas_height"
         )
 
@@ -202,14 +205,10 @@ fun CropWorkspaceCanvas(
         val maxPanX = if (zoom > 1.001f) canvasWidthPx * zoom * 0.5f else canvasWidthPx * 0.25f
         val maxPanY = if (zoom > 1.001f) canvasHeightPx * zoom * 0.5f else canvasHeightPx * 0.25f
 
-        val clampedPan = if (isPreviewMode) {
-            Offset.Zero
-        } else {
-            Offset(
-                x = panOffset.x.coerceIn(-maxPanX, maxPanX),
-                y = panOffset.y.coerceIn(-maxPanY, maxPanY)
-            )
-        }
+        val clampedPan = Offset(
+            x = panOffset.x.coerceIn(-maxPanX, maxPanX),
+            y = panOffset.y.coerceIn(-maxPanY, maxPanY)
+        )
 
         val latestCrop by rememberUpdatedState(cropRect)
         val latestZoom by rememberUpdatedState(zoom)
@@ -223,6 +222,9 @@ fun CropWorkspaceCanvas(
         val latestMediaTop by rememberUpdatedState(editMediaTop)
         val latestMediaW by rememberUpdatedState(editMediaW)
         val latestMediaH by rememberUpdatedState(editMediaH)
+        val latestPreviewBaseW by rememberUpdatedState(previewBaseW)
+        val latestPreviewBaseH by rememberUpdatedState(previewBaseH)
+        val latestPreviewZoom by rememberUpdatedState(previewZoomScale)
         val latestSrcRatio by rememberUpdatedState(srcRatio)
 
         val workspaceBorderColor = when {
@@ -247,9 +249,6 @@ fun CropWorkspaceCanvas(
                 .pointerInput(media.uri) {
                     awaitEachGesture {
                         val firstDown = awaitFirstDown(requireUnconsumed = false)
-                        if (latestPreviewMode) {
-                            return@awaitEachGesture
-                        }
                         firstDown.consume()
 
                         if (latestZoomEnabled) {
@@ -291,7 +290,7 @@ fun CropWorkspaceCanvas(
                             return@awaitEachGesture
                         }
 
-                        // Crop Editing Mode active: map touch into Canvas Viewport coordinates.
+                        // Crop / Preview Object Manipulation Mode: map touch into Canvas Viewport coordinates.
                         val cx = latestCanvasW / 2f
                         val cy = latestCanvasH / 2f
                         val z = latestZoom.coerceAtLeast(1f)
@@ -300,22 +299,37 @@ fun CropWorkspaceCanvas(
                             y = cy + (firstDown.position.y - cy - latestPan.y) / z
                         )
 
-                        val curLeft = latestMediaLeft + latestCrop.left * latestMediaW
-                        val curTop = latestMediaTop + latestCrop.top * latestMediaH
-                        val curRight = latestMediaLeft + latestCrop.right * latestMediaW
-                        val curBottom = latestMediaTop + latestCrop.bottom * latestMediaH
+                        val gestureInPreview = latestPreviewMode
+                        val startPreviewDisplayW = (latestPreviewBaseW * latestPreviewZoom).coerceAtLeast(1f)
+                        val startPreviewDisplayH = (latestPreviewBaseH * latestPreviewZoom).coerceAtLeast(1f)
+
+                        val hitRect = if (gestureInPreview) {
+                            Rect(0f, 0f, latestCanvasW, latestCanvasH)
+                        } else {
+                            Rect(
+                                left = latestMediaLeft + latestCrop.left * latestMediaW,
+                                top = latestMediaTop + latestCrop.top * latestMediaH,
+                                right = latestMediaLeft + latestCrop.right * latestMediaW,
+                                bottom = latestMediaTop + latestCrop.bottom * latestMediaH
+                            )
+                        }
+                        val cornerRad = if (gestureInPreview) (cornerHitRadiusPx * 0.65f) / z else cornerHitRadiusPx / z
+                        val edgeRad = if (gestureInPreview) (edgeHitRadiusPx * 0.6f) / z else edgeHitRadiusPx / z
 
                         val dragTarget = hitTestCropTarget(
                             pos = localDown,
-                            rect = Rect(curLeft, curTop, curRight, curBottom),
-                            cornerRadius = cornerHitRadiusPx / z,
-                            edgeRadius = edgeHitRadiusPx / z
+                            rect = hitRect,
+                            cornerRadius = cornerRad,
+                            edgeRadius = edgeRad
                         )
 
                         val isEditableTarget = dragTarget != CropDragTarget.NONE &&
                             dragTarget != CropDragTarget.OUTSIDE_CROP
                         if (isEditableTarget) {
                             onCropGestureStart()
+                            if (gestureInPreview && dragTarget != CropDragTarget.CENTER_CONTENT) {
+                                isDraggingPreviewCrop = true
+                            }
                         }
 
                         try {
@@ -324,7 +338,7 @@ fun CropWorkspaceCanvas(
                                 val pressedChanges = event.changes.filter { it.pressed }
                                 if (pressedChanges.isEmpty()) break
 
-                                if (!isEditableTarget || latestZoomEnabled || latestPreviewMode) {
+                                if (!isEditableTarget || latestZoomEnabled) {
                                     pressedChanges.forEach { it.consume() }
                                     continue
                                 }
@@ -335,14 +349,17 @@ fun CropWorkspaceCanvas(
                                     primary.consume()
                                     val curZoom = latestZoom.coerceAtLeast(1f)
                                     val cur = latestCrop
-                                    val mW = latestMediaW.coerceAtLeast(1f)
-                                    val mH = latestMediaH.coerceAtLeast(1f)
+                                    val mW = if (gestureInPreview) startPreviewDisplayW else latestMediaW.coerceAtLeast(1f)
+                                    val mH = if (gestureInPreview) startPreviewDisplayH else latestMediaH.coerceAtLeast(1f)
                                     val delta = Offset(screenDelta.x / curZoom, screenDelta.y / curZoom)
 
                                     when (dragTarget) {
                                         CropDragTarget.CENTER_CONTENT -> {
-                                            val dLeft = delta.x / mW
-                                            val dTop = delta.y / mH
+                                            // In Preview Mode, dragging the object shifts the crop window in the opposite
+                                            // direction so the media object moves smoothly with the user's finger.
+                                            val sign = if (gestureInPreview) -1f else 1f
+                                            val dLeft = (delta.x * sign) / mW
+                                            val dTop = (delta.y * sign) / mH
                                             val wFrac = cur.widthFraction
                                             val hFrac = cur.heightFraction
                                             val newLeft = (cur.left + dLeft).coerceIn(0f, 1f - wFrac)
@@ -382,6 +399,7 @@ fun CropWorkspaceCanvas(
                                 }
                             }
                         } finally {
+                            isDraggingPreviewCrop = false
                             if (isEditableTarget) {
                                 onCropGestureEnd()
                             }
@@ -389,9 +407,9 @@ fun CropWorkspaceCanvas(
                     }
                 }
         ) {
-            // Single Canvas Viewport transformed ONLY by Zoom & Pan during editing (never in Preview Mode).
-            val viewportScale = if (isPreviewMode) 1f else zoom
-            val viewportPan = if (isPreviewMode) Offset.Zero else clampedPan
+            // Single Canvas Viewport transformed by Zoom & Pan in both Editing and Preview Modes.
+            val viewportScale = zoom
+            val viewportPan = clampedPan
 
             Box(
                 modifier = Modifier
@@ -592,7 +610,7 @@ fun CropWorkspaceCanvas(
                 }
             }
 
-            if (isZoomEnabled && !isPreviewMode) {
+            if (isZoomEnabled) {
                 Surface(
                     shape = RoundedCornerShape(8.dp),
                     color = Color(0xCC0B1220),

@@ -97,7 +97,7 @@ object ImageCropProcessor {
                 }
             }
 
-            val savedToGallery = exportImageToMediaStore(
+            val galleryUri = exportImageToMediaStore(
                 context = context,
                 file = outFile,
                 mimeType = outputSpec.mimeType
@@ -106,8 +106,9 @@ object ImageCropProcessor {
             CropExportState.Success(
                 outputPath = outFile.absolutePath,
                 fileName = outFile.name,
-                savedToGallery = savedToGallery,
-                mediaType = CropMediaType.IMAGE
+                savedToGallery = galleryUri != null,
+                mediaType = CropMediaType.IMAGE,
+                galleryUriString = galleryUri
             )
         } catch (t: Throwable) {
             CropExportState.Error(t.message ?: "Failed to crop and export image.")
@@ -521,8 +522,8 @@ object ImageCropProcessor {
         context: Context,
         file: File,
         mimeType: String
-    ): Boolean {
-        if (!file.exists() || file.length() <= 0L) return false
+    ): String? {
+        if (!file.exists() || file.length() <= 0L) return null
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, file.name)
             put(MediaStore.Images.Media.MIME_TYPE, mimeType)
@@ -530,16 +531,16 @@ object ImageCropProcessor {
             put(MediaStore.Images.Media.IS_PENDING, 1)
         }
         val resolver = context.contentResolver
-        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return false
+        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return null
         return try {
             resolver.openOutputStream(uri)?.use { out ->
                 file.inputStream().use { input -> input.copyTo(out, bufferSize = 512 * 1024) }
             }
             resolver.update(uri, ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }, null, null)
-            true
+            uri.toString()
         } catch (_: Throwable) {
             resolver.delete(uri, null, null)
-            false
+            null
         }
     }
 }

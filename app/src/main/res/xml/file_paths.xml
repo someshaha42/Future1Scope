@@ -3,4 +3,13 @@
     <external-files-path
         name="recordings"
         path="Movies/FrameScope" />
+    <external-files-path
+        name="crop_videos"
+        path="Movies/FrameScopeCrops" />
+    <external-files-path
+        name="crop_images"
+        path="Pictures/FrameScopeCrops" />
+    <files-path
+        name="crop_sources"
+        path="crop_projects/sources" />
 </paths>

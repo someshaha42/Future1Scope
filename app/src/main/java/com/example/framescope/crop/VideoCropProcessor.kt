@@ -494,7 +494,7 @@ object VideoCropProcessor {
             }
 
             onProgress(0.98f, "Saving to gallery…")
-            val savedToGallery = exportVideoToMediaStore(
+            val galleryUri = exportVideoToMediaStore(
                 context = context,
                 file = outFile,
                 mimeType = finalContainer.mimeType
@@ -503,8 +503,9 @@ object VideoCropProcessor {
             CropExportState.Success(
                 outputPath = outFile.absolutePath,
                 fileName = outFile.name,
-                savedToGallery = savedToGallery,
-                mediaType = CropMediaType.VIDEO
+                savedToGallery = galleryUri != null,
+                mediaType = CropMediaType.VIDEO,
+                galleryUriString = galleryUri
             )
         } catch (t: Throwable) {
             runCatching { outFile?.delete() }
@@ -837,7 +838,7 @@ object VideoCropProcessor {
             muxerStarted = false
 
             onProgress(0.98f, "Saving to gallery…")
-            val savedToGallery = exportVideoToMediaStore(
+            val galleryUri = exportVideoToMediaStore(
                 context = context,
                 file = outFile,
                 mimeType = container.mimeType
@@ -845,8 +846,9 @@ object VideoCropProcessor {
             CropExportState.Success(
                 outputPath = outFile.absolutePath,
                 fileName = outFile.name,
-                savedToGallery = savedToGallery,
-                mediaType = CropMediaType.VIDEO
+                savedToGallery = galleryUri != null,
+                mediaType = CropMediaType.VIDEO,
+                galleryUriString = galleryUri
             )
         } catch (t: Throwable) {
             if (t is InterruptedException || t is kotlinx.coroutines.CancellationException) {
@@ -938,8 +940,8 @@ object VideoCropProcessor {
         context: Context,
         file: File,
         mimeType: String
-    ): Boolean {
-        if (!file.exists() || file.length() <= 0L) return false
+    ): String? {
+        if (!file.exists() || file.length() <= 0L) return null
         val values = ContentValues().apply {
             put(MediaStore.Video.Media.DISPLAY_NAME, file.name)
             put(MediaStore.Video.Media.MIME_TYPE, mimeType)
@@ -947,16 +949,16 @@ object VideoCropProcessor {
             put(MediaStore.Video.Media.IS_PENDING, 1)
         }
         val resolver = context.contentResolver
-        val uri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values) ?: return false
+        val uri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values) ?: return null
         return try {
             resolver.openOutputStream(uri)?.use { out ->
                 file.inputStream().use { input -> input.copyTo(out, bufferSize = 512 * 1024) }
             }
             resolver.update(uri, ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }, null, null)
-            true
+            uri.toString()
         } catch (_: Throwable) {
             resolver.delete(uri, null, null)
-            false
+            null
         }
     }
 

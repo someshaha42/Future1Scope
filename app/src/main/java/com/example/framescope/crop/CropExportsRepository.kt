@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.os.Environment
+import android.text.format.DateFormat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -24,14 +25,38 @@ class CropExportsRepository(private val context: Context) {
         return File(base, "FrameScopeCrops").apply { if (!exists()) mkdirs() }
     }
 
+    fun formatClockDateTitle(timestampMs: Long = System.currentTimeMillis()): String {
+        val date = Date(timestampMs)
+        val timeText = DateFormat.getTimeFormat(context).format(date)
+        val dateText = SimpleDateFormat("d MMM", Locale.getDefault()).format(date)
+        return "$timeText, $dateText"
+    }
+
     fun createVideoExportFile(extension: String): File {
-        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
-        return File(getVideoExportsDirectory(), "FrameScope_Crop_$stamp.$extension")
+        return createClockDatedExportFile(getVideoExportsDirectory(), extension)
     }
 
     fun createImageExportFile(extension: String): File {
-        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
-        return File(getImageExportsDirectory(), "FrameScope_Crop_$stamp.$extension")
+        return createClockDatedExportFile(getImageExportsDirectory(), extension)
+    }
+
+    private fun createClockDatedExportFile(dir: File, extension: String): File {
+        val now = Date()
+        val timePattern = if (DateFormat.is24HourFormat(context)) "HH-mm" else "h-mm a"
+        val timeText = SimpleDateFormat(timePattern, Locale.getDefault()).format(now)
+        val dateText = SimpleDateFormat("d MMM", Locale.getDefault()).format(now)
+        val safeBase = "$timeText, $dateText"
+            .replace(':', '-')
+            .replace('/', '-')
+            .replace('\\', '-')
+        val safeExt = extension.ifBlank { "mp4" }.lowercase(Locale.US)
+        var candidate = File(dir, "$safeBase.$safeExt")
+        var suffix = 2
+        while (candidate.exists()) {
+            candidate = File(dir, "$safeBase ($suffix).$safeExt")
+            suffix++
+        }
+        return candidate
     }
 
     suspend fun loadRecentExports(): List<CropExportedItem> = withContext(Dispatchers.IO) {
@@ -43,7 +68,7 @@ class CropExportsRepository(private val context: Context) {
         )
         videoDirs.distinctBy { it.absolutePath }.forEach { dir ->
             dir.listFiles { f ->
-                f.isFile && f.length() > 0L && f.name.startsWith("FrameScope_Crop_") &&
+                f.isFile && f.length() > 0L &&
                     f.extension.lowercase(Locale.US) in setOf("mp4", "webm", "3gp")
             }?.forEach { file ->
                 items += readVideoItem(file)
@@ -56,7 +81,7 @@ class CropExportsRepository(private val context: Context) {
         )
         imageDirs.distinctBy { it.absolutePath }.forEach { dir ->
             dir.listFiles { f ->
-                f.isFile && f.length() > 0L && f.name.startsWith("FrameScope_Crop_") &&
+                f.isFile && f.length() > 0L &&
                     f.extension.lowercase(Locale.US) in setOf("png", "jpg", "jpeg", "webp")
             }?.forEach { file ->
                 items += readImageItem(file)

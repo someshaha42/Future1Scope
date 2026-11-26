@@ -143,7 +143,8 @@ sealed interface CropExportState {
         val outputPath: String,
         val fileName: String,
         val savedToGallery: Boolean,
-        val mediaType: CropMediaType
+        val mediaType: CropMediaType,
+        val galleryUriString: String? = null
     ) : CropExportState
     data class Error(val message: String) : CropExportState
 }
@@ -174,6 +175,7 @@ data class CropProjectRecord(
     val outputHeight: Int = 0,
     val durationMs: Long = 0L,
     val exportedFilePath: String? = null,
+    val exportedGalleryUriString: String? = null,
     val exportedFormatLabel: String? = null,
     val exportedWidth: Int = 0,
     val exportedHeight: Int = 0,

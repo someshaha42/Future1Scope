@@ -31,10 +31,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Collections
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Image
-import androidx.compose.material.icons.rounded.Pause
-import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.PlayCircleOutline
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.VideoLibrary
@@ -334,8 +333,6 @@ internal fun VideoTimelineSection(
     trimStartMs: Long,
     trimEndMs: Long,
     currentPositionMs: Long,
-    isVideoPlaying: Boolean = false,
-    onTogglePlayPause: (() -> Unit)? = null,
     onSeek: (Long, Boolean) -> Unit,
     onTrimRangeChanged: (Long, Long) -> Unit
 ) {
@@ -383,43 +380,14 @@ internal fun VideoTimelineSection(
                     ),
                     color = FrameScopeColors.TextSecondary
                 )
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    if (onTogglePlayPause != null) {
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (isVideoPlaying) FrameScopeColors.SelectionBlueTint else FrameScopeColors.InnerSurface,
-                            border = BorderStroke(
-                                1.dp,
-                                if (isVideoPlaying) FrameScopeColors.SelectionBlue else FrameScopeColors.BorderSubtle
-                            ),
-                            modifier = Modifier
-                                .minimumInteractiveComponentSize()
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable(onClick = onTogglePlayPause)
-                                .testTag("crop_video_play_pause_button")
-                        ) {
-                            Icon(
-                                imageVector = if (isVideoPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                                contentDescription = if (isVideoPlaying) "Pause" else "Play",
-                                tint = if (isVideoPlaying) FrameScopeColors.SelectionBlue else FrameScopeColors.TextPrimary,
-                                modifier = Modifier
-                                    .padding(horizontal = 8.dp, vertical = 4.dp)
-                                    .size(18.dp)
-                            )
-                        }
-                    }
-                    Text(
-                        text = formatTimelineMs(safePos),
-                        style = MaterialTheme.typography.labelMedium.copy(
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Bold
-                        ),
-                        color = FrameScopeColors.SelectionBlue
-                    )
-                }
+                Text(
+                    text = formatTimelineMs(safePos),
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold
+                    ),
+                    color = FrameScopeColors.SelectionBlue
+                )
                 Text(
                     text = "End ${formatTimelineMs(safeEnd)}",
                     style = MaterialTheme.typography.labelMedium.copy(
@@ -1066,8 +1034,8 @@ internal fun RecentProjectsSection(
     projects: List<CropProjectRecord>,
     thumbnails: Map<String, Bitmap>,
     onOpenSettings: () -> Unit,
-    onOpenProject: (CropProjectRecord) -> Unit,
-    onPlayExported: (CropProjectRecord) -> Unit,
+    onOpenInGallery: (CropProjectRecord) -> Unit,
+    onEditProject: (CropProjectRecord) -> Unit,
     onRequestDelete: (CropProjectRecord) -> Unit
 ) {
     val timeFormat = remember { SimpleDateFormat("hh:mm a • MMM d", Locale.getDefault()) }
@@ -1113,12 +1081,12 @@ internal fun RecentProjectsSection(
                         border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle)
                     ) {
                         Column(modifier = Modifier.fillMaxWidth()) {
-                            // Tapping project card opens the project directly in its saved editing state
+                            // Tapping project card opens the media directly in the phone's default Gallery viewer
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
-                                    .clickable { onOpenProject(project) }
+                                    .clickable { onOpenInGallery(project) }
                                     .padding(10.dp)
                                     .testTag("open_project_item_$index"),
                                 verticalAlignment = Alignment.CenterVertically,
@@ -1256,7 +1224,7 @@ internal fun RecentProjectsSection(
                                 color = FrameScopeColors.BorderSubtle.copy(alpha = 0.7f)
                             )
 
-                            // Bottom Action Bar: Delete on the LEFT, Play on the RIGHT
+                            // Bottom Action Bar: Delete on the LEFT, Edit Project on the RIGHT
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -1298,56 +1266,32 @@ internal fun RecentProjectsSection(
 
                                 Surface(
                                     shape = RoundedCornerShape(8.dp),
-                                    color = if (expFileExists) {
-                                        FrameScopeColors.SelectionBlueTint
-                                    } else {
-                                        FrameScopeColors.ElevatedSurface
-                                    },
-                                    border = BorderStroke(
-                                        1.dp,
-                                        if (expFileExists) {
-                                            FrameScopeColors.SelectionBlue
-                                        } else {
-                                            FrameScopeColors.BorderSubtle
-                                        }
-                                    ),
+                                    color = FrameScopeColors.SelectionBlueTint,
+                                    border = BorderStroke(1.dp, FrameScopeColors.SelectionBlue),
                                     modifier = Modifier
                                         .minimumInteractiveComponentSize()
-                                        .alpha(if (expFileExists) 1f else 0.45f)
                                         .clip(RoundedCornerShape(8.dp))
-                                        .clickable(enabled = expFileExists) { onPlayExported(project) }
-                                        .testTag("play_project_item_$index")
+                                        .clickable { onEditProject(project) }
+                                        .testTag("edit_project_item_$index")
                                 ) {
                                     Row(
                                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp)
                                     ) {
                                         Icon(
-                                            imageVector = Icons.Rounded.PlayArrow,
-                                            contentDescription = if (project.mediaType == CropMediaType.VIDEO) {
-                                                "Play exported video"
-                                            } else {
-                                                "View exported image"
-                                            },
-                                            tint = if (expFileExists) {
-                                                FrameScopeColors.SelectionBlue
-                                            } else {
-                                                FrameScopeColors.TextMuted
-                                            },
-                                            modifier = Modifier.size(17.dp)
+                                            imageVector = Icons.Rounded.Edit,
+                                            contentDescription = "Edit project ${project.title}",
+                                            tint = FrameScopeColors.SelectionBlue,
+                                            modifier = Modifier.size(16.dp)
                                         )
                                         Text(
-                                            text = if (project.mediaType == CropMediaType.VIDEO) "Play" else "View",
+                                            text = "Edit Project",
                                             style = MaterialTheme.typography.labelMedium.copy(
                                                 fontWeight = FontWeight.SemiBold,
                                                 fontSize = 12.sp
                                             ),
-                                            color = if (expFileExists) {
-                                                FrameScopeColors.TextPrimary
-                                            } else {
-                                                FrameScopeColors.TextMuted
-                                            }
+                                            color = FrameScopeColors.TextPrimary
                                         )
                                     }
                                 }
