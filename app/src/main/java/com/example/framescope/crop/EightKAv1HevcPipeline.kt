@@ -22,12 +22,14 @@ import kotlin.coroutines.coroutineContext
 import kotlin.math.roundToInt
 
 /**
- * Dedicated 8K-ONLY (7680x4320 / 4320x7680) Software-Based VP9 Import, Transcoding & Export Pipeline.
+ * Dedicated 8K-ONLY (7680x4320 / 4320x7680) Pipeline:
+ * - Import & Editing Playback: Software-Based AV1 (video/av01) transcode & Software AV1 decoding.
+ * - Export: Software-Based H.265 / HEVC (video/hevc) encoding in MP4 container.
  *
  * Strictly isolated from all non-8K resolutions (4K, 2K, 1080p, 720p, etc.).
- * Never uses hardware video decoders/encoders, never downscales resolution, and never falls back to H.264/H.265.
+ * Never uses hardware video decoders, never downscales 8K resolution, and never silently switches codecs.
  */
-object EightKVp9Pipeline {
+object EightKAv1HevcPipeline {
 
     private const val WIDTH_8K = 7680
     private const val HEIGHT_8K = 4320
@@ -60,6 +62,7 @@ object EightKVp9Pipeline {
             }
             .sortedWith(
                 compareByDescending<MediaCodecInfo> { it.isSoftwareOnly }
+                    .thenByDescending { it.name.contains("dav1d", ignoreCase = true) }
                     .thenByDescending { it.name.startsWith("c2.android.", ignoreCase = true) }
             )
             .map { it.name to null }
@@ -81,16 +84,29 @@ object EightKVp9Pipeline {
         return primary + hevcFallbacks
     }
 
-    fun resolveSoftwareVp9Decoders(): List<String> {
-        return resolveSoftwareDecoders(MediaFormat.MIMETYPE_VIDEO_VP9).map { it.first }
+    fun resolveSoftwareAv1Decoders(): List<String> {
+        return resolveSoftwareDecoders(MediaFormat.MIMETYPE_VIDEO_AV1).map { it.first }
     }
 
-    fun resolveSoftwareVp9Encoders(): List<MediaCodecInfo> {
+    fun resolveSoftwareAv1Encoders(): List<MediaCodecInfo> {
         return cachedCodecInfos
             .filter { info ->
                 info.isEncoder &&
                     isStrictSoftwareCodec(info) &&
-                    info.supportedTypes.any { it.equals(MediaFormat.MIMETYPE_VIDEO_VP9, ignoreCase = true) }
+                    info.supportedTypes.any { it.equals(MediaFormat.MIMETYPE_VIDEO_AV1, ignoreCase = true) }
+            }
+            .sortedWith(
+                compareByDescending<MediaCodecInfo> { it.isSoftwareOnly }
+                    .thenByDescending { it.name.startsWith("c2.android.", ignoreCase = true) }
+            )
+    }
+
+    fun resolveSoftwareHevcEncoders(): List<MediaCodecInfo> {
+        return cachedCodecInfos
+            .filter { info ->
+                info.isEncoder &&
+                    isStrictSoftwareCodec(info) &&
+                    info.supportedTypes.any { it.equals(MediaFormat.MIMETYPE_VIDEO_HEVC, ignoreCase = true) }
             }
             .sortedWith(
                 compareByDescending<MediaCodecInfo> { it.isSoftwareOnly }
@@ -109,25 +125,15 @@ object EightKVp9Pipeline {
             .map { it.name }
     }
 
-    fun resolveSoftwareOpusEncoders(): List<Pair<String, String>> {
-        val opus = cachedCodecInfos
-            .filter { info ->
-                info.isEncoder &&
-                    isStrictSoftwareCodec(info) &&
-                    info.supportedTypes.any { it.equals(MediaFormat.MIMETYPE_AUDIO_OPUS, ignoreCase = true) }
-            }
-            .sortedByDescending { it.isSoftwareOnly }
-            .map { it.name to MediaFormat.MIMETYPE_AUDIO_OPUS }
-        if (opus.isNotEmpty()) return opus
-
+    private fun resolveSoftwareAacEncoders(): List<String> {
         return cachedCodecInfos
             .filter { info ->
                 info.isEncoder &&
                     isStrictSoftwareCodec(info) &&
-                    info.supportedTypes.any { it.equals(MediaFormat.MIMETYPE_AUDIO_VORBIS, ignoreCase = true) }
+                    info.supportedTypes.any { it.equals(MediaFormat.MIMETYPE_AUDIO_AAC, ignoreCase = true) }
             }
             .sortedByDescending { it.isSoftwareOnly }
-            .map { it.name to MediaFormat.MIMETYPE_AUDIO_VORBIS }
+            .map { it.name }
     }
 
     fun detectBitDepth(
@@ -136,11 +142,9 @@ object EightKVp9Pipeline {
         colorTransfer: Int?,
         format: MediaFormat?
     ): Int {
-        if (format != null) {
-            if (format.containsKey(MediaFormat.KEY_COLOR_FORMAT)) {
-                val cf = format.getInteger(MediaFormat.KEY_COLOR_FORMAT)
-                if (cf == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUVP010) return 10
-            }
+        if (format != null && format.containsKey(MediaFormat.KEY_COLOR_FORMAT)) {
+            val cf = format.getInteger(MediaFormat.KEY_COLOR_FORMAT)
+            if (cf == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUVP010) return 10
         }
         if (colorTransfer == MediaFormat.COLOR_TRANSFER_ST2084 ||
             colorTransfer == MediaFormat.COLOR_TRANSFER_HLG
@@ -182,12 +186,14 @@ object EightKVp9Pipeline {
     }
 
     /**
-     * Step 2 (Import Processing):
-     * - If source is already VP9, verify Software VP9 decoder compatibility and return null workspace path (direct SW VP9 playback).
-     * - If source is another codec, transcode using Software Decoder + Software VP9 Encoder at full 8K resolution
-     *   preserving FPS, aspect ratio, color info, and leaving the original source file untouched.
+     * 8K Import Processing (AV1):
+     * - Disables Hardware Video Decoding.
+     * - Decodes any incoming 8K codec using a compatible Software Decoder.
+     * - If source is already AV1 (video/av01), verifies Software AV1 Decoder and uses source directly.
+     * - If source is any other codec, converts decoded video into AV1 (video/av01) using a Software AV1 Encoder,
+     *   preserving 7680x4320, frame rate, aspect ratio, and color info without deleting/replacing the original file.
      */
-    suspend fun prepare8kVp9Workspace(
+    suspend fun prepare8kAv1Workspace(
         context: Context,
         projectId: String,
         media: ImportedMediaInfo,
@@ -195,7 +201,9 @@ object EightKVp9Pipeline {
         onProgress: (String) -> Unit = {}
     ): Result<String?> = withContext(Dispatchers.IO) {
         runCatching {
-            check(media.is8kUhd) { "8K VP9 workspace requested for non-8K resolution (${media.rawWidth}×${media.rawHeight})." }
+            check(media.is8kUhd) {
+                "8K AV1 workspace requested for non-8K resolution (${media.rawWidth}×${media.rawHeight})."
+            }
 
             val sourceMime = media.sourceVideoMime
                 ?: error("Missing source video codec information for 8K media.")
@@ -205,14 +213,14 @@ object EightKVp9Pipeline {
                 "8K compatibility error: No Software Decoder is available on this device for $sourceMime (hardware decoding is disabled for 8K)."
             }
 
-            val swVp9Decoders = resolveSoftwareVp9Decoders()
-            check(swVp9Decoders.isNotEmpty()) {
-                "8K compatibility error: No VP9 Software Decoder is available on this device for 8K editing playback."
+            val swAv1Decoders = resolveSoftwareAv1Decoders()
+            check(swAv1Decoders.isNotEmpty()) {
+                "8K compatibility error: No AV1 Software Decoder (video/av01) is available on this device for 8K editing playback."
             }
 
-            if (sourceMime.equals(MediaFormat.MIMETYPE_VIDEO_VP9, ignoreCase = true)) {
-                onProgress("Verifying 8K VP9 Software Decoder…")
-                verifySoftwareVp9Decodable(context, media.uri, swVp9Decoders)
+            if (sourceMime.equals(MediaFormat.MIMETYPE_VIDEO_AV1, ignoreCase = true)) {
+                onProgress("Verifying 8K AV1 Software Decoder…")
+                verifySoftwareAv1Decodable(context, media.uri, swAv1Decoders)
                 return@runCatching null
             }
 
@@ -221,24 +229,25 @@ object EightKVp9Pipeline {
                 return@runCatching existing.absolutePath
             }
 
-            val swVp9Encoders = resolveSoftwareVp9Encoders()
-            check(swVp9Encoders.isNotEmpty()) {
-                "8K compatibility error: Source codec is $sourceMime, and no Software VP9 Encoder is available on this device to transcode 8K video."
+            val swAv1Encoders = resolveSoftwareAv1Encoders()
+            check(swAv1Encoders.isNotEmpty()) {
+                "8K compatibility error: Source codec is $sourceMime, and no Software AV1 Encoder (video/av01) is available on this device to convert 8K video to AV1."
             }
 
-            val workspaceDir = File(context.filesDir, "crop_projects/vp9_8k").apply {
+            val workspaceDir = File(context.filesDir, "crop_projects/av1_8k").apply {
                 if (!exists()) mkdirs()
             }
-            val workspaceFile = File(workspaceDir, "${projectId}_8k_vp9.webm")
-            val tempFile = File(workspaceDir, "${projectId}_8k_vp9.tmp.webm")
+            val workspaceFile = File(workspaceDir, "${projectId}_8k_av1.mp4")
+            val tempFile = File(workspaceDir, "${projectId}_8k_av1.tmp.mp4")
             runCatching { tempFile.delete() }
 
-            onProgress("Transcoding 8K video to Software VP9 (${media.rawWidth}×${media.rawHeight})…")
+            onProgress("Converting 8K video to Software AV1 (${media.rawWidth}×${media.rawHeight})…")
             try {
-                runSoftwareVp9Pipeline(
+                runSoftwareTranscodePipeline(
                     context = context,
                     sourceUri = media.uri,
                     media = media,
+                    targetMime = MediaFormat.MIMETYPE_VIDEO_AV1,
                     cropRect = NormalizedCropRect(0f, 0f, 1f, 1f),
                     targetWidth = media.rawWidth,
                     targetHeight = media.rawHeight,
@@ -251,7 +260,7 @@ object EightKVp9Pipeline {
                 )
                 if (workspaceFile.exists()) workspaceFile.delete()
                 check(tempFile.renameTo(workspaceFile)) {
-                    "Failed to finalize 8K VP9 workspace file."
+                    "Failed to finalize 8K AV1 workspace file."
                 }
                 workspaceFile.absolutePath
             } catch (t: Throwable) {
@@ -262,7 +271,13 @@ object EightKVp9Pipeline {
         }
     }
 
-    suspend fun export8kVp9Video(
+    /**
+     * 8K Export Processing (H.265 / HEVC):
+     * - Exports at original 8K resolution (7680x4320) or cropped dimensions without downscaling.
+     * - Strictly targets H.265 (video/hevc) in MP4 container (never switches to H.264/VP9/AV1).
+     * - Uses Software Decoding (never HW decoder) and Software-Based H.265 Encoding.
+     */
+    suspend fun export8kHevcVideo(
         context: Context,
         media: ImportedMediaInfo,
         cropRect: NormalizedCropRect,
@@ -273,13 +288,13 @@ object EightKVp9Pipeline {
         var outFile: File? = null
         try {
             check(media.is8kUhd) {
-                "8K Software VP9 export called on non-8K video."
+                "8K H.265 export called on non-8K video."
             }
 
-            val swVp9Encoders = resolveSoftwareVp9Encoders()
-            if (swVp9Encoders.isEmpty()) {
+            val swHevcEncoders = resolveSoftwareHevcEncoders()
+            if (swHevcEncoders.isEmpty()) {
                 return@withContext CropExportState.Error(
-                    "8K export error: No Software VP9 Encoder is available on this device (H.264/H.265 fallback is disabled for 8K)."
+                    "8K H.265 export error: No Software H.265 (HEVC) Encoder is available on this device (codec switching or downscaling is disabled for 8K)."
                 )
             }
 
@@ -290,16 +305,16 @@ object EightKVp9Pipeline {
             val isFullStart = trimStartMs <= 50L
             val isFullEnd = media.durationMs <= 0L || trimEndMs <= 0L || trimEndMs >= media.durationMs - 50L
 
-            outFile = CropExportsRepository(context).createVideoExportFile(VideoContainerFormat.WEBM.extension)
+            outFile = CropExportsRepository(context).createVideoExportFile(VideoContainerFormat.MP4.extension)
 
-            // If source is already VP9 and uncropped/untrimmed, do bit-exact lossless VP9 remux into WebM
-            if (media.sourceVideoMime.equals(MediaFormat.MIMETYPE_VIDEO_VP9, ignoreCase = true) &&
+            // If source is already H.265/HEVC and uncropped/untrimmed, do lossless HEVC MP4 remux
+            if (media.sourceVideoMime.equals(MediaFormat.MIMETYPE_VIDEO_HEVC, ignoreCase = true) &&
                 isFullCrop &&
                 isFullStart &&
                 isFullEnd
             ) {
-                onProgress(0.05f, "Exporting lossless 8K VP9 stream…")
-                val remuxed = tryLosslessVp9Remux(
+                onProgress(0.05f, "Exporting lossless 8K H.265 stream…")
+                val remuxed = tryLosslessHevcRemux(
                     context = context,
                     sourceUri = media.uri,
                     media = media,
@@ -316,19 +331,18 @@ object EightKVp9Pipeline {
             val outH = ((cropRect.heightFraction * media.displayHeight).roundToInt() and 1.inv())
                 .coerceIn(16, media.displayHeight)
 
-            // Decode directly from original source if accessible & SW decodable (avoids double-gen loss),
-            // otherwise from prepared VP9 workspace file.
             val decodeUri = resolveBest8kDecodeUri(context, media)
             val keepRawOrientation = isFullCrop && media.rotationDegrees != 0
             val encW = if (keepRawOrientation) media.rawWidth else outW
             val encH = if (keepRawOrientation) media.rawHeight else outH
 
-            onProgress(0.03f, "Initializing 8K Software VP9 Lossless Encoder (${encW}×${encH})…")
+            onProgress(0.03f, "Initializing 8K Software H.265 Encoder (${encW}×${encH})…")
 
-            runSoftwareVp9Pipeline(
+            runSoftwareTranscodePipeline(
                 context = context,
                 sourceUri = decodeUri,
                 media = media,
+                targetMime = MediaFormat.MIMETYPE_VIDEO_HEVC,
                 cropRect = cropRect,
                 targetWidth = encW,
                 targetHeight = encH,
@@ -340,11 +354,11 @@ object EightKVp9Pipeline {
                 onProgress = onProgress
             )
 
-            onProgress(0.98f, "Saving 8K VP9 video to gallery…")
+            onProgress(0.98f, "Saving 8K H.265 video to gallery…")
             val galleryUri = exportVideoToMediaStore(
                 context = context,
                 file = outFile,
-                mimeType = VideoContainerFormat.WEBM.mimeType
+                mimeType = VideoContainerFormat.MP4.mimeType
             )
 
             CropExportState.Success(
@@ -359,7 +373,7 @@ object EightKVp9Pipeline {
             if (t is InterruptedException || t is kotlinx.coroutines.CancellationException) {
                 CropExportState.Idle
             } else {
-                CropExportState.Error(t.message ?: "8K Software VP9 export failed.")
+                CropExportState.Error(t.message ?: "8K Software H.265 export failed.")
             }
         }
     }
@@ -377,17 +391,17 @@ object EightKVp9Pipeline {
         ) {
             return media.uri
         }
-        val wsFile = media.vp9WorkspacePath?.let { File(it) }?.takeIf { it.exists() && it.length() > 0L }
+        val wsFile = media.av1WorkspacePath?.let { File(it) }?.takeIf { it.exists() && it.length() > 0L }
         if (wsFile != null) {
             return Uri.fromFile(wsFile)
         }
         return media.uri
     }
 
-    private fun verifySoftwareVp9Decodable(
+    private fun verifySoftwareAv1Decodable(
         context: Context,
         uri: Uri,
-        swVp9Decoders: List<String>
+        swAv1Decoders: List<String>
     ) {
         val extractor = MediaExtractor()
         var decoder: MediaCodec? = null
@@ -397,29 +411,27 @@ object EightKVp9Pipeline {
             for (i in 0 until extractor.trackCount) {
                 val fmt = extractor.getTrackFormat(i)
                 val mime = fmt.getString(MediaFormat.KEY_MIME) ?: continue
-                if (mime.equals(MediaFormat.MIMETYPE_VIDEO_VP9, ignoreCase = true)) {
+                if (mime.equals(MediaFormat.MIMETYPE_VIDEO_AV1, ignoreCase = true)) {
                     trackFormat = fmt
                     break
                 }
             }
-            val fmt = trackFormat ?: error("VP9 video track not found in source file.")
+            val fmt = trackFormat ?: error("AV1 video track (video/av01) not found in source file.")
             val errors = mutableListOf<String>()
-            for (codecName in swVp9Decoders) {
+            for (codecName in swAv1Decoders) {
                 val ok = runCatching {
                     decoder = MediaCodec.createByCodecName(codecName)
                     val decFmt = MediaFormat(fmt)
                     decoder!!.configure(decFmt, null, null, 0)
                     decoder!!.start()
                 }
-                if (ok.isSuccess) {
-                    return
-                }
+                if (ok.isSuccess) return
                 errors += "$codecName: ${ok.exceptionOrNull()?.message ?: "configure failed"}"
                 runCatching { decoder?.stop() }
                 runCatching { decoder?.release() }
                 decoder = null
             }
-            error("8K VP9 Software Decoder could not initialize for 7680×4320 (${errors.joinToString("; ")})")
+            error("8K AV1 Software Decoder could not initialize for 7680×4320 (${errors.joinToString("; ")})")
         } finally {
             runCatching { decoder?.stop() }
             runCatching { decoder?.release() }
@@ -427,40 +439,60 @@ object EightKVp9Pipeline {
         }
     }
 
-    private data class ConfiguredSwVp9Encoder(
+    private data class ConfiguredSwVideoEncoder(
         val codec: MediaCodec,
         val codecName: String,
+        val targetMime: String,
         val colorFormat: Int,
         val is10Bit: Boolean,
         val isLosslessMode: Boolean
     )
 
-    private fun openConfiguredSoftwareVp9Encoder(
+    private fun openConfiguredSoftwareEncoder(
+        targetMime: String,
         width: Int,
         height: Int,
         media: ImportedMediaInfo,
         preferLossless: Boolean
-    ): ConfiguredSwVp9Encoder {
-        val encoders = resolveSoftwareVp9Encoders()
+    ): ConfiguredSwVideoEncoder {
+        val isAv1 = targetMime.equals(MediaFormat.MIMETYPE_VIDEO_AV1, ignoreCase = true)
+        val encoders = if (isAv1) resolveSoftwareAv1Encoders() else resolveSoftwareHevcEncoders()
+        val label = if (isAv1) "AV1" else "H.265 (HEVC)"
         check(encoders.isNotEmpty()) {
-            "No Software VP9 Encoder (e.g. c2.android.vp9.encoder) found on this device."
+            "No Software $label Encoder found on this device for 8K (${width}×${height})."
         }
 
         val fpsInt = (media.exactFps?.roundToInt() ?: media.fps).coerceAtLeast(1)
         val want10Bit = media.bitDepth >= 10
         val baseBitrate = (media.originalBitrateBps ?: 100_000_000L)
-            .coerceAtLeast(if (preferLossless) 120_000_000L else 60_000_000L)
+            .coerceAtLeast(if (preferLossless) 120_000_000L else 65_000_000L)
 
         val failureReasons = mutableListOf<String>()
 
         for (info in encoders) {
-            val caps = runCatching { info.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_VP9) }.getOrNull()
+            val caps = runCatching { info.getCapabilitiesForType(targetMime) }.getOrNull()
             val videoCaps = caps?.videoCapabilities
             val encCaps = caps?.encoderCapabilities
             val supportedColorFormats = caps?.colorFormats?.toSet().orEmpty()
 
+            val supportsProfile10 = if (isAv1) {
+                caps?.profileLevels?.any {
+                    it.profile == MediaCodecInfo.CodecProfileLevel.AV1ProfileMain10 ||
+                        it.profile == MediaCodecInfo.CodecProfileLevel.AV1ProfileMain10HDR10 ||
+                        it.profile == MediaCodecInfo.CodecProfileLevel.AV1ProfileMain10HDR10Plus
+                } == true
+            } else {
+                caps?.profileLevels?.any {
+                    it.profile == MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10 ||
+                        it.profile == MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10HDR10 ||
+                        it.profile == MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10HDR10Plus
+                } == true
+            }
+
             val bufferColorCandidates = buildList {
-                if (want10Bit && MediaCodecInfo.CodecCapabilities.COLOR_FormatYUVP010 in supportedColorFormats) {
+                if (want10Bit && supportsProfile10 &&
+                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUVP010 in supportedColorFormats
+                ) {
                     add(MediaCodecInfo.CodecCapabilities.COLOR_FormatYUVP010 to true)
                 }
                 if (MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible in supportedColorFormats) {
@@ -537,19 +569,27 @@ object EightKVp9Pipeline {
                 var codec: MediaCodec? = null
                 val res = runCatching {
                     codec = MediaCodec.createByCodecName(info.name)
-                    val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_VP9, width, height).apply {
+                    val format = MediaFormat.createVideoFormat(targetMime, width, height).apply {
                         setInteger(MediaFormat.KEY_COLOR_FORMAT, attempt.colorFormat)
                         setInteger(MediaFormat.KEY_BIT_RATE, safeBitrate)
                         setInteger(MediaFormat.KEY_FRAME_RATE, fpsInt)
                         setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
 
                         if (attempt.use10Bit) {
-                            val profile10 = if (media.colorTransfer == MediaFormat.COLOR_TRANSFER_ST2084 ||
-                                media.colorTransfer == MediaFormat.COLOR_TRANSFER_HLG
-                            ) {
-                                MediaCodecInfo.CodecProfileLevel.VP9Profile2HDR
+                            val profile10 = if (isAv1) {
+                                when (media.colorTransfer) {
+                                    MediaFormat.COLOR_TRANSFER_ST2084,
+                                    MediaFormat.COLOR_TRANSFER_HLG ->
+                                        MediaCodecInfo.CodecProfileLevel.AV1ProfileMain10HDR10
+                                    else -> MediaCodecInfo.CodecProfileLevel.AV1ProfileMain10
+                                }
                             } else {
-                                MediaCodecInfo.CodecProfileLevel.VP9Profile2
+                                when (media.colorTransfer) {
+                                    MediaFormat.COLOR_TRANSFER_ST2084,
+                                    MediaFormat.COLOR_TRANSFER_HLG ->
+                                        MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10HDR10
+                                    else -> MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10
+                                }
                             }
                             setInteger(MediaFormat.KEY_PROFILE, profile10)
                         }
@@ -571,9 +611,10 @@ object EightKVp9Pipeline {
                     codec!!.start()
                 }
                 if (res.isSuccess && codec != null) {
-                    return ConfiguredSwVp9Encoder(
+                    return ConfiguredSwVideoEncoder(
                         codec = codec!!,
                         codecName = info.name,
+                        targetMime = targetMime,
                         colorFormat = attempt.colorFormat,
                         is10Bit = attempt.use10Bit,
                         isLosslessMode = attempt.losslessAttempt
@@ -586,7 +627,7 @@ object EightKVp9Pipeline {
         }
 
         error(
-            "8K Software VP9 Encoder failed to configure at ${width}×${height} without downscaling: " +
+            "8K Software $label Encoder failed to configure at ${width}×${height} without downscaling: " +
                 failureReasons.distinct().take(3).joinToString(" | ")
         )
     }
@@ -625,10 +666,11 @@ object EightKVp9Pipeline {
         error("8K Software Decoder failed for $mime: ${errors.joinToString("; ")}")
     }
 
-    private suspend fun runSoftwareVp9Pipeline(
+    private suspend fun runSoftwareTranscodePipeline(
         context: Context,
         sourceUri: Uri,
         media: ImportedMediaInfo,
+        targetMime: String,
         cropRect: NormalizedCropRect,
         targetWidth: Int,
         targetHeight: Int,
@@ -670,7 +712,8 @@ object EightKVp9Pipeline {
             val inputMime = videoInputFormat.getString(MediaFormat.KEY_MIME)
                 ?: error("Missing video MIME type.")
 
-            val configuredEncoder = openConfiguredSoftwareVp9Encoder(
+            val configuredEncoder = openConfiguredSoftwareEncoder(
+                targetMime = targetMime,
                 width = targetWidth,
                 height = targetHeight,
                 media = media,
@@ -679,18 +722,16 @@ object EightKVp9Pipeline {
             encoder = configuredEncoder.codec
             decoder = openConfiguredSoftwareDecoder(videoInputFormat, inputMime)
 
-            muxer = MediaMuxer(outFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM)
+            muxer = MediaMuxer(outFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
             if (keepOriginalRawOrientation && media.rotationDegrees != 0) {
                 runCatching { muxer.setOrientationHint(media.rotationDegrees) }
             }
 
             val audioMime = audioInputFormat?.getString(MediaFormat.KEY_MIME)
-            val canPassthroughAudio = audioMime != null && (
-                audioMime.equals(MediaFormat.MIMETYPE_AUDIO_OPUS, ignoreCase = true) ||
-                    audioMime.equals(MediaFormat.MIMETYPE_AUDIO_VORBIS, ignoreCase = true)
-                )
+            val canPassthroughAudio = audioMime != null &&
+                audioMime.equals(MediaFormat.MIMETYPE_AUDIO_AAC, ignoreCase = true)
             val swAudioTranscodePlan = if (!canPassthroughAudio && audioInputFormat != null && audioMime != null) {
-                prepareAudioTranscodePlan(audioInputFormat, audioMime)
+                prepareAacAudioTranscodePlan(audioInputFormat, audioMime)
             } else {
                 null
             }
@@ -709,7 +750,6 @@ object EightKVp9Pipeline {
                 extractor.seekTo(trimStartUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
             }
 
-            // Compute crop origin in display space
             val dispW = media.displayWidth
             val dispH = media.displayHeight
             val cropDispX = if (keepOriginalRawOrientation) 0 else {
@@ -730,16 +770,17 @@ object EightKVp9Pipeline {
             var lastProgressMs = 0L
             var pastTrimCount = 0
 
-            val statusLabel = if (configuredEncoder.isLosslessMode) {
-                "8K SW VP9 Lossless (${configuredEncoder.codecName})…"
+            val codecLabel = if (targetMime.equals(MediaFormat.MIMETYPE_VIDEO_AV1, ignoreCase = true)) {
+                "8K SW AV1"
             } else {
-                "8K SW VP9 (${configuredEncoder.codecName})…"
+                "8K SW H.265"
             }
+            val statusLabel = "$codecLabel (${configuredEncoder.codecName})…"
             onProgress(0.06f, statusLabel)
 
             while (!encoderDone) {
                 if (!coroutineContext.isActive) {
-                    throw InterruptedException("8K VP9 operation cancelled.")
+                    throw InterruptedException("8K transcoding cancelled.")
                 }
 
                 // 1. Feed SW Decoder
@@ -770,7 +811,7 @@ object EightKVp9Pipeline {
                     }
                 }
 
-                // 2. Drain SW Decoder -> Crop YUV -> Feed SW VP9 Encoder
+                // 2. Drain SW Decoder -> Crop YUV -> Feed SW Encoder
                 if (!decoderDone) {
                     val outIdx = decoder.dequeueOutputBuffer(decInfo, CODEC_WAIT_US)
                     if (outIdx >= 0) {
@@ -803,7 +844,7 @@ object EightKVp9Pipeline {
                                         encoder.queueInputBuffer(encInIdx, 0, bufSize, rebasedPts, 0)
                                     } else {
                                         val dstBuf = encoder.getInputBuffer(encInIdx)
-                                            ?: error("SW VP9 encoder returned null input buffer.")
+                                            ?: error("SW encoder returned null input buffer.")
                                         val written = copyCroppedYuvImageToBuffer(
                                             src = srcImage,
                                             dst = dstBuf,
@@ -818,12 +859,11 @@ object EightKVp9Pipeline {
                                     }
                                 }
                             } else {
-                                // Raw ByteBuffer fallback if SW decoder doesn't expose getOutputImage
                                 val rawOutBuf = decoder.getOutputBuffer(outIdx)
                                     ?: error("8K Software Decoder produced neither Image nor ByteBuffer.")
                                 val rawDecFmt = decoder.outputFormat
                                 val dstBuf = encoder.getInputBuffer(encInIdx)
-                                    ?: error("SW VP9 encoder returned null input buffer.")
+                                    ?: error("SW encoder returned null input buffer.")
                                 val written = copyRawDecoderYuvBuffer(
                                     srcBuf = rawOutBuf,
                                     srcOffset = decInfo.offset,
@@ -858,14 +898,14 @@ object EightKVp9Pipeline {
                     }
                 }
 
-                // 3. Drain SW VP9 Encoder -> WebM Muxer
+                // 3. Drain SW Encoder -> MP4 Muxer
                 var draining = true
                 while (draining && !encoderDone) {
                     val encIdx = encoder.dequeueOutputBuffer(encInfo, if (decoderDone) CODEC_WAIT_US else 0L)
                     when {
                         encIdx == MediaCodec.INFO_TRY_AGAIN_LATER -> draining = false
                         encIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                            check(!muxerStarted) { "Encoder format changed after WebM muxer started." }
+                            check(!muxerStarted) { "Encoder format changed after MP4 muxer started." }
                             muxerVideoTrack = muxer.addTrack(encoder.outputFormat)
                             if (canPassthroughAudio && audioInputFormat != null) {
                                 muxerAudioTrack = muxer.addTrack(audioInputFormat)
@@ -913,7 +953,7 @@ object EightKVp9Pipeline {
                 }
             }
 
-            // 4. Mux audio track (Opus/Vorbis passthrough OR SW AAC->Opus transcode)
+            // 4. Mux audio track (AAC passthrough OR SW transcode to AAC)
             if (muxerStarted && muxerAudioTrack >= 0 && audioTrackIndex >= 0 && audioInputFormat != null) {
                 onProgress(0.95f, "Muxing audio track…")
                 extractor.unselectTrack(videoTrackIndex)
@@ -931,7 +971,7 @@ object EightKVp9Pipeline {
                         maxVideoPtsUs = lastVideoPtsUs
                     )
                 } else if (swAudioTranscodePlan != null) {
-                    transcodeAudioToWebm(
+                    transcodeAudioToMp4(
                         extractor = extractor,
                         plan = swAudioTranscodePlan,
                         muxer = muxer,
@@ -963,10 +1003,10 @@ object EightKVp9Pipeline {
             val idx = codec.dequeueInputBuffer(CODEC_WAIT_US)
             if (idx >= 0) return idx
         }
-        throw InterruptedException("8K VP9 operation cancelled.")
+        throw InterruptedException("8K operation cancelled.")
     }
 
-    private suspend fun tryLosslessVp9Remux(
+    private suspend fun tryLosslessHevcRemux(
         context: Context,
         sourceUri: Uri,
         media: ImportedMediaInfo,
@@ -985,7 +1025,7 @@ object EightKVp9Pipeline {
             for (i in 0 until extractor.trackCount) {
                 val f = extractor.getTrackFormat(i)
                 val m = f.getString(MediaFormat.KEY_MIME) ?: continue
-                if (videoIdx < 0 && m.equals(MediaFormat.MIMETYPE_VIDEO_VP9, ignoreCase = true)) {
+                if (videoIdx < 0 && m.equals(MediaFormat.MIMETYPE_VIDEO_HEVC, ignoreCase = true)) {
                     videoIdx = i
                     videoFmt = f
                 } else if (audioIdx < 0 && m.startsWith("audio/")) {
@@ -995,19 +1035,17 @@ object EightKVp9Pipeline {
             }
             if (videoIdx < 0 || videoFmt == null) return null
 
-            muxer = MediaMuxer(outFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM)
+            muxer = MediaMuxer(outFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
             if (media.rotationDegrees != 0) {
                 runCatching { muxer.setOrientationHint(media.rotationDegrees) }
             }
             val muxerVideoTrack = muxer.addTrack(videoFmt)
 
             val audioMime = audioFmt?.getString(MediaFormat.KEY_MIME)
-            val canPassthroughAudio = audioMime != null && (
-                audioMime.equals(MediaFormat.MIMETYPE_AUDIO_OPUS, ignoreCase = true) ||
-                    audioMime.equals(MediaFormat.MIMETYPE_AUDIO_VORBIS, ignoreCase = true)
-                )
+            val canPassthroughAudio = audioMime != null &&
+                audioMime.equals(MediaFormat.MIMETYPE_AUDIO_AAC, ignoreCase = true)
             val audioTranscodePlan = if (!canPassthroughAudio && audioFmt != null && audioMime != null) {
-                prepareAudioTranscodePlan(audioFmt, audioMime)
+                prepareAacAudioTranscodePlan(audioFmt, audioMime)
             } else {
                 null
             }
@@ -1047,7 +1085,7 @@ object EightKVp9Pipeline {
                 if (nowMs - lastProgressMs >= PROGRESS_UPDATE_INTERVAL_MS) {
                     lastProgressMs = nowMs
                     val ratio = (pts.toFloat() / durationUs.toFloat()).coerceIn(0f, 1f)
-                    onProgress(0.08f + ratio * 0.80f, "Exporting lossless 8K VP9 stream…")
+                    onProgress(0.08f + ratio * 0.80f, "Exporting lossless 8K H.265 stream…")
                 }
                 if (!extractor.advance()) break
             }
@@ -1060,15 +1098,15 @@ object EightKVp9Pipeline {
                 if (canPassthroughAudio) {
                     copyAudioTrackPassthrough(extractor, audioFmt, muxer, muxerAudioTrack, 0L, Long.MAX_VALUE, lastVideoPts)
                 } else if (audioTranscodePlan != null) {
-                    transcodeAudioToWebm(extractor, audioTranscodePlan, muxer, muxerAudioTrack, 0L, Long.MAX_VALUE, lastVideoPts)
+                    transcodeAudioToMp4(extractor, audioTranscodePlan, muxer, muxerAudioTrack, 0L, Long.MAX_VALUE, lastVideoPts)
                 }
             }
 
             muxer.stop()
             muxerStarted = false
 
-            onProgress(0.98f, "Saving 8K VP9 video to gallery…")
-            val galleryUri = exportVideoToMediaStore(context, outFile, VideoContainerFormat.WEBM.mimeType)
+            onProgress(0.98f, "Saving 8K H.265 video to gallery…")
+            val galleryUri = exportVideoToMediaStore(context, outFile, VideoContainerFormat.MP4.mimeType)
             CropExportState.Success(
                 outputPath = outFile.absolutePath,
                 fileName = outFile.name,
@@ -1090,16 +1128,15 @@ object EightKVp9Pipeline {
         val sourceFormat: MediaFormat,
         val decoderName: String,
         val encoderName: String,
-        val encoderMime: String,
         val muxerAudioFormat: MediaFormat
     )
 
-    private fun prepareAudioTranscodePlan(
+    private fun prepareAacAudioTranscodePlan(
         sourceFormat: MediaFormat,
         sourceMime: String
     ): AudioTranscodePlan? {
         val decName = resolveSoftwareAudioDecoders(sourceMime).firstOrNull() ?: return null
-        val (encName, encMime) = resolveSoftwareOpusEncoders().firstOrNull() ?: return null
+        val encName = resolveSoftwareAacEncoders().firstOrNull() ?: return null
 
         val sampleRate = if (sourceFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
             sourceFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
@@ -1112,12 +1149,12 @@ object EightKVp9Pipeline {
             2
         }
 
-        // Probe muxer format from encoder
         var probeEnc: MediaCodec? = null
         return try {
             probeEnc = MediaCodec.createByCodecName(encName)
-            val encFmt = MediaFormat.createAudioFormat(encMime, sampleRate, channels).apply {
-                setInteger(MediaFormat.KEY_BIT_RATE, if (channels == 1) 96_000 else 160_000)
+            val encFmt = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channels).apply {
+                setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+                setInteger(MediaFormat.KEY_BIT_RATE, if (channels == 1) 128_000 else 192_000)
             }
             probeEnc.configure(encFmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             probeEnc.start()
@@ -1125,7 +1162,6 @@ object EightKVp9Pipeline {
                 sourceFormat = sourceFormat,
                 decoderName = decName,
                 encoderName = encName,
-                encoderMime = encMime,
                 muxerAudioFormat = encFmt
             )
         } catch (_: Throwable) {
@@ -1176,7 +1212,7 @@ object EightKVp9Pipeline {
         }
     }
 
-    private suspend fun transcodeAudioToWebm(
+    private suspend fun transcodeAudioToMp4(
         extractor: MediaExtractor,
         plan: AudioTranscodePlan,
         muxer: MediaMuxer,
@@ -1293,7 +1329,7 @@ object EightKVp9Pipeline {
                 }
             }
         } catch (_: Throwable) {
-            // Audio transcode failure shouldn't crash video-only if opus encoder rejects runtime input
+            // Audio transcode failure shouldn't crash video-only export
         } finally {
             runCatching { decoder?.stop() }
             runCatching { decoder?.release() }
@@ -1326,65 +1362,19 @@ object EightKVp9Pipeline {
         val isDstP010 = dst.format == ImageFormat.YCBCR_P010
 
         if (rotateDeg == 0 && !isSrcP010 && !isDstP010) {
-            // Fast 8-bit 0-degree direct row copy (no RGB conversion)
-            copyPlane8Bit(
-                srcPlane = srcPlanes[0],
-                dstPlane = dstPlanes[0],
-                srcStartX = srcRect.left + cropDispX,
-                srcStartY = srcRect.top + cropDispY,
-                width = outW,
-                height = outH
-            )
-            copyPlane8Bit(
-                srcPlane = srcPlanes[1],
-                dstPlane = dstPlanes[1],
-                srcStartX = (srcRect.left + cropDispX) / 2,
-                srcStartY = (srcRect.top + cropDispY) / 2,
-                width = outW / 2,
-                height = outH / 2
-            )
-            copyPlane8Bit(
-                srcPlane = srcPlanes[2],
-                dstPlane = dstPlanes[2],
-                srcStartX = (srcRect.left + cropDispX) / 2,
-                srcStartY = (srcRect.top + cropDispY) / 2,
-                width = outW / 2,
-                height = outH / 2
-            )
+            copyPlane8Bit(srcPlanes[0], dstPlanes[0], srcRect.left + cropDispX, srcRect.top + cropDispY, outW, outH)
+            copyPlane8Bit(srcPlanes[1], dstPlanes[1], (srcRect.left + cropDispX) / 2, (srcRect.top + cropDispY) / 2, outW / 2, outH / 2)
+            copyPlane8Bit(srcPlanes[2], dstPlanes[2], (srcRect.left + cropDispX) / 2, (srcRect.top + cropDispY) / 2, outW / 2, outH / 2)
             return
         }
 
         if (rotateDeg == 0 && isSrcP010 && isDstP010) {
-            // Fast 10-bit P010 direct copy (preserves full 10-bit depth with zero conversion)
-            copyPlane16Bit(
-                srcPlane = srcPlanes[0],
-                dstPlane = dstPlanes[0],
-                srcStartX = srcRect.left + cropDispX,
-                srcStartY = srcRect.top + cropDispY,
-                width = outW,
-                height = outH
-            )
-            // P010 planes[1] and planes[2] point to interleaved UV with pixelStride=4 (2 shorts per chroma sample)
-            copyPlane16Bit(
-                srcPlane = srcPlanes[1],
-                dstPlane = dstPlanes[1],
-                srcStartX = (srcRect.left + cropDispX) / 2,
-                srcStartY = (srcRect.top + cropDispY) / 2,
-                width = outW / 2,
-                height = outH / 2
-            )
-            copyPlane16Bit(
-                srcPlane = srcPlanes[2],
-                dstPlane = dstPlanes[2],
-                srcStartX = (srcRect.left + cropDispX) / 2,
-                srcStartY = (srcRect.top + cropDispY) / 2,
-                width = outW / 2,
-                height = outH / 2
-            )
+            copyPlane16Bit(srcPlanes[0], dstPlanes[0], srcRect.left + cropDispX, srcRect.top + cropDispY, outW, outH)
+            copyPlane16Bit(srcPlanes[1], dstPlanes[1], (srcRect.left + cropDispX) / 2, (srcRect.top + cropDispY) / 2, outW / 2, outH / 2)
+            copyPlane16Bit(srcPlanes[2], dstPlanes[2], (srcRect.left + cropDispX) / 2, (srcRect.top + cropDispY) / 2, outW / 2, outH / 2)
             return
         }
 
-        // General path handling 90/180/270 rotation or P010<->8-bit conversion when encoder lacks P010
         val srcYBuf = srcPlanes[0].buffer
         val srcUBuf = srcPlanes[1].buffer
         val srcVBuf = srcPlanes[2].buffer
@@ -1580,7 +1570,6 @@ object EightKVp9Pipeline {
         val isSemiPlanar = dstColorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar
 
         if (rotateDeg == 0 && !isSrcP010) {
-            // Copy Y tightly
             val yRowScratch = ByteArray(outW)
             for (y in 0 until outH) {
                 val off = (srcRect.top + cropDispY + y) * yPlane.rowStride + (srcRect.left + cropDispX) * yPlane.pixelStride
@@ -1635,7 +1624,6 @@ object EightKVp9Pipeline {
             return ySize + cSize * 2
         }
 
-        // General path
         val srcRawW = srcRect.width()
         val srcRawH = srcRect.height()
         fun map(dx: Int, dy: Int): Pair<Int, Int> = when (rotateDeg) {
@@ -1646,11 +1634,7 @@ object EightKVp9Pipeline {
         }
         fun readSample8(plane: Image.Plane, x: Int, y: Int): Byte {
             val idx = y * plane.rowStride + x * plane.pixelStride
-            return if (isSrcP010) {
-                plane.buffer.get(idx + 1)
-            } else {
-                plane.buffer.get(idx)
-            }
+            return if (isSrcP010) plane.buffer.get(idx + 1) else plane.buffer.get(idx)
         }
         for (y in 0 until outH) {
             for (x in 0 until outW) {

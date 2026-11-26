@@ -9,18 +9,17 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
 import android.view.Surface
-import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Dedicated VP9 Software-Decoding Player for 8K Editing Playback.
+ * Dedicated AV1 Software-Decoding Player for 8K Editing Playback.
  *
- * Strictly uses Software VP9 Decoders (!isHardwareAccelerated) and NEVER uses MediaPlayer
+ * Strictly uses Software AV1 Decoders (!isHardwareAccelerated, video/av01) and NEVER uses MediaPlayer
  * or device 8K hardware decoders.
  */
-class EightKVp9SoftwarePlayer(
+class EightKAv1SoftwarePlayer(
     private val context: Context,
     private val videoUri: Uri,
     private val audioFallbackUri: Uri?,
@@ -46,7 +45,7 @@ class EightKVp9SoftwarePlayer(
     private var audioThread: Thread? = null
 
     fun start() {
-        workerThread = Thread({ runVideoLoop() }, "8K-SW-VP9-Player").apply { start() }
+        workerThread = Thread({ runVideoLoop() }, "8K-SW-AV1-Player").apply { start() }
     }
 
     fun setPlaying(play: Boolean) {
@@ -123,19 +122,19 @@ class EightKVp9SoftwarePlayer(
             }
 
             val videoMime = videoFormat.getString(MediaFormat.KEY_MIME).orEmpty()
-            if (!videoMime.equals(MediaFormat.MIMETYPE_VIDEO_VP9, ignoreCase = true)) {
-                reportError("8K playback error: Expected VP9 track for Software VP9 decoding, found $videoMime.")
+            if (!videoMime.equals(MediaFormat.MIMETYPE_VIDEO_AV1, ignoreCase = true)) {
+                reportError("8K playback error: Expected AV1 track (video/av01) for Software AV1 decoding, found $videoMime.")
                 return
             }
 
-            val swVp9Decoders = EightKVp9Pipeline.resolveSoftwareVp9Decoders()
-            if (swVp9Decoders.isEmpty()) {
-                reportError("8K playback error: No Software VP9 Decoder available (8K hardware decoding is disabled).")
+            val swAv1Decoders = EightKAv1HevcPipeline.resolveSoftwareAv1Decoders()
+            if (swAv1Decoders.isEmpty()) {
+                reportError("8K playback error: No Software AV1 Decoder available (8K hardware decoding is disabled).")
                 return
             }
 
             val errors = mutableListOf<String>()
-            for (codecName in swVp9Decoders) {
+            for (codecName in swAv1Decoders) {
                 var candidate: MediaCodec? = null
                 val ok = runCatching {
                     candidate = MediaCodec.createByCodecName(codecName)
@@ -153,7 +152,7 @@ class EightKVp9SoftwarePlayer(
             }
 
             if (decoder == null) {
-                reportError("8K VP9 Software Decoder failed to initialize (${errors.joinToString("; ")})")
+                reportError("8K AV1 Software Decoder failed to initialize (${errors.joinToString("; ")})")
                 return
             }
 
@@ -200,7 +199,7 @@ class EightKVp9SoftwarePlayer(
                     continue
                 }
 
-                // Feed VP9 input packets to SW VP9 Decoder
+                // Feed AV1 input packets to SW AV1 Decoder
                 if (!inputDone) {
                     val inIdx = decoder.dequeueInputBuffer(4_000L)
                     if (inIdx >= 0) {
@@ -228,11 +227,9 @@ class EightKVp9SoftwarePlayer(
                     if (isCodecConfig || info.size <= 0) {
                         decoder.releaseOutputBuffer(outIdx, false)
                     } else if (seekTargetUs >= 0L && ptsUs + 15_000L < seekTargetUs && !isEos) {
-                        // Fast-forward preroll after sync seek without flashing stale frames
                         decoder.releaseOutputBuffer(outIdx, false)
                     } else {
                         seekTargetUs = -1L
-                        val tStartUs = trimStartMs.get() * 1_000L
                         val tEndMs = trimEndMs.get()
                         val tEndUs = if (tEndMs > trimStartMs.get()) tEndMs * 1_000L else Long.MAX_VALUE
 
@@ -290,7 +287,7 @@ class EightKVp9SoftwarePlayer(
             }
         } catch (t: Throwable) {
             if (!released.get()) {
-                reportError("8K VP9 Software Playback failed: ${t.message ?: "unknown error"}")
+                reportError("8K AV1 Software Playback failed: ${t.message ?: "unknown error"}")
             }
         } finally {
             releaseAudioTrack()
@@ -320,7 +317,7 @@ class EightKVp9SoftwarePlayer(
                 }
                 if (audioTrackIdx < 0 || audioFmt == null) return@Thread
                 val mime = audioFmt.getString(MediaFormat.KEY_MIME) ?: return@Thread
-                val swAudioDecName = EightKVp9Pipeline.resolveSoftwareAudioDecoders(mime).firstOrNull()
+                val swAudioDecName = EightKAv1HevcPipeline.resolveSoftwareAudioDecoders(mime).firstOrNull()
                     ?: return@Thread
 
                 audioDecoder = MediaCodec.createByCodecName(swAudioDecName).apply {
@@ -433,7 +430,7 @@ class EightKVp9SoftwarePlayer(
                     }
                 }
             } catch (_: Throwable) {
-                // Audio decode error should not abort SW VP9 video decoding
+                // Audio decode error should not abort SW AV1 video decoding
             } finally {
                 releaseAudioTrack()
                 runCatching { audioDecoder?.stop() }

@@ -60,7 +60,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.framescope.crop.CropMediaType
-import com.example.framescope.crop.EightKVp9SoftwarePlayer
+import com.example.framescope.crop.EightKAv1SoftwarePlayer
 import com.example.framescope.crop.ImportedMediaInfo
 import com.example.framescope.crop.NormalizedCropRect
 import com.example.framescope.ui.theme.FrameScopeColors
@@ -709,7 +709,7 @@ private fun CropVideoTexturePreview(
     onPlaybackErrorMessage: ((String) -> Unit)? = null
 ) {
     if (media.is8kUhd) {
-        EightKVp9SoftwareVideoPreview(
+        EightKAv1SoftwareVideoPreview(
             media = media,
             isPlaying = isPlaying,
             isMuted = isMuted,
@@ -845,7 +845,7 @@ private fun CropVideoTexturePreview(
 }
 
 @Composable
-private fun EightKVp9SoftwareVideoPreview(
+private fun EightKAv1SoftwareVideoPreview(
     media: ImportedMediaInfo,
     isPlaying: Boolean,
     isMuted: Boolean,
@@ -857,11 +857,11 @@ private fun EightKVp9SoftwareVideoPreview(
     onPlaybackError: (String) -> Unit
 ) {
     val context = LocalContext.current
-    val playbackUri = remember(media.uri, media.vp9WorkspacePath) {
-        val ws = media.vp9WorkspacePath?.let { File(it) }?.takeIf { it.exists() && it.length() > 0L }
+    val playbackUri = remember(media.uri, media.av1WorkspacePath) {
+        val ws = media.av1WorkspacePath?.let { File(it) }?.takeIf { it.exists() && it.length() > 0L }
         if (ws != null) android.net.Uri.fromFile(ws) else media.uri
     }
-    var swPlayer by remember(playbackUri) { mutableStateOf<EightKVp9SoftwarePlayer?>(null) }
+    var swPlayer by remember(playbackUri) { mutableStateOf<EightKAv1SoftwarePlayer?>(null) }
 
     DisposableEffect(playbackUri) {
         onDispose {
@@ -902,7 +902,7 @@ private fun EightKVp9SoftwareVideoPreview(
                         height: Int
                     ) {
                         val surface = Surface(surfaceTexture)
-                        val player = EightKVp9SoftwarePlayer(
+                        val player = EightKAv1SoftwarePlayer(
                             context = context.applicationContext,
                             videoUri = playbackUri,
                             audioFallbackUri = if (playbackUri != media.uri) media.uri else null,

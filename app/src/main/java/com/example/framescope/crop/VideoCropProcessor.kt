@@ -73,7 +73,7 @@ object VideoCropProcessor {
         onProgress: (Float, String) -> Unit
     ): CropExportState = withContext(Dispatchers.IO) {
         if (media.is8kUhd) {
-            return@withContext EightKVp9Pipeline.export8kVp9Video(
+            return@withContext EightKAv1HevcPipeline.export8kHevcVideo(
                 context = context,
                 media = media,
                 cropRect = cropRect,

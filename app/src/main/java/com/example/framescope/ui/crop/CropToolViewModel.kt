@@ -22,7 +22,7 @@ import com.example.framescope.crop.CropMediaInspector
 import com.example.framescope.crop.CropMediaType
 import com.example.framescope.crop.CropProjectRecord
 import com.example.framescope.crop.CropProjectsRepository
-import com.example.framescope.crop.EightKVp9Pipeline
+import com.example.framescope.crop.EightKAv1HevcPipeline
 import com.example.framescope.crop.ImageCropProcessor
 import com.example.framescope.crop.ImageExportFormatOption
 import com.example.framescope.crop.ImportedMediaInfo
@@ -438,7 +438,7 @@ class CropToolViewModel(
                 }
 
                 val info = if (baseInfo.is8kUhd) {
-                    val wsResult = EightKVp9Pipeline.prepare8kVp9Workspace(
+                    val wsResult = EightKAv1HevcPipeline.prepare8kAv1Workspace(
                         context = appContext,
                         projectId = projectId,
                         media = baseInfo
@@ -449,12 +449,12 @@ class CropToolViewModel(
                             it.copy(
                                 isLoadingMedia = false,
                                 message = wsResult.exceptionOrNull()?.message
-                                    ?: "8K Software VP9 import processing failed."
+                                    ?: "8K Software AV1 import processing failed."
                             )
                         }
                         return@onSuccess
                     }
-                    baseInfo.copy(vp9WorkspacePath = wsResult.getOrNull())
+                    baseInfo.copy(av1WorkspacePath = wsResult.getOrNull())
                 } else {
                     baseInfo
                 }
@@ -627,23 +627,23 @@ class CropToolViewModel(
             }.onSuccess { inspected ->
                 val baseInfo = inspected.copy(uri = uriToLoad)
                 val info = if (baseInfo.is8kUhd) {
-                    val wsResult = EightKVp9Pipeline.prepare8kVp9Workspace(
+                    val wsResult = EightKAv1HevcPipeline.prepare8kAv1Workspace(
                         context = appContext,
                         projectId = project.id,
                         media = baseInfo,
-                        existingWorkspacePath = project.vp9WorkspacePath
+                        existingWorkspacePath = project.av1WorkspacePath
                     )
                     if (wsResult.isFailure) {
                         _uiState.update {
                             it.copy(
                                 isLoadingMedia = false,
                                 message = wsResult.exceptionOrNull()?.message
-                                    ?: "8K Software VP9 playback preparation failed."
+                                    ?: "8K Software AV1 playback preparation failed."
                             )
                         }
                         return@onSuccess
                     }
-                    baseInfo.copy(vp9WorkspacePath = wsResult.getOrNull())
+                    baseInfo.copy(av1WorkspacePath = wsResult.getOrNull())
                 } else {
                     baseInfo
                 }
@@ -1108,8 +1108,8 @@ class CropToolViewModel(
             if (result is CropExportState.Success) {
                 val now = System.currentTimeMillis()
                 val currentSnapshotState = _uiState.value
-                val resolvedFormatLabel = if (media.is8kUhd && result.fileName.endsWith(".webm", ignoreCase = true)) {
-                    "VP9"
+                val resolvedFormatLabel = if (media.is8kUhd) {
+                    "H.265"
                 } else {
                     formatLabel
                 }
@@ -1318,8 +1318,8 @@ class CropToolViewModel(
                     } else {
                         0L
                     }
-                    val resolvedFormatLabel = if (inspected.is8kUhd && result.fileName.endsWith(".webm", ignoreCase = true)) {
-                        "VP9"
+                    val resolvedFormatLabel = if (inspected.is8kUhd) {
+                        "H.265"
                     } else {
                         formatLabel
                     }
@@ -1465,7 +1465,7 @@ class CropToolViewModel(
             exportedDurationMs = existing?.exportedDurationMs ?: 0L,
             updatedAtMs = System.currentTimeMillis(),
             exportedAtMs = existing?.exportedAtMs,
-            vp9WorkspacePath = media.vp9WorkspacePath
+            av1WorkspacePath = media.av1WorkspacePath
         )
     }
 

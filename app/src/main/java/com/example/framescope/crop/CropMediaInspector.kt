@@ -205,7 +205,7 @@ object CropMediaInspector {
                     if (format.containsKey(MediaFormat.KEY_COLOR_TRANSFER)) {
                         colorTransfer = runCatching { format.getInteger(MediaFormat.KEY_COLOR_TRANSFER) }.getOrNull()
                     }
-                    bitDepth = EightKVp9Pipeline.detectBitDepth(videoMime, videoProfile, colorTransfer, format)
+                    bitDepth = EightKAv1HevcPipeline.detectBitDepth(videoMime, videoProfile, colorTransfer, format)
                     if (format.containsKey(MediaFormat.KEY_BIT_RATE)) {
                         val trackBitrate = format.getInteger(MediaFormat.KEY_BIT_RATE).toLong()
                         if (trackBitrate > 0L) {
@@ -253,20 +253,20 @@ object CropMediaInspector {
         check(videoMime != null && rawW > 0 && rawH > 0) {
             "No decodable video track found or unsupported video format."
         }
-        val is8kUhd = EightKVp9Pipeline.is8kResolution(rawW, rawH)
+        val is8kUhd = EightKAv1HevcPipeline.is8kResolution(rawW, rawH)
         if (is8kUhd) {
-            val swDecoders = EightKVp9Pipeline.resolveSoftwareDecoders(videoMime!!)
+            val swDecoders = EightKAv1HevcPipeline.resolveSoftwareDecoders(videoMime!!)
             check(swDecoders.isNotEmpty()) {
                 "8K (7680×4320) requires a compatible Software Decoder, but none is available on this device for $videoMime."
             }
-            val swVp9Decoders = EightKVp9Pipeline.resolveSoftwareVp9Decoders()
-            check(swVp9Decoders.isNotEmpty()) {
-                "8K editing playback requires a VP9 Software Decoder, but none is available on this device."
+            val swAv1Decoders = EightKAv1HevcPipeline.resolveSoftwareAv1Decoders()
+            check(swAv1Decoders.isNotEmpty()) {
+                "8K editing playback requires an AV1 Software Decoder (video/av01), but none is available on this device."
             }
-            if (!videoMime.equals(MediaFormat.MIMETYPE_VIDEO_VP9, ignoreCase = true)) {
-                val swVp9Encoders = EightKVp9Pipeline.resolveSoftwareVp9Encoders()
-                check(swVp9Encoders.isNotEmpty()) {
-                    "8K Software VP9 transcoding requires a VP9 Software Encoder, but none is available on this device."
+            if (!videoMime.equals(MediaFormat.MIMETYPE_VIDEO_AV1, ignoreCase = true)) {
+                val swAv1Encoders = EightKAv1HevcPipeline.resolveSoftwareAv1Encoders()
+                check(swAv1Encoders.isNotEmpty()) {
+                    "8K import conversion to AV1 requires a Software AV1 Encoder (video/av01), but none is available on this device."
                 }
             }
         } else {
@@ -420,18 +420,19 @@ object CropMediaInspector {
         is8kUhd: Boolean = false
     ): CodecPipelineSupport {
         if (is8kUhd) {
-            val swDecName = if (!sourceVideoMime.isNullOrBlank()) {
-                EightKVp9Pipeline.resolveSoftwareDecoders(sourceVideoMime).firstOrNull()?.first
-            } else {
-                EightKVp9Pipeline.resolveSoftwareVp9Decoders().firstOrNull()
-            }
-            val swVp9EncName = EightKVp9Pipeline.resolveSoftwareVp9Encoders().firstOrNull()?.name
+            val swDecName = EightKAv1HevcPipeline.resolveSoftwareAv1Decoders().firstOrNull()
+                ?: if (!sourceVideoMime.isNullOrBlank()) {
+                    EightKAv1HevcPipeline.resolveSoftwareDecoders(sourceVideoMime).firstOrNull()?.first
+                } else {
+                    null
+                }
+            val swHevcEncName = EightKAv1HevcPipeline.resolveSoftwareHevcEncoders().firstOrNull()?.name
             return CodecPipelineSupport(
                 isHardwareDecoder = false,
                 isHardwareEncoder = false,
                 decoderName = swDecName,
-                encoderName = swVp9EncName,
-                statusText = "✓ 8K Software Decoder & Software VP9 Encoder"
+                encoderName = swHevcEncName,
+                statusText = "✓ 8K Software AV1 Playback & Software H.265 Export"
             )
         }
         val codecInfos = cachedCodecInfos

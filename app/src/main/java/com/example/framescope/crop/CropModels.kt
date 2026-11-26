@@ -125,11 +125,11 @@ data class ImportedMediaInfo(
     val exactFps: Float? = null,
     val videoProfile: Int? = null,
     val bitDepth: Int = 8,
-    val vp9WorkspacePath: String? = null
+    val av1WorkspacePath: String? = null
 ) {
     val is8kUhd: Boolean
         get() = mediaType == CropMediaType.VIDEO &&
-            EightKVp9Pipeline.is8kResolution(rawWidth, rawHeight)
+            EightKAv1HevcPipeline.is8kResolution(rawWidth, rawHeight)
 }
 
 data class CropExportedItem(
@@ -190,7 +190,7 @@ data class CropProjectRecord(
     val exportedDurationMs: Long = 0L,
     val updatedAtMs: Long = 0L,
     val exportedAtMs: Long? = null,
-    val vp9WorkspacePath: String? = null
+    val av1WorkspacePath: String? = null
 ) {
     val mediaType: CropMediaType
         get() = runCatching { CropMediaType.valueOf(mediaTypeName) }.getOrDefault(CropMediaType.VIDEO)
