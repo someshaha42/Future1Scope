@@ -37,7 +37,7 @@ object ImageCropProcessor {
         runCatching {
             val source = ImageDecoder.createSource(context.contentResolver, media.uri)
             ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
-                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                decoder.allocator = ImageDecoder.ALLOCATOR_DEFAULT
                 decoder.isMutableRequired = false
                 val w = info.size.width
                 val h = info.size.height

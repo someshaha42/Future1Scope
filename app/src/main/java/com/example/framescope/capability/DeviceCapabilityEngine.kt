@@ -185,13 +185,13 @@ object DeviceCapabilityEngine {
             )
             origBps in range.first.toLong()..range.second.toLong() -> OptionSupportInfo(
                 isSupported = true,
-                detailText = String.format(Locale.US, "%.1f Mbps", origBps / 1_000_000.0)
+                detailText = String.format(Locale.getDefault(), "%.1f Mbps", origBps / 1_000_000.0)
             )
             else -> {
                 val clampedMbps = origBps.coerceIn(range.first.toLong(), range.second.toLong()) / 1_000_000.0
                 OptionSupportInfo(
                     isSupported = true,
-                    detailText = String.format(Locale.US, "%.1f Mbps (Codec Clamped)", clampedMbps)
+                    detailText = String.format(Locale.getDefault(), "%.1f Mbps (Codec Clamped)", clampedMbps)
                 )
             }
         }

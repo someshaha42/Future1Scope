@@ -1,6 +1,7 @@
 package com.example.framescope.ui
 
 import android.content.Intent
+import android.text.format.DateFormat
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -339,10 +340,12 @@ private fun RecordedVideoItemCard(
 }
 
 private fun buildMetadataSummary(video: RecordedVideo): String {
+    val locale = Locale.getDefault()
     val seconds = (video.durationMs / 1000L).coerceAtLeast(0L)
-    val duration = String.format("%02d:%02d", seconds / 60, seconds % 60)
+    val duration = String.format(locale, "%02d:%02d", seconds / 60, seconds % 60)
     val res = if (video.width > 0 && video.height > 0) "${video.width}×${video.height}" else "MP4"
-    val sizeMb = String.format(Locale.US, "%.1f MB", video.sizeBytes / (1024.0 * 1024.0))
-    val date = SimpleDateFormat("MMM d, HH:mm", Locale.US).format(Date(video.createdAtMs))
+    val sizeMb = String.format(locale, "%.1f MB", video.sizeBytes / (1024.0 * 1024.0))
+    val pattern = DateFormat.getBestDateTimePattern(locale, "MMMdHm")
+    val date = SimpleDateFormat(pattern, locale).format(Date(video.createdAtMs))
     return "$duration • $res • $sizeMb • $date"
 }

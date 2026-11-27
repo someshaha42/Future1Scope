@@ -231,7 +231,7 @@ fun CropWorkspaceCanvas(
 
         val workspaceBorderColor = when {
             isPreviewMode -> FrameScopeColors.SelectionBlue
-            isZoomEnabled -> Color(0xFF38BDF8)
+            isZoomEnabled -> FrameScopeColors.SelectionBlue
             else -> FrameScopeColors.BorderSubtle
         }
 
@@ -524,6 +524,8 @@ fun CropWorkspaceCanvas(
                         bottom = editMediaTop + cropRect.bottom * editMediaH
                     )
 
+                    val selectionBlueColor = FrameScopeColors.SelectionBlue
+
                     Canvas(modifier = Modifier.fillMaxSize()) {
                         val scrimColor = Color.Black.copy(alpha = 0.58f)
                         val cLeft = cropCanvasRect.left.coerceIn(0f, size.width)
@@ -567,7 +569,7 @@ fun CropWorkspaceCanvas(
                                 )
                             }
 
-                            val borderColor = FrameScopeColors.SelectionBlue.copy(alpha = overlayAlpha)
+                            val borderColor = selectionBlueColor.copy(alpha = overlayAlpha)
                             drawRect(
                                 color = borderColor,
                                 topLeft = Offset(cLeft, cTop),
@@ -578,7 +580,7 @@ fun CropWorkspaceCanvas(
                             // 4 Corner Circle Handles matching reference
                             val cornerRadius = 7.dp.toPx() * invZoom
                             val handleFill = Color.White.copy(alpha = overlayAlpha)
-                            val handleStroke = FrameScopeColors.SelectionBlue.copy(alpha = 0.85f * overlayAlpha)
+                            val handleStroke = selectionBlueColor.copy(alpha = 0.85f * overlayAlpha)
                             listOf(
                                 Offset(cLeft, cTop),
                                 Offset(cRight, cTop),
@@ -672,18 +674,18 @@ fun CropWorkspaceCanvas(
             if (isZoomEnabled && !isPreviewMode) {
                 Surface(
                     shape = RoundedCornerShape(8.dp),
-                    color = Color(0xCC0B1220),
+                    color = FrameScopeColors.CardSurface.copy(alpha = 0.9f),
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .padding(8.dp)
                 ) {
                     Text(
-                        text = "Canvas Zoom ${String.format(java.util.Locale.US, "%.1fx", zoom)} • Crop Locked",
+                        text = "Canvas Zoom ${String.format(java.util.Locale.getDefault(), "%.1fx", zoom)} • Crop Locked",
                         style = MaterialTheme.typography.labelMedium.copy(
                             fontSize = 11.sp,
                             fontWeight = FontWeight.SemiBold
                         ),
-                        color = Color(0xFF38BDF8),
+                        color = FrameScopeColors.SelectionBlue,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                     )
                 }

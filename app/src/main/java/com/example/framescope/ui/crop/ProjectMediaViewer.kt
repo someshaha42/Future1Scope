@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
@@ -79,6 +80,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -91,6 +93,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -157,9 +160,13 @@ internal fun ProjectMediaViewer(
         resolveProjectPlaybackUri(context, project)
     }
 
-    var isLandscape by remember { mutableStateOf(false) }
+    val configuration = LocalConfiguration.current
+    val systemIsLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    var userOverrodeOrientation by rememberSaveable { mutableStateOf(false) }
+    var manualLandscape by rememberSaveable { mutableStateOf(systemIsLandscape) }
+    val isLandscape = if (userOverrodeOrientation) manualLandscape else systemIsLandscape
 
-    // Default orientation & window brightness restoration
+    // Preserve system orientation by default; restore initial window attributes on dispose
     val initialOrientation = remember(activity) {
         activity?.requestedOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     }
@@ -169,7 +176,6 @@ internal fun ProjectMediaViewer(
     }
 
     DisposableEffect(activity) {
-        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         onDispose {
             activity?.requestedOrientation = initialOrientation
             if (activity != null) {
@@ -180,11 +186,13 @@ internal fun ProjectMediaViewer(
         }
     }
 
-    LaunchedEffect(activity, isLandscape) {
-        activity?.requestedOrientation = if (isLandscape) {
-            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-        } else {
-            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+    LaunchedEffect(activity, userOverrodeOrientation, manualLandscape) {
+        if (userOverrodeOrientation) {
+            activity?.requestedOrientation = if (manualLandscape) {
+                ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            } else {
+                ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+            }
         }
     }
 
@@ -209,7 +217,7 @@ internal fun ProjectMediaViewer(
                 .coerceIn(0f, 1f)
         )
     }
-    var isMuted by remember(project.id) { mutableStateOf(false) }
+    var isMuted by rememberSaveable(project.id) { mutableStateOf(false) }
 
     // Vertical swipe HUD feedback
     var activeHudMode by remember { mutableStateOf(ViewerHudMode.NONE) }
@@ -657,7 +665,8 @@ internal fun ProjectMediaViewer(
                             Text(
                                 text = "$pct%",
                                 style = MaterialTheme.typography.labelMedium.copy(
-                                    fontFamily = FontFamily.Monospace,
+                                    fontFamily = FontFamily.Default,
+                                    fontFeatureSettings = "tnum",
                                     fontWeight = FontWeight.Bold
                                 ),
                                 color = Color.White
@@ -725,7 +734,7 @@ internal fun ProjectMediaViewer(
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 12.5.sp
                                 ),
-                                color = Color.White,
+                                color = FrameScopeColors.TextPrimary,
                                 maxLines = 1
                             )
                         }
@@ -762,9 +771,10 @@ internal fun ProjectMediaViewer(
                                     modifier = Modifier.size(14.dp)
                                 )
                                 Text(
-                                    text = "${String.format(Locale.US, "%.1fx", zoom)}",
+                                    text = "${String.format(Locale.getDefault(), "%.1fx", zoom)}",
                                     style = MaterialTheme.typography.labelMedium.copy(
-                                        fontFamily = FontFamily.Monospace,
+                                        fontFamily = FontFamily.Default,
+                                        fontFeatureSettings = "tnum",
                                         fontWeight = FontWeight.Bold
                                     ),
                                     color = Color.White
@@ -802,7 +812,7 @@ internal fun ProjectMediaViewer(
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 12.5.sp
                                 ),
-                                color = Color.White,
+                                color = FrameScopeColors.TextPrimary,
                                 maxLines = 1
                             )
                         }
@@ -851,7 +861,7 @@ internal fun ProjectMediaViewer(
                                     Icon(
                                         imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                                         contentDescription = if (isPlaying) "Pause" else "Play",
-                                        tint = Color.White,
+                                        tint = FrameScopeColors.TextPrimary,
                                         modifier = Modifier.size(22.dp)
                                     )
                                 }
@@ -860,7 +870,8 @@ internal fun ProjectMediaViewer(
                             Text(
                                 text = formatTimelineMs(displayPos),
                                 style = MaterialTheme.typography.labelMedium.copy(
-                                    fontFamily = FontFamily.Monospace,
+                                    fontFamily = FontFamily.Default,
+                                    fontFeatureSettings = "tnum",
                                     fontWeight = FontWeight.SemiBold,
                                     fontSize = 11.5.sp
                                 ),
@@ -895,7 +906,8 @@ internal fun ProjectMediaViewer(
                             Text(
                                 text = formatTimelineMs(safeDuration),
                                 style = MaterialTheme.typography.labelMedium.copy(
-                                    fontFamily = FontFamily.Monospace,
+                                    fontFamily = FontFamily.Default,
+                                    fontFeatureSettings = "tnum",
                                     fontWeight = FontWeight.SemiBold,
                                     fontSize = 11.5.sp
                                 ),
@@ -921,7 +933,11 @@ internal fun ProjectMediaViewer(
                             }
 
                             IconButton(
-                                onClick = { isLandscape = !isLandscape },
+                                onClick = {
+                                    val nextLandscape = !isLandscape
+                                    userOverrodeOrientation = true
+                                    manualLandscape = nextLandscape
+                                },
                                 modifier = Modifier
                                     .size(42.dp)
                                     .testTag("viewer_rotate_button")
@@ -956,14 +972,21 @@ internal fun ProjectMediaViewer(
                             if (w > 0 && h > 0) {
                                 Text(
                                     text = "${w}×${h}",
-                                    style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
+                                    style = MaterialTheme.typography.labelMedium.copy(
+                                        fontFamily = FontFamily.Default,
+                                        fontFeatureSettings = "tnum"
+                                    ),
                                     color = FrameScopeColors.TextSecondary
                                 )
                             }
                         }
 
                         IconButton(
-                            onClick = { isLandscape = !isLandscape },
+                            onClick = {
+                                val nextLandscape = !isLandscape
+                                userOverrodeOrientation = true
+                                manualLandscape = nextLandscape
+                            },
                             modifier = Modifier
                                 .minimumInteractiveComponentSize()
                                 .testTag("viewer_rotate_button")
@@ -1012,7 +1035,10 @@ internal fun ProjectMediaViewer(
                                 )
                                 Text(
                                     text = "${(exportProgress * 100f).toInt()}%",
-                                    style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
+                                    style = MaterialTheme.typography.labelMedium.copy(
+                                        fontFamily = FontFamily.Default,
+                                        fontFeatureSettings = "tnum"
+                                    ),
                                     color = FrameScopeColors.SelectionBlue
                                 )
                             }
@@ -1078,7 +1104,7 @@ private suspend fun loadViewerBitmap(
     runCatching {
         val source = ImageDecoder.createSource(context.contentResolver, uri)
         ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
-            decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+            decoder.allocator = ImageDecoder.ALLOCATOR_DEFAULT
             val w = info.size.width
             val h = info.size.height
             val maxSide = maxOf(w, h)

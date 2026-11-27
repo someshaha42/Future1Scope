@@ -375,7 +375,8 @@ internal fun VideoTimelineSection(
                 Text(
                     text = "Start ${formatTimelineMs(safeStart)}",
                     style = MaterialTheme.typography.labelMedium.copy(
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = FontFamily.Default,
+                        fontFeatureSettings = "tnum",
                         fontWeight = FontWeight.SemiBold
                     ),
                     color = FrameScopeColors.TextSecondary
@@ -383,7 +384,8 @@ internal fun VideoTimelineSection(
                 Text(
                     text = formatTimelineMs(safePos),
                     style = MaterialTheme.typography.labelMedium.copy(
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = FontFamily.Default,
+                        fontFeatureSettings = "tnum",
                         fontWeight = FontWeight.Bold
                     ),
                     color = FrameScopeColors.SelectionBlue
@@ -391,12 +393,18 @@ internal fun VideoTimelineSection(
                 Text(
                     text = "End ${formatTimelineMs(safeEnd)}",
                     style = MaterialTheme.typography.labelMedium.copy(
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = FontFamily.Default,
+                        fontFeatureSettings = "tnum",
                         fontWeight = FontWeight.SemiBold
                     ),
                     color = FrameScopeColors.TextSecondary
                 )
             }
+
+            val innerSurfaceColor = FrameScopeColors.InnerSurface
+            val selectionBlueTintColor = FrameScopeColors.SelectionBlueTint
+            val selectionBlueColor = FrameScopeColors.SelectionBlue
+            val textPrimaryColor = FrameScopeColors.TextPrimary
 
             Canvas(
                 modifier = Modifier
@@ -501,7 +509,7 @@ internal fun VideoTimelineSection(
 
                 // Full track background
                 drawRoundRect(
-                    color = FrameScopeColors.InnerSurface,
+                    color = innerSurfaceColor,
                     topLeft = Offset(trackLeft, trackTop),
                     size = Size(trackWidth, trackHeight),
                     cornerRadius = CornerRadius(6.dp.toPx(), 6.dp.toPx())
@@ -510,19 +518,19 @@ internal fun VideoTimelineSection(
                 // Active trim segment
                 val activeW = (endX - startX).coerceAtLeast(2f)
                 drawRoundRect(
-                    color = FrameScopeColors.SelectionBlueTint,
+                    color = selectionBlueTintColor,
                     topLeft = Offset(startX, trackTop),
                     size = Size(activeW, trackHeight),
                     cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx())
                 )
                 drawLine(
-                    color = FrameScopeColors.SelectionBlue,
+                    color = selectionBlueColor,
                     start = Offset(startX, trackTop),
                     end = Offset(endX, trackTop),
                     strokeWidth = 2.dp.toPx()
                 )
                 drawLine(
-                    color = FrameScopeColors.SelectionBlue,
+                    color = selectionBlueColor,
                     start = Offset(startX, trackTop + trackHeight),
                     end = Offset(endX, trackTop + trackHeight),
                     strokeWidth = 2.dp.toPx()
@@ -532,13 +540,13 @@ internal fun VideoTimelineSection(
                 val handleW = 7.dp.toPx()
                 val handleH = 26.dp.toPx()
                 drawRoundRect(
-                    color = FrameScopeColors.SelectionBlue,
+                    color = selectionBlueColor,
                     topLeft = Offset(startX - handleW / 2f, centerY - handleH / 2f),
                     size = Size(handleW, handleH),
                     cornerRadius = CornerRadius(3.dp.toPx(), 3.dp.toPx())
                 )
                 drawRoundRect(
-                    color = FrameScopeColors.SelectionBlue,
+                    color = selectionBlueColor,
                     topLeft = Offset(endX - handleW / 2f, centerY - handleH / 2f),
                     size = Size(handleW, handleH),
                     cornerRadius = CornerRadius(3.dp.toPx(), 3.dp.toPx())
@@ -546,18 +554,18 @@ internal fun VideoTimelineSection(
 
                 // Playhead line + knob
                 drawLine(
-                    color = Color.White,
+                    color = textPrimaryColor,
                     start = Offset(playX, centerY - 17.dp.toPx()),
                     end = Offset(playX, centerY + 17.dp.toPx()),
                     strokeWidth = 2.5.dp.toPx()
                 )
                 drawCircle(
-                    color = Color.White,
+                    color = textPrimaryColor,
                     radius = 6.5.dp.toPx(),
                     center = Offset(playX, centerY)
                 )
                 drawCircle(
-                    color = FrameScopeColors.SelectionBlue,
+                    color = selectionBlueColor,
                     radius = 3.5.dp.toPx(),
                     center = Offset(playX, centerY)
                 )
@@ -733,7 +741,7 @@ private fun AspectRatioTile(
     modifier: Modifier = Modifier
 ) {
     val shape = RoundedCornerShape(11.dp)
-    val tintColor = if (selected) Color.White else FrameScopeColors.TextSecondary
+    val tintColor = if (selected) FrameScopeColors.SelectionBlue else FrameScopeColors.TextSecondary
     Surface(
         modifier = modifier
             .minimumInteractiveComponentSize()
@@ -856,7 +864,7 @@ internal fun VideoBitrateModeSection(
     bitrateModeSupport: Map<VideoBitrateMode, OptionSupportInfo> = emptyMap()
 ) {
     val origMbpsText = if (originalBitrateBps != null && originalBitrateBps > 0L) {
-        String.format(Locale.US, "%.1f Mbps", originalBitrateBps / 1_000_000.0)
+        String.format(Locale.getDefault(), "%.1f Mbps", originalBitrateBps / 1_000_000.0)
     } else {
         "Auto (Original)"
     }
@@ -891,7 +899,8 @@ internal fun VideoBitrateModeSection(
                     Text(
                         text = origMbpsText,
                         style = MaterialTheme.typography.bodyMedium.copy(
-                            fontFamily = FontFamily.Monospace,
+                            fontFamily = FontFamily.Default,
+                            fontFeatureSettings = "tnum",
                             fontWeight = FontWeight.SemiBold
                         ),
                         color = FrameScopeColors.ReadyGreen
@@ -1201,7 +1210,10 @@ internal fun RecentProjectsSection(
                                         if (dims.isNotEmpty()) {
                                             Text(
                                                 text = dims,
-                                                style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
+                                                style = MaterialTheme.typography.labelMedium.copy(
+                                                    fontFamily = FontFamily.Default,
+                                                    fontFeatureSettings = "tnum"
+                                                ),
                                                 color = FrameScopeColors.TextSecondary,
                                                 maxLines = 1
                                             )
@@ -1384,9 +1396,10 @@ internal fun formatTimelineMs(ms: Long): String {
     val mins = totalSec / 60L
     val secs = totalSec % 60L
     val hrs = mins / 60L
+    val locale = Locale.getDefault()
     return if (hrs > 0L) {
-        String.format(Locale.US, "%d:%02d:%02d", hrs, mins % 60L, secs)
+        String.format(locale, "%d:%02d:%02d", hrs, mins % 60L, secs)
     } else {
-        String.format(Locale.US, "%02d:%02d", mins, secs)
+        String.format(locale, "%02d:%02d", mins, secs)
     }
 }

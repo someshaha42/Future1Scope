@@ -226,7 +226,7 @@ class CropProjectsRepository(private val context: Context) {
         return runCatching {
             val source = ImageDecoder.createSource(context.contentResolver, uri)
             ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
-                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                decoder.allocator = ImageDecoder.ALLOCATOR_DEFAULT
                 val maxSide = maxOf(info.size.width, info.size.height)
                 if (maxSide > targetSizePx && targetSizePx > 0) {
                     val scale = targetSizePx.toFloat() / maxSide.toFloat()

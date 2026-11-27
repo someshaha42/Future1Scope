@@ -75,6 +75,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -121,7 +122,7 @@ fun CropToolScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     var previewImageProject by remember { mutableStateOf<CropProjectRecord?>(null) }
-    var viewingRecentProject by remember { mutableStateOf<CropProjectRecord?>(null) }
+    var viewingRecentProjectId by rememberSaveable { mutableStateOf<String?>(null) }
     var showProjectSettingsDialog by remember { mutableStateOf(false) }
     var pendingDeleteProject by remember { mutableStateOf<CropProjectRecord?>(null) }
     var canvasMenuExpanded by remember { mutableStateOf(false) }
@@ -172,11 +173,11 @@ fun CropToolScreen(
         viewModel.clearMessage()
     }
 
-    BackHandler(enabled = state.isPreviewMode && viewingRecentProject == null) {
+    BackHandler(enabled = state.isPreviewMode && viewingRecentProjectId == null) {
         viewModel.exitPreviewMode()
     }
 
-    BackHandler(enabled = !state.isPreviewMode && state.showImportPanel && state.media != null && viewingRecentProject == null) {
+    BackHandler(enabled = !state.isPreviewMode && state.showImportPanel && state.media != null && viewingRecentProjectId == null) {
         viewModel.closeImportPanelIfLoaded()
     }
 
@@ -447,7 +448,7 @@ fun CropToolScreen(
                             thumbnails = state.projectThumbnails,
                             onOpenSettings = { showProjectSettingsDialog = true },
                             onOpenInGallery = { project ->
-                                viewingRecentProject = project
+                                viewingRecentProjectId = project.id
                             },
                             onEditProject = viewModel::openProject,
                             onRequestDelete = { project ->
@@ -514,7 +515,8 @@ fun CropToolScreen(
                                 Text(
                                     text = "${state.outputWidth} × ${state.outputHeight}$fpsSuffix",
                                     style = MaterialTheme.typography.labelMedium.copy(
-                                        fontFamily = FontFamily.Monospace,
+                                        fontFamily = FontFamily.Default,
+                                        fontFeatureSettings = "tnum",
                                         fontWeight = FontWeight.SemiBold
                                     ),
                                     color = FrameScopeColors.TextSecondary,
@@ -636,7 +638,7 @@ fun CropToolScreen(
                                             Icon(
                                                 imageVector = if (state.isVideoPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                                                 contentDescription = if (state.isVideoPlaying) "Pause" else "Play",
-                                                tint = Color.White,
+                                                tint = FrameScopeColors.SelectionBlue,
                                                 modifier = Modifier.size(18.dp)
                                             )
                                             Text(
@@ -671,7 +673,7 @@ fun CropToolScreen(
                                             Icon(
                                                 imageVector = Icons.Rounded.PlayArrow,
                                                 contentDescription = "Preview cropped media",
-                                                tint = Color.White,
+                                                tint = FrameScopeColors.SelectionBlue,
                                                 modifier = Modifier.size(18.dp)
                                             )
                                             Text(
@@ -782,8 +784,8 @@ fun CropToolScreen(
         }
         }
 
-        val activeViewerProject = viewingRecentProject?.let { selected ->
-            state.recentProjects.firstOrNull { it.id == selected.id } ?: selected
+        val activeViewerProject = viewingRecentProjectId?.let { selectedId ->
+            state.recentProjects.firstOrNull { it.id == selectedId }
         }
         if (activeViewerProject != null) {
             ProjectMediaViewer(
@@ -791,14 +793,14 @@ fun CropToolScreen(
                 isExportingForShare = state.isSharingProjectExport,
                 exportProgress = state.shareExportProgress,
                 exportStatusText = state.shareExportStatus,
-                onBack = { viewingRecentProject = null },
+                onBack = { viewingRecentProjectId = null },
                 onOpenProject = { proj ->
-                    viewingRecentProject = null
+                    viewingRecentProjectId = null
                     viewModel.openProject(proj)
                 },
                 onShareProject = { proj ->
                     viewModel.shareProjectFromViewer(proj) { shareUri, mimeType, updated ->
-                        viewingRecentProject = updated
+                        viewingRecentProjectId = updated.id
                         val err = launchShareSheet(context, shareUri, mimeType)
                         if (err != null) {
                             coroutineScope.launch {
@@ -899,7 +901,7 @@ private fun CropWorkspaceTopToolbar(
                         Icon(
                             imageVector = Icons.Rounded.KeyboardArrowDown,
                             contentDescription = "Select canvas ratio",
-                            tint = Color(0xFF38BDF8),
+                            tint = FrameScopeColors.SelectionBlue,
                             modifier = Modifier.size(16.dp)
                         )
                     }
@@ -910,7 +912,7 @@ private fun CropWorkspaceTopToolbar(
                         fontSize = 9.5.sp,
                         fontWeight = FontWeight.Medium
                     ),
-                    color = Color(0xFF38BDF8),
+                    color = FrameScopeColors.SelectionBlue,
                     maxLines = 1
                 )
             }
@@ -999,7 +1001,7 @@ private fun CropWorkspaceTopToolbar(
             icon = Icons.Rounded.ZoomIn,
             enabled = true,
             active = isZoomEnabled,
-            activeColor = Color(0xFF38BDF8),
+            activeColor = FrameScopeColors.SelectionBlue,
             testTag = "crop_zoom_toggle_button",
             onClick = onToggleZoom
         )
@@ -1094,7 +1096,10 @@ private fun ExportActionCard(
                     )
                     Text(
                         text = "${(exportState.progress * 100f).toInt()}%",
-                        style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontFamily = FontFamily.Default,
+                            fontFeatureSettings = "tnum"
+                        ),
                         color = FrameScopeColors.SelectionBlue
                     )
                 }
@@ -1116,7 +1121,7 @@ private fun ExportActionCard(
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = FrameScopeColors.SelectionBlue,
-                        contentColor = Color.White
+                        contentColor = MaterialTheme.colorScheme.onPrimary
                     ),
                     contentPadding = PaddingValues(vertical = 14.dp),
                     modifier = Modifier
@@ -1243,7 +1248,10 @@ private fun ExportedImagePreviewDialog(
                 ) {
                     Text(
                         text = "$formatLabel • ${imgW}×${imgH}",
-                        style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontFamily = FontFamily.Default,
+                            fontFeatureSettings = "tnum"
+                        ),
                         color = FrameScopeColors.TextSecondary
                     )
                     TextButton(onClick = onDismiss) {

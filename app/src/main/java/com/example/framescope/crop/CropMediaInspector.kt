@@ -268,7 +268,7 @@ object CropMediaInspector {
             displayWidth = dispW,
             displayHeight = dispH,
             durationMs = durationMs.coerceAtLeast(0L),
-            fps = if (fps > 0) fps.coerceIn(15, 120) else 30,
+            fps = if (fps > 0) fps else 30,
             originalBitrateBps = originalBitrate,
             colorStandard = colorStandard,
             colorRange = colorRange,
@@ -440,7 +440,7 @@ object CropMediaInspector {
         val w = outputWidth.coerceAtLeast(16)
         val h = outputHeight.coerceAtLeast(16)
         val pixels = w.toDouble() * h.toDouble()
-        val safeFps = fps.coerceIn(15, 120).toDouble()
+        val safeFps = fps.coerceAtLeast(1).toDouble()
         val isHevcOrAv1 = sourceVideoMime?.contains("hevc", ignoreCase = true) == true ||
             sourceVideoMime?.contains("av01", ignoreCase = true) == true ||
             sourceVideoMime?.contains("vp9", ignoreCase = true) == true

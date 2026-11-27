@@ -16,7 +16,6 @@ import android.media.projection.MediaProjectionManager
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.os.PowerManager
 import android.widget.RemoteViews
 import androidx.core.content.ContextCompat
 import androidx.core.content.IntentCompat
@@ -33,6 +32,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
+import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -62,8 +62,6 @@ class EncodingForegroundService : Service() {
 
         private const val CHANNEL_ID = "framescope_encoding"
         private const val NOTIFICATION_ID = 4101
-        private const val WAKE_LOCK_TAG = "FrameScope::EncodingWakeLock"
-        private const val MAX_WAKE_LOCK_MS = 4 * 60 * 60 * 1000L
     }
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -74,7 +72,6 @@ class EncodingForegroundService : Service() {
     @Volatile
     private var teardownLatch: CountDownLatch? = null
 
-    private var wakeLock: PowerManager.WakeLock? = null
     private var timerJob: Job? = null
     private var projection: MediaProjection? = null
     private var projectionCallback: MediaProjection.Callback? = null
@@ -170,8 +167,6 @@ class EncodingForegroundService : Service() {
             notification,
             serviceTypes
         )
-
-        acquireWakeLock()
 
         try {
             val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
@@ -455,30 +450,8 @@ class EncodingForegroundService : Service() {
             }
         } finally {
             currentOutputPath = null
-            releaseWakeLock()
             sessionActive.set(false)
             teardownLatch?.countDown()
-        }
-    }
-
-    private fun acquireWakeLock() {
-        runCatching {
-            val pm = getSystemService(POWER_SERVICE) as? PowerManager ?: return
-            if (wakeLock?.isHeld != true) {
-                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG).apply {
-                    setReferenceCounted(false)
-                    acquire(MAX_WAKE_LOCK_MS)
-                }
-            }
-        }
-    }
-
-    private fun releaseWakeLock() {
-        runCatching {
-            if (wakeLock?.isHeld == true) {
-                wakeLock?.release()
-            }
-            wakeLock = null
         }
     }
 
@@ -576,7 +549,7 @@ class EncodingForegroundService : Service() {
         val hrs = totalSeconds / 3600
         val mins = (totalSeconds % 3600) / 60
         val secs = totalSeconds % 60
-        return String.format("%02d:%02d:%02d", hrs, mins, secs)
+        return String.format(Locale.getDefault(), "%02d:%02d:%02d", hrs, mins, secs)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -586,7 +559,6 @@ class EncodingForegroundService : Service() {
             stopRecording(fatalError = null)
             runCatching { teardownLatch?.await(3_500, TimeUnit.MILLISECONDS) }
         }
-        releaseWakeLock()
         serviceScope.cancel()
         super.onDestroy()
     }

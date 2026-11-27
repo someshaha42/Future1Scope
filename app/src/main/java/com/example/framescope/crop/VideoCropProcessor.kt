@@ -50,12 +50,13 @@ object VideoCropProcessor {
     }
 
     private data class SelectedVideoEncoder(
-        val codecName: String,
+        val codecName: String?,
         val mimeType: String,
         val isHardware: Boolean,
         val isSoftwareOnly: Boolean,
         val width: Int,
         val height: Int,
+        val frameRate: Int,
         val bitrateBps: Int,
         val bitrateMode: Int?,
         val fastestComplexity: Int?
@@ -157,6 +158,7 @@ object VideoCropProcessor {
             val rawOutH = ((cropRect.heightFraction * media.displayHeight).roundToInt() and 1.inv())
                 .coerceIn(16, media.displayHeight)
 
+            val sourceFps = if (media.fps > 0) media.fps else DEFAULT_ENCODER_FRAME_RATE
             val encoderCandidates = resolveVideoEncoderCandidates(
                 requestedContainer = targetContainer,
                 preferredMime = media.sourceVideoMime,
@@ -164,6 +166,7 @@ object VideoCropProcessor {
                 requestedHeight = rawOutH,
                 maxSourceWidth = media.displayWidth,
                 maxSourceHeight = media.displayHeight,
+                frameRate = sourceFps,
                 requestedBitrateBps = targetBitrateBps.coerceAtLeast(MIN_SAFE_ENCODER_BITRATE_BPS)
             )
             if (encoderCandidates.isEmpty()) {
@@ -179,7 +182,11 @@ object VideoCropProcessor {
                 var probeEncoder: MediaCodec? = null
                 var probeSurface: Surface? = null
                 val ok = runCatching {
-                    probeEncoder = MediaCodec.createByCodecName(candidateSpec.codecName)
+                    probeEncoder = if (candidateSpec.codecName != null) {
+                        MediaCodec.createByCodecName(candidateSpec.codecName)
+                    } else {
+                        MediaCodec.createEncoderByType(candidateSpec.mimeType)
+                    }
                     configureVideoEncoderWithFallback(probeEncoder!!, candidateSpec)
                     probeSurface = probeEncoder!!.createInputSurface()
                     probeEncoder!!.start()
@@ -225,16 +232,23 @@ object VideoCropProcessor {
 
             val inputMime = videoInputFormat.getString(MediaFormat.KEY_MIME)
                 ?: return@withContext CropExportState.Error("Missing source video MIME type.")
-            val decoderCandidates = resolveCandidateDecoders(inputMime)
-            var activeDecoder: MediaCodec? = null
-            for ((codecName, overrideMime) in decoderCandidates) {
-                activeDecoder = tryConfigureAndStartDecoder(
-                    codecName = codecName,
-                    sourceFormat = videoInputFormat,
-                    overrideMime = overrideMime,
-                    decoderSurface = decoderSurface
-                )
-                if (activeDecoder != null) break
+            var activeDecoder: MediaCodec? = tryConfigureAndStartDecoder(
+                codecName = null,
+                sourceFormat = videoInputFormat,
+                overrideMime = null,
+                decoderSurface = decoderSurface
+            )
+            if (activeDecoder == null) {
+                val decoderCandidates = resolveCandidateDecoders(inputMime)
+                for ((codecName, overrideMime) in decoderCandidates) {
+                    activeDecoder = tryConfigureAndStartDecoder(
+                        codecName = codecName,
+                        sourceFormat = videoInputFormat,
+                        overrideMime = overrideMime,
+                        decoderSurface = decoderSurface
+                    )
+                    if (activeDecoder != null) break
+                }
             }
             decoder = activeDecoder ?: return@withContext CropExportState.Error(
                 "No compatible video decoder could start for $inputMime."
@@ -533,38 +547,36 @@ object VideoCropProcessor {
     }
 
     private fun tryConfigureAndStartDecoder(
-        codecName: String,
+        codecName: String?,
         sourceFormat: MediaFormat,
         overrideMime: String?,
         decoderSurface: Surface
     ): MediaCodec? {
-        val operatingRates = listOf<Int?>(Short.MAX_VALUE.toInt(), 240, null)
-        for (rate in operatingRates) {
-            var probeDecoder: MediaCodec? = null
-            val ok = runCatching {
-                probeDecoder = MediaCodec.createByCodecName(codecName)
-                // Ensure SurfaceTexture receives raw frames cleanly without Surface-level rotation surprises
-                val decoderFormat = MediaFormat(sourceFormat).apply {
-                    if (overrideMime != null) {
-                        setString(MediaFormat.KEY_MIME, overrideMime)
-                    }
-                    if (containsKey(MediaFormat.KEY_ROTATION)) {
-                        setInteger(MediaFormat.KEY_ROTATION, 0)
-                    }
-                    if (rate != null) {
-                        setInteger(MediaFormat.KEY_OPERATING_RATE, rate)
-                        setInteger(MediaFormat.KEY_PRIORITY, 1)
-                    }
-                }
-                probeDecoder!!.configure(decoderFormat, decoderSurface, null, 0)
-                probeDecoder!!.start()
-            }.isSuccess
-            if (ok && probeDecoder != null) {
-                return probeDecoder
+        val targetMime = overrideMime ?: sourceFormat.getString(MediaFormat.KEY_MIME) ?: return null
+        var probeDecoder: MediaCodec? = null
+        val ok = runCatching {
+            probeDecoder = if (codecName != null) {
+                MediaCodec.createByCodecName(codecName)
+            } else {
+                MediaCodec.createDecoderByType(targetMime)
             }
-            runCatching { probeDecoder?.stop() }
-            runCatching { probeDecoder?.release() }
+            // Ensure SurfaceTexture receives raw frames cleanly without Surface-level rotation surprises
+            val decoderFormat = MediaFormat(sourceFormat).apply {
+                if (overrideMime != null) {
+                    setString(MediaFormat.KEY_MIME, overrideMime)
+                }
+                if (containsKey(MediaFormat.KEY_ROTATION)) {
+                    setInteger(MediaFormat.KEY_ROTATION, 0)
+                }
+            }
+            probeDecoder!!.configure(decoderFormat, decoderSurface, null, 0)
+            probeDecoder!!.start()
+        }.isSuccess
+        if (ok && probeDecoder != null) {
+            return probeDecoder
         }
+        runCatching { probeDecoder?.stop() }
+        runCatching { probeDecoder?.release() }
         return null
     }
 
@@ -574,10 +586,6 @@ object VideoCropProcessor {
             .filter { info ->
                 !info.isAlias && !info.isEncoder && info.supportedTypes.any { it.equals(mimeType, ignoreCase = true) }
             }
-            .sortedWith(
-                compareByDescending<MediaCodecInfo> { it.isHardwareAccelerated }
-                    .thenBy { it.isSoftwareOnly }
-            )
             .map { it.name to null }
 
         if (!mimeType.equals("video/dolby-vision", ignoreCase = true)) {
@@ -587,10 +595,6 @@ object VideoCropProcessor {
             .filter { info ->
                 !info.isAlias && !info.isEncoder && info.supportedTypes.any { it.equals(MediaFormat.MIMETYPE_VIDEO_HEVC, ignoreCase = true) }
             }
-            .sortedWith(
-                compareByDescending<MediaCodecInfo> { it.isHardwareAccelerated }
-                    .thenBy { it.isSoftwareOnly }
-            )
             .map { it.name to MediaFormat.MIMETYPE_VIDEO_HEVC }
         return primary + hevcFallbacks
     }
@@ -602,6 +606,7 @@ object VideoCropProcessor {
         requestedHeight: Int,
         maxSourceWidth: Int,
         maxSourceHeight: Int,
+        frameRate: Int,
         requestedBitrateBps: Int
     ): List<Pair<VideoContainerFormat, SelectedVideoEncoder>> {
         val containerOrder = buildList {
@@ -615,7 +620,6 @@ object VideoCropProcessor {
         val seenKeys = HashSet<String>()
 
         for (container in containerOrder) {
-            val containerCandidates = mutableListOf<Pair<VideoContainerFormat, SelectedVideoEncoder>>()
             val candidateMimes = when (container) {
                 VideoContainerFormat.MP4 -> {
                     if (preferredMime.equals(MediaFormat.MIMETYPE_VIDEO_HEVC, ignoreCase = true)) {
@@ -634,6 +638,23 @@ object VideoCropProcessor {
                 )
             }
 
+            // First let Android's native MediaCodec.createEncoderByType select the system-default encoder
+            for (mime in candidateMimes) {
+                candidates += container to SelectedVideoEncoder(
+                    codecName = null,
+                    mimeType = mime,
+                    isHardware = true,
+                    isSoftwareOnly = false,
+                    width = requestedWidth,
+                    height = requestedHeight,
+                    frameRate = frameRate,
+                    bitrateBps = requestedBitrateBps,
+                    bitrateMode = MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR,
+                    fastestComplexity = null
+                )
+            }
+
+            val fallbackCandidates = mutableListOf<Pair<VideoContainerFormat, SelectedVideoEncoder>>()
             for (mime in candidateMimes) {
                 val encoders = codecInfos.filter { info ->
                     info.isEncoder &&
@@ -672,13 +693,14 @@ object VideoCropProcessor {
 
                     val fastestComplexity = runCatching { encoderCaps?.complexityRange?.lower }.getOrNull()
 
-                    containerCandidates += container to SelectedVideoEncoder(
+                    fallbackCandidates += container to SelectedVideoEncoder(
                         codecName = info.name,
                         mimeType = mime,
                         isHardware = info.isHardwareAccelerated,
                         isSoftwareOnly = info.isSoftwareOnly,
                         width = outW,
                         height = outH,
+                        frameRate = frameRate,
                         bitrateBps = safeBitrate,
                         bitrateMode = bitrateMode,
                         fastestComplexity = fastestComplexity
@@ -686,16 +708,7 @@ object VideoCropProcessor {
                 }
             }
 
-            // Hardware encoders ALWAYS take precedence over software encoders across MIME types,
-            // preferring hardware encoders that do not downscale the requested crop dimensions.
-            candidates += containerCandidates.sortedWith(
-                compareByDescending<Pair<VideoContainerFormat, SelectedVideoEncoder>> { it.second.isHardware }
-                    .thenBy { it.second.isSoftwareOnly }
-                    .thenByDescending {
-                        it.second.width >= requestedWidth - 8 &&
-                            it.second.height >= requestedHeight - 8
-                    }
-            )
+            candidates += fallbackCandidates
         }
         return candidates
     }
@@ -706,15 +719,14 @@ object VideoCropProcessor {
     ) {
         data class Attempt(
             val bitrateMode: Int?,
-            val operatingRate: Int?,
             val disableBFrames: Boolean,
             val useFastComplexity: Boolean
         )
 
         val attempts = listOf(
-            Attempt(spec.bitrateMode, operatingRate = Short.MAX_VALUE.toInt(), disableBFrames = true, useFastComplexity = !spec.isHardware),
-            Attempt(spec.bitrateMode, operatingRate = 240, disableBFrames = false, useFastComplexity = !spec.isHardware),
-            Attempt(null, operatingRate = null, disableBFrames = false, useFastComplexity = false)
+            Attempt(spec.bitrateMode, disableBFrames = true, useFastComplexity = !spec.isHardware),
+            Attempt(spec.bitrateMode, disableBFrames = false, useFastComplexity = !spec.isHardware),
+            Attempt(null, disableBFrames = false, useFastComplexity = false)
         )
 
         var lastError: Throwable? = null
@@ -725,12 +737,8 @@ object VideoCropProcessor {
                     MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
                 )
                 setInteger(MediaFormat.KEY_BIT_RATE, spec.bitrateBps)
-                setInteger(MediaFormat.KEY_FRAME_RATE, DEFAULT_ENCODER_FRAME_RATE)
+                setInteger(MediaFormat.KEY_FRAME_RATE, spec.frameRate.coerceAtLeast(1))
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
-                if (attempt.operatingRate != null) {
-                    setInteger(MediaFormat.KEY_OPERATING_RATE, attempt.operatingRate)
-                    setInteger(MediaFormat.KEY_PRIORITY, 1)
-                }
                 if (attempt.disableBFrames) {
                     setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
                 }

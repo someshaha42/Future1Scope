@@ -79,6 +79,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
@@ -100,6 +101,7 @@ import com.example.framescope.ui.components.SectionCard
 import com.example.framescope.ui.components.SelectableOptionCard
 import com.example.framescope.ui.theme.FrameScopeColors
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 @Composable
 fun HomeScreen(
@@ -117,7 +119,8 @@ fun HomeScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
 
-    val displayInfo = remember(context) { readDisplayMetrics(context) }
+    val configuration = LocalConfiguration.current
+    val displayInfo = remember(context, configuration) { readDisplayMetrics(context) }
     val targetDimensions = remember(settings, displayInfo) {
         viewModel.computeTargetDimensions(
             currentSettings = settings,
@@ -461,7 +464,8 @@ private fun VideoEncoderOptionCard(
                 Text(
                     text = "${tab.defaultBitrateMbps} Mbps",
                     style = MaterialTheme.typography.bodyMedium.copy(
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = FontFamily.Default,
+                        fontFeatureSettings = "tnum",
                         fontWeight = FontWeight.Medium
                     ),
                     color = FrameScopeColors.SelectionBlue
@@ -491,7 +495,7 @@ private fun ActiveCheckBadge() {
                 fontWeight = FontWeight.Bold,
                 fontSize = 13.sp
             ),
-            color = Color.White
+            color = MaterialTheme.colorScheme.onPrimary
         )
     }
 }
@@ -637,7 +641,8 @@ private fun HeroRecordingCard(
             Text(
                 text = formatTimer(elapsedSeconds),
                 style = MaterialTheme.typography.headlineLarge.copy(
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = FontFamily.Default,
+                    fontFeatureSettings = "tnum",
                     fontSize = 36.sp,
                     lineHeight = 42.sp,
                     letterSpacing = 1.5.sp,
@@ -788,5 +793,5 @@ private fun formatTimer(totalSeconds: Long): String {
     val hrs = totalSeconds / 3600
     val mins = (totalSeconds % 3600) / 60
     val secs = totalSeconds % 60
-    return String.format("%02d : %02d : %02d", hrs, mins, secs)
+    return String.format(Locale.getDefault(), "%02d : %02d : %02d", hrs, mins, secs)
 }
