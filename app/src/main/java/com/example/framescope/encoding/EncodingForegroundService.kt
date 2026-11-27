@@ -22,8 +22,6 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.IntentCompat
 import com.example.framescope.MainActivity
 import com.example.framescope.R
-import com.example.framescope.capability.DeviceCapabilityEngine
-import com.example.framescope.capability.EffectiveAudioStrategy
 import com.example.framescope.data.AudioSourceMode
 import com.example.framescope.data.RecordingsRepository
 import kotlinx.coroutines.CoroutineScope
@@ -188,15 +186,9 @@ class EncodingForegroundService : Service() {
                 ?: error("MediaProjection could not be initialized.")
             projection = mediaProjection
 
-            val codecMap = EncodingSpec.detectAllVideoCodecs()
-            val requestedTab = intent.getStringExtra(EXTRA_TAB)?.let { raw ->
+            val tab = intent.getStringExtra(EXTRA_TAB)?.let { raw ->
                 runCatching { EncodingTab.valueOf(raw) }.getOrNull()
-            }
-            val tab = if (requestedTab != null && codecMap[requestedTab]?.isSupported == true) {
-                requestedTab
-            } else {
-                EncodingSpec.selectDefaultVideoCodec(codecMap)
-            }
+            } ?: EncodingTab.H265
 
             val orientation = intent.getStringExtra(EXTRA_ORIENTATION)?.let { raw ->
                 runCatching { RecordingOrientation.valueOf(raw) }.getOrNull()
@@ -209,7 +201,7 @@ class EncodingForegroundService : Service() {
             val height = intent.getIntExtra(EXTRA_HEIGHT, 0)
             val density = intent.getIntExtra(EXTRA_DENSITY, 0)
             val bitrate = intent.getIntExtra(EXTRA_BITRATE, tab.defaultBitrateMbps * 1_000_000)
-            val preferredFrameRate = intent.getIntExtra(EXTRA_FRAME_RATE, 60).coerceIn(24, 120)
+            val preferredFrameRate = intent.getIntExtra(EXTRA_FRAME_RATE, 60).coerceAtLeast(1)
             val outputPath = intent.getStringExtra(EXTRA_OUTPUT_PATH)
                 ?: error("Output MP4 path is missing.")
             val showBorder = intent.getBooleanExtra(EXTRA_SHOW_BORDER, false)
@@ -239,68 +231,36 @@ class EncodingForegroundService : Service() {
 
             val targetWidth = vEncoder.configuredWidth
             val targetHeight = vEncoder.configuredHeight
-            val (audioStrategy, audioSampleRate) = DeviceCapabilityEngine.resolveAudioExecutionStrategy(
+            val audioSampleRate = EncodingSpec.AUDIO_SAMPLE_RATE
+
+            val aEnc = NativeAudioEncoder(
+                muxer = nativeMuxer,
+                sampleRate = audioSampleRate,
+                onFatalError = { err ->
+                    stopRecording(fatalError = err.message ?: "Audio encoder error")
+                }
+            ).also {
+                audioEncoder = it
+                it.start()
+            }
+
+            NativeAudioCapture(
                 context = applicationContext,
-                requested = audioSource
-            )
+                audioSourceMode = audioSource,
+                projection = mediaProjection,
+                encoder = aEnc,
+                sampleRate = audioSampleRate,
+                onFatalError = { err ->
+                    stopRecording(fatalError = err.message ?: "Audio capture error")
+                }
+            ).also {
+                audioCapture = it
+                it.start()
+            }
 
-            var activeAudioLabel: String? = null
-            if (audioStrategy == EffectiveAudioStrategy.VIDEO_ONLY) {
-                nativeMuxer.disableAudioTrack()
-            } else {
-                val primaryMode = if (audioStrategy == EffectiveAudioStrategy.MICROPHONE) {
-                    AudioSourceMode.MICROPHONE
-                } else {
-                    AudioSourceMode.INTERNAL_AUDIO
-                }
-                val peerMode = if (primaryMode == AudioSourceMode.INTERNAL_AUDIO) {
-                    AudioSourceMode.MICROPHONE
-                } else {
-                    AudioSourceMode.INTERNAL_AUDIO
-                }
-
-                var startedAudio = false
-                for (candidateAudioMode in listOf(primaryMode, peerMode)) {
-                    var aEnc: NativeAudioEncoder? = null
-                    var aCap: NativeAudioCapture? = null
-                    val attempt = runCatching {
-                        aEnc = NativeAudioEncoder(
-                            muxer = nativeMuxer,
-                            sampleRate = audioSampleRate,
-                            onFatalError = {
-                                // Keep video capture alive gracefully if audio stream drops mid-session
-                            }
-                        ).also { it.start() }
-
-                        aCap = NativeAudioCapture(
-                            context = applicationContext,
-                            audioSourceMode = candidateAudioMode,
-                            projection = mediaProjection,
-                            encoder = aEnc!!,
-                            sampleRate = audioSampleRate,
-                            onFatalError = {
-                                // Keep video capture alive gracefully if audio capture drops
-                            }
-                        ).also { it.start() }
-                    }
-                    if (attempt.isSuccess) {
-                        audioEncoder = aEnc
-                        audioCapture = aCap
-                        activeAudioLabel = if (candidateAudioMode == AudioSourceMode.INTERNAL_AUDIO) {
-                            "Internal Audio"
-                        } else {
-                            "Microphone"
-                        }
-                        startedAudio = true
-                        break
-                    } else {
-                        runCatching { aCap?.stop() }
-                        runCatching { aEnc?.stop() }
-                    }
-                }
-                if (!startedAudio) {
-                    nativeMuxer.disableAudioTrack()
-                }
+            val activeAudioLabel = when (audioSource) {
+                AudioSourceMode.INTERNAL_AUDIO -> "Internal Audio"
+                AudioSourceMode.MICROPHONE -> "Microphone"
             }
 
             val rotationCoordinator = SurfaceRotationCoordinator().apply {
@@ -338,7 +298,7 @@ class EncodingForegroundService : Service() {
                 height = targetHeight,
                 tab = vEncoder.activeTab,
                 orientation = orientation,
-                audioLabelOverride = activeAudioLabel ?: "Video-Only",
+                audioLabelOverride = activeAudioLabel,
                 fallbackSummary = intent.getStringExtra(EXTRA_SUMMARY)
             )
 

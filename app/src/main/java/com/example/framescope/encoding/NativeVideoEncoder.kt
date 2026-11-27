@@ -1,6 +1,7 @@
 package com.example.framescope.encoding
 
 import android.media.MediaCodec
+import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.os.Handler
 import android.os.HandlerThread
@@ -25,63 +26,38 @@ class NativeVideoEncoder(
     private var encoderThread: HandlerThread? = null
     private var callbackHandler: Handler? = null
 
-    var activeTab: EncodingTab = tab
-        private set
-    private var activeMime: String = tab.mimeType
-    var configuredWidth: Int = width
-        private set
-    var configuredHeight: Int = height
-        private set
-    var configuredBitrateBps: Int = existingProjectVideoBitrate
-        private set
+    val activeTab: EncodingTab = tab
+    private val activeMime: String = tab.mimeType
+    val configuredWidth: Int = (width and 1.inv()).coerceAtLeast(16)
+    val configuredHeight: Int = (height and 1.inv()).coerceAtLeast(16)
+    val configuredBitrateBps: Int = existingProjectVideoBitrate
 
     lateinit var inputSurface: Surface
         private set
 
     fun start() {
-        val candidates = EncodingSpec.resolveVideoConfigCandidates(
-            tab = tab,
-            requestedWidth = width,
-            requestedHeight = height,
-            requestedBitrateBps = existingProjectVideoBitrate,
-            preferredFrameRate = preferredFrameRate
-        )
-        check(candidates.isNotEmpty()) {
-            "No compatible video encoder found on this device."
-        }
-
         val thread = HandlerThread("VideoEncoderThread").apply { start() }
         encoderThread = thread
         val handler = Handler(thread.looper)
         callbackHandler = handler
 
-        var lastError: Throwable? = null
-        for (resolved in candidates) {
-            var mediaCodec: MediaCodec? = null
-            val attempt = runCatching {
-                mediaCodec = MediaCodec.createByCodecName(resolved.codecName)
-                attachCallback(mediaCodec!!, handler)
-                configureCodecWithFallback(mediaCodec!!, resolved)
-                val surface = mediaCodec!!.createInputSurface()
-                activeTab = resolved.tab
-                activeMime = resolved.mimeType
-                configuredWidth = resolved.width
-                configuredHeight = resolved.height
-                configuredBitrateBps = resolved.bitrateBps
-                inputSurface = surface
-                codec = mediaCodec
-                mediaCodec!!.start()
-            }
-            if (attempt.isSuccess) return
-            lastError = attempt.exceptionOrNull()
+        var mediaCodec: MediaCodec? = null
+        try {
+            mediaCodec = MediaCodec.createEncoderByType(activeMime)
+            attachCallback(mediaCodec, handler)
+            configureNativeCodec(mediaCodec)
+            val surface = mediaCodec.createInputSurface()
+            inputSurface = surface
+            codec = mediaCodec
+            mediaCodec.start()
+        } catch (t: Throwable) {
             runCatching { mediaCodec?.stop() }
             runCatching { mediaCodec?.release() }
+            encoderThread?.quitSafely()
+            encoderThread = null
+            callbackHandler = null
+            throw t
         }
-
-        encoderThread?.quitSafely()
-        encoderThread = null
-        callbackHandler = null
-        throw lastError ?: IllegalStateException("Unable to initialize any video encoder.")
     }
 
     private fun attachCallback(mediaCodec: MediaCodec, handler: Handler) {
@@ -139,39 +115,24 @@ class NativeVideoEncoder(
         )
     }
 
-    private fun configureCodecWithFallback(
-        mediaCodec: MediaCodec,
-        resolved: ResolvedVideoConfig
-    ) {
-        data class Attempt(
-            val bitrateMode: Int?,
-            val profile: Int?,
-            val includeColor: Boolean,
-            val disableBFrames: Boolean
-        )
-
+    private fun configureNativeCodec(mediaCodec: MediaCodec) {
         val attempts = listOf(
-            Attempt(resolved.bitrateMode, resolved.profile, includeColor = true, disableBFrames = resolved.supportsMaxBFramesZero),
-            Attempt(resolved.bitrateMode, resolved.profile, includeColor = true, disableBFrames = false),
-            Attempt(resolved.bitrateMode, null, includeColor = false, disableBFrames = false),
-            Attempt(null, null, includeColor = false, disableBFrames = false)
+            Pair(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR as Int?, true),
+            Pair(null, false)
         )
-
         var lastError: Throwable? = null
-        for (attempt in attempts) {
+        for ((bitrateMode, includeColorMetadata) in attempts) {
             val format = MediaFormat.createVideoFormat(
-                resolved.mimeType,
-                resolved.width,
-                resolved.height
+                activeMime,
+                configuredWidth,
+                configuredHeight
             )
             EncodingSpec.configureVideoFormat(
                 format = format,
-                existingProjectVideoBitrate = resolved.bitrateBps,
-                bitrateMode = attempt.bitrateMode,
-                frameRate = resolved.frameRate,
-                profile = attempt.profile,
-                includeColorMetadata = attempt.includeColor,
-                disableBFrames = attempt.disableBFrames
+                existingProjectVideoBitrate = configuredBitrateBps,
+                bitrateMode = bitrateMode,
+                frameRate = preferredFrameRate,
+                includeColorMetadata = includeColorMetadata
             )
             val result = runCatching {
                 mediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
@@ -180,8 +141,7 @@ class NativeVideoEncoder(
             lastError = result.exceptionOrNull()
             runCatching { mediaCodec.reset() }
         }
-        runCatching { mediaCodec.release() }
-        throw lastError ?: IllegalStateException("Unable to configure ${resolved.tab.displayName} encoder.")
+        throw lastError ?: IllegalStateException("Unable to configure ${tab.displayName} encoder.")
     }
 
     private fun validateVideoOutputFormat(format: MediaFormat) {
