@@ -156,14 +156,6 @@ class CropProjectsRepository(private val context: Context) {
                 runCatching { File(path).delete() }
             }
 
-            // Delete internal 8K AV1 workspace cache file if present (original source stays untouched).
-            target.av1WorkspacePath?.let { wsPath ->
-                val wsFile = File(wsPath)
-                if (wsFile.exists() && isInsideAppPrivateExports(wsFile)) {
-                    runCatching { wsFile.delete() }
-                }
-            }
-
             // Delete app-private working export file ONLY (public Gallery MediaStore exports stay untouched!).
             target.exportedFilePath?.let { expPath ->
                 val expFile = File(expPath)

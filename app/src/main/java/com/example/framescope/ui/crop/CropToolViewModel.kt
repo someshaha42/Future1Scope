@@ -22,11 +22,11 @@ import com.example.framescope.crop.CropMediaInspector
 import com.example.framescope.crop.CropMediaType
 import com.example.framescope.crop.CropProjectRecord
 import com.example.framescope.crop.CropProjectsRepository
-import com.example.framescope.crop.EightKAv1HevcPipeline
 import com.example.framescope.crop.ImageCropProcessor
 import com.example.framescope.crop.ImageExportFormatOption
 import com.example.framescope.crop.ImportedMediaInfo
 import com.example.framescope.crop.NormalizedCropRect
+import com.example.framescope.crop.UnsupportedHardwareResolutionException
 import com.example.framescope.crop.VideoBitrateMode
 import com.example.framescope.crop.VideoCropProcessor
 import com.example.framescope.crop.VideoExportFormatOption
@@ -89,6 +89,7 @@ data class CropToolUiState(
     val isSharingProjectExport: Boolean = false,
     val shareExportProgress: Float = 0f,
     val shareExportStatus: String = "",
+    val unsupportedResolutionMessage: String? = null,
     val message: String? = null
 ) {
     val outputWidth: Int
@@ -398,16 +399,19 @@ class CropToolViewModel(
                     isVideoPlaying = false,
                     isPreviewMode = false,
                     exportState = CropExportState.Idle,
+                    unsupportedResolutionMessage = null,
                     message = null
                 )
             }
 
             val initialResult = CropMediaInspector.inspect(appContext, uri)
             initialResult.onFailure { err ->
+                val hwErr = err as? UnsupportedHardwareResolutionException
                 _uiState.update {
                     it.copy(
                         isLoadingMedia = false,
-                        message = err.message ?: "Unable to import selected file."
+                        unsupportedResolutionMessage = hwErr?.popupMessage,
+                        message = if (hwErr != null) null else (err.message ?: "Unable to import selected file.")
                     )
                 }
             }.onSuccess { inspectedInfo ->
@@ -430,33 +434,11 @@ class CropToolViewModel(
                     uri
                 }
 
-                val baseInfo = if (activeUri != uri) {
+                val info = if (activeUri != uri) {
                     CropMediaInspector.inspect(appContext, activeUri).getOrDefault(inspectedInfo)
                         .copy(uri = activeUri)
                 } else {
                     inspectedInfo
-                }
-
-                val info = if (baseInfo.is8kUhd) {
-                    val wsResult = EightKAv1HevcPipeline.prepare8kAv1Workspace(
-                        context = appContext,
-                        projectId = projectId,
-                        media = baseInfo
-                    )
-                    if (wsResult.isFailure) {
-                        if (localCopyPath != null) runCatching { File(localCopyPath).delete() }
-                        _uiState.update {
-                            it.copy(
-                                isLoadingMedia = false,
-                                message = wsResult.exceptionOrNull()?.message
-                                    ?: "8K Software AV1 import processing failed."
-                            )
-                        }
-                        return@onSuccess
-                    }
-                    baseInfo.copy(av1WorkspacePath = wsResult.getOrNull())
-                } else {
-                    baseInfo
                 }
 
                 val bitmap = if (info.mediaType == CropMediaType.IMAGE) {
@@ -491,8 +473,7 @@ class CropToolViewModel(
                     if (info.mediaType == CropMediaType.VIDEO) {
                         CropMediaInspector.inspectVideoPipelineSupport(
                             sourceVideoMime = info.sourceVideoMime,
-                            container = firstVideoFormat?.container,
-                            is8kUhd = info.is8kUhd
+                            container = firstVideoFormat?.container
                         )
                     } else {
                         CodecPipelineSupport(
@@ -580,6 +561,7 @@ class CropToolViewModel(
                     isVideoPlaying = false,
                     isPreviewMode = false,
                     exportState = CropExportState.Idle,
+                    unsupportedResolutionMessage = null,
                     message = null
                 )
             }
@@ -606,12 +588,12 @@ class CropToolViewModel(
 
             val result = CropMediaInspector.inspect(appContext, uriToLoad)
             result.onFailure { err ->
-                val msg = err.message
-                if (msg != null && msg.contains("8K", ignoreCase = true)) {
+                val hwErr = err as? UnsupportedHardwareResolutionException
+                if (hwErr != null) {
                     _uiState.update {
                         it.copy(
                             isLoadingMedia = false,
-                            message = msg
+                            unsupportedResolutionMessage = hwErr.popupMessage
                         )
                     }
                 } else {
@@ -625,28 +607,7 @@ class CropToolViewModel(
                     }
                 }
             }.onSuccess { inspected ->
-                val baseInfo = inspected.copy(uri = uriToLoad)
-                val info = if (baseInfo.is8kUhd) {
-                    val wsResult = EightKAv1HevcPipeline.prepare8kAv1Workspace(
-                        context = appContext,
-                        projectId = project.id,
-                        media = baseInfo,
-                        existingWorkspacePath = project.av1WorkspacePath
-                    )
-                    if (wsResult.isFailure) {
-                        _uiState.update {
-                            it.copy(
-                                isLoadingMedia = false,
-                                message = wsResult.exceptionOrNull()?.message
-                                    ?: "8K Software AV1 playback preparation failed."
-                            )
-                        }
-                        return@onSuccess
-                    }
-                    baseInfo.copy(av1WorkspacePath = wsResult.getOrNull())
-                } else {
-                    baseInfo
-                }
+                val info = inspected.copy(uri = uriToLoad)
 
                 val bitmap = if (info.mediaType == CropMediaType.IMAGE) {
                     ImageCropProcessor.loadPreviewBitmap(appContext, info)
@@ -679,8 +640,7 @@ class CropToolViewModel(
                     if (info.mediaType == CropMediaType.VIDEO) {
                         CropMediaInspector.inspectVideoPipelineSupport(
                             sourceVideoMime = info.sourceVideoMime,
-                            container = com.example.framescope.crop.VideoContainerFormat.MP4,
-                            is8kUhd = info.is8kUhd
+                            container = com.example.framescope.crop.VideoContainerFormat.MP4
                         )
                     } else {
                         CodecPipelineSupport(
@@ -693,11 +653,13 @@ class CropToolViewModel(
                     }
                 }
 
+                val safeLeft = project.cropLeft.coerceIn(0f, 0.9999f)
+                val safeTop = project.cropTop.coerceIn(0f, 0.9999f)
                 val restoredCrop = NormalizedCropRect(
-                    left = project.cropLeft.coerceIn(0f, 0.96f),
-                    top = project.cropTop.coerceIn(0f, 0.96f),
-                    right = project.cropRight.coerceIn(0.04f, 1f),
-                    bottom = project.cropBottom.coerceIn(0.04f, 1f)
+                    left = safeLeft,
+                    top = safeTop,
+                    right = project.cropRight.coerceIn(safeLeft + 0.0001f, 1f),
+                    bottom = project.cropBottom.coerceIn(safeTop + 0.0001f, 1f)
                 )
                 val restoredAspect = runCatching {
                     CropAspectRatio.valueOf(project.aspectRatioName)
@@ -876,7 +838,8 @@ class CropToolViewModel(
     }
 
     fun updateTransform(newZoom: Float, newPan: Offset) {
-        val clampedZoom = newZoom.coerceIn(1f, 5f)
+        val safeZoom = if (newZoom.isFinite()) newZoom else 1f
+        val clampedZoom = safeZoom.coerceIn(1f, 10_000f)
         _uiState.update { state ->
             state.copy(
                 zoom = clampedZoom,
@@ -891,11 +854,14 @@ class CropToolViewModel(
 
     fun updateCropRect(newCrop: NormalizedCropRect) {
         _uiState.update { state ->
+            val minSpan = 0.0001f
+            val l = newCrop.left.coerceIn(0f, 1f - minSpan)
+            val t = newCrop.top.coerceIn(0f, 1f - minSpan)
             val sanitized = NormalizedCropRect(
-                left = newCrop.left.coerceIn(0f, 0.96f),
-                top = newCrop.top.coerceIn(0f, 0.96f),
-                right = newCrop.right.coerceIn(0.04f, 1f),
-                bottom = newCrop.bottom.coerceIn(0.04f, 1f)
+                left = l,
+                top = t,
+                right = newCrop.right.coerceIn(l + minSpan, 1f),
+                bottom = newCrop.bottom.coerceIn(t + minSpan, 1f)
             )
             state.copy(cropRect = sanitized).withHistoryFlags()
         }
@@ -1017,8 +983,7 @@ class CropToolViewModel(
             val support = withContext(Dispatchers.Default) {
                 CropMediaInspector.inspectVideoPipelineSupport(
                     sourceVideoMime = media?.sourceVideoMime,
-                    container = effectiveContainer,
-                    is8kUhd = media?.is8kUhd == true
+                    container = effectiveContainer
                 )
             }
             _uiState.update {
@@ -1108,15 +1073,10 @@ class CropToolViewModel(
             if (result is CropExportState.Success) {
                 val now = System.currentTimeMillis()
                 val currentSnapshotState = _uiState.value
-                val resolvedFormatLabel = if (media.is8kUhd) {
-                    "H.265"
-                } else {
-                    formatLabel
-                }
                 val record = buildProjectRecordFromState(currentSnapshotState)?.copy(
                     exportedFilePath = result.outputPath,
                     exportedGalleryUriString = result.galleryUriString,
-                    exportedFormatLabel = resolvedFormatLabel,
+                    exportedFormatLabel = formatLabel,
                     exportedWidth = currentSnapshotState.outputWidth,
                     exportedHeight = currentSnapshotState.outputHeight,
                     exportedDurationMs = if (media.mediaType == CropMediaType.VIDEO) {
@@ -1229,11 +1189,13 @@ class CropToolViewModel(
                 return@launch
             }
 
+            val safeLeft = project.cropLeft.coerceIn(0f, 0.9999f)
+            val safeTop = project.cropTop.coerceIn(0f, 0.9999f)
             val crop = NormalizedCropRect(
-                left = project.cropLeft.coerceIn(0f, 0.96f),
-                top = project.cropTop.coerceIn(0f, 0.96f),
-                right = project.cropRight.coerceIn(0.04f, 1f),
-                bottom = project.cropBottom.coerceIn(0.04f, 1f)
+                left = safeLeft,
+                top = safeTop,
+                right = project.cropRight.coerceIn(safeLeft + 0.0001f, 1f),
+                bottom = project.cropBottom.coerceIn(safeTop + 0.0001f, 1f)
             )
             val outW = (crop.widthFraction * inspected.displayWidth).roundToInt().let { raw ->
                 if (inspected.mediaType == CropMediaType.VIDEO) (raw and 1.inv()).coerceIn(16, inspected.displayWidth)
@@ -1318,15 +1280,10 @@ class CropToolViewModel(
                     } else {
                         0L
                     }
-                    val resolvedFormatLabel = if (inspected.is8kUhd) {
-                        "H.265"
-                    } else {
-                        formatLabel
-                    }
                     val updatedRecord = project.copy(
                         exportedFilePath = result.outputPath,
                         exportedGalleryUriString = result.galleryUriString,
-                        exportedFormatLabel = resolvedFormatLabel,
+                        exportedFormatLabel = formatLabel,
                         exportedWidth = outW,
                         exportedHeight = outH,
                         exportedDurationMs = trimDuration,
@@ -1385,13 +1342,8 @@ class CropToolViewModel(
         _uiState.update { it.copy(message = null) }
     }
 
-    fun reportPlaybackError(errorMsg: String) {
-        _uiState.update {
-            it.copy(
-                isVideoPlaying = false,
-                message = errorMsg
-            )
-        }
+    fun dismissUnsupportedResolutionDialog() {
+        _uiState.update { it.copy(unsupportedResolutionMessage = null) }
     }
 
     private fun saveProjectNowAsync() {
@@ -1464,8 +1416,7 @@ class CropToolViewModel(
             exportedHeight = existing?.exportedHeight ?: 0,
             exportedDurationMs = existing?.exportedDurationMs ?: 0L,
             updatedAtMs = System.currentTimeMillis(),
-            exportedAtMs = existing?.exportedAtMs,
-            av1WorkspacePath = media.av1WorkspacePath
+            exportedAtMs = existing?.exportedAtMs
         )
     }
 

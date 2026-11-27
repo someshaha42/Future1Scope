@@ -72,17 +72,6 @@ object VideoCropProcessor {
         allowLosslessPassthrough: Boolean = false,
         onProgress: (Float, String) -> Unit
     ): CropExportState = withContext(Dispatchers.IO) {
-        if (media.is8kUhd) {
-            return@withContext EightKAv1HevcPipeline.export8kHevcVideo(
-                context = context,
-                media = media,
-                cropRect = cropRect,
-                trimStartMs = trimStartMs,
-                trimEndMs = trimEndMs,
-                onProgress = onProgress
-            )
-        }
-
         var outFile: File? = null
 
         val videoExtractor = MediaExtractor()
@@ -697,10 +686,15 @@ object VideoCropProcessor {
                 }
             }
 
-            // Hardware encoders ALWAYS take precedence over software encoders across MIME types
+            // Hardware encoders ALWAYS take precedence over software encoders across MIME types,
+            // preferring hardware encoders that do not downscale the requested crop dimensions.
             candidates += containerCandidates.sortedWith(
                 compareByDescending<Pair<VideoContainerFormat, SelectedVideoEncoder>> { it.second.isHardware }
                     .thenBy { it.second.isSoftwareOnly }
+                    .thenByDescending {
+                        it.second.width >= requestedWidth - 8 &&
+                            it.second.height >= requestedHeight - 8
+                    }
             )
         }
         return candidates

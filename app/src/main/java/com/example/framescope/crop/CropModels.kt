@@ -95,8 +95,8 @@ data class NormalizedCropRect(
     val right: Float = 1f,
     val bottom: Float = 1f
 ) {
-    val widthFraction: Float get() = (right - left).coerceIn(0.02f, 1f)
-    val heightFraction: Float get() = (bottom - top).coerceIn(0.02f, 1f)
+    val widthFraction: Float get() = (right - left).coerceIn(0.0001f, 1f)
+    val heightFraction: Float get() = (bottom - top).coerceIn(0.0001f, 1f)
 }
 
 data class ImportedMediaInfo(
@@ -121,16 +121,8 @@ data class ImportedMediaInfo(
     val locationLon: Float? = null,
     val sourceVideoMime: String? = null,
     val imageExportOptions: List<ImageExportFormatOption> = emptyList(),
-    val videoExportOptions: List<VideoExportFormatOption> = emptyList(),
-    val exactFps: Float? = null,
-    val videoProfile: Int? = null,
-    val bitDepth: Int = 8,
-    val av1WorkspacePath: String? = null
-) {
-    val is8kUhd: Boolean
-        get() = mediaType == CropMediaType.VIDEO &&
-            EightKAv1HevcPipeline.is8kResolution(rawWidth, rawHeight)
-}
+    val videoExportOptions: List<VideoExportFormatOption> = emptyList()
+)
 
 data class CropExportedItem(
     val filePath: String,
@@ -189,8 +181,7 @@ data class CropProjectRecord(
     val exportedHeight: Int = 0,
     val exportedDurationMs: Long = 0L,
     val updatedAtMs: Long = 0L,
-    val exportedAtMs: Long? = null,
-    val av1WorkspacePath: String? = null
+    val exportedAtMs: Long? = null
 ) {
     val mediaType: CropMediaType
         get() = runCatching { CropMediaType.valueOf(mediaTypeName) }.getOrDefault(CropMediaType.VIDEO)

@@ -60,11 +60,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.framescope.crop.CropMediaType
-import com.example.framescope.crop.EightKAv1SoftwarePlayer
 import com.example.framescope.crop.ImportedMediaInfo
 import com.example.framescope.crop.NormalizedCropRect
 import com.example.framescope.ui.theme.FrameScopeColors
-import java.io.File
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlin.math.abs
@@ -110,7 +108,6 @@ fun CropWorkspaceCanvas(
     onVideoPositionChanged: (Long) -> Unit,
     onSeekHandled: () -> Unit,
     onVideoPlaybackEnded: () -> Unit,
-    onVideoPlaybackError: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val density = LocalDensity.current
@@ -280,11 +277,11 @@ fun CropWorkspaceCanvas(
                                         val curH = cur.heightFraction
                                         val ratioNorm = (curW / curH).coerceIn(0.05f, 20f)
                                         val maxW = minOf(1f, ratioNorm)
-                                        val minW = maxOf(0.06f, 0.06f * ratioNorm).coerceAtMost(maxW)
+                                        val minW = maxOf(0.0001f, 0.0001f * ratioNorm).coerceAtMost(maxW)
 
                                         val safeZoom = if (zoomDelta.isFinite() && zoomDelta > 0.01f) zoomDelta else 1f
                                         val targetW = (curW / safeZoom).coerceIn(minW, maxW)
-                                        val targetH = (targetW / ratioNorm).coerceIn(0.02f, 1f)
+                                        val targetH = (targetW / ratioNorm).coerceIn(0.0001f, 1f)
 
                                         val centerX = (cur.left + cur.right) * 0.5f - (panDelta.x / displayW)
                                         val centerY = (cur.top + cur.bottom) * 0.5f - (panDelta.y / displayH)
@@ -340,7 +337,8 @@ fun CropWorkspaceCanvas(
                                 if (pressedChanges.size >= 2) {
                                     val zoomDelta = event.calculateZoom()
                                     val panDelta = event.calculatePan()
-                                    val nextZoom = (latestZoom * zoomDelta).coerceIn(1f, 5f)
+                                    val safeDelta = if (zoomDelta.isFinite() && zoomDelta > 0.01f) zoomDelta else 1f
+                                    val nextZoom = (latestZoom * safeDelta).coerceIn(1f, 10_000f)
                                     val nextMaxX = if (nextZoom > 1.001f) latestCanvasW * nextZoom * 0.5f else latestCanvasW * 0.25f
                                     val nextMaxY = if (nextZoom > 1.001f) latestCanvasH * nextZoom * 0.5f else latestCanvasH * 0.25f
                                     val nextPan = Offset(
@@ -512,8 +510,7 @@ fun CropWorkspaceCanvas(
                             seekRequestMs = seekRequestMs,
                             onPositionChanged = onVideoPositionChanged,
                             onSeekHandled = onSeekHandled,
-                            onPlaybackError = onVideoPlaybackEnded,
-                            onPlaybackErrorMessage = onVideoPlaybackError
+                            onPlaybackError = onVideoPlaybackEnded
                         )
                     }
                 }
@@ -705,27 +702,8 @@ private fun CropVideoTexturePreview(
     seekRequestMs: Long?,
     onPositionChanged: (Long) -> Unit,
     onSeekHandled: () -> Unit,
-    onPlaybackError: () -> Unit,
-    onPlaybackErrorMessage: ((String) -> Unit)? = null
+    onPlaybackError: () -> Unit
 ) {
-    if (media.is8kUhd) {
-        EightKAv1SoftwareVideoPreview(
-            media = media,
-            isPlaying = isPlaying,
-            isMuted = isMuted,
-            trimStartMs = trimStartMs,
-            trimEndMs = trimEndMs,
-            seekRequestMs = seekRequestMs,
-            onPositionChanged = onPositionChanged,
-            onSeekHandled = onSeekHandled,
-            onPlaybackError = { errMsg ->
-                onPlaybackErrorMessage?.invoke(errMsg)
-                onPlaybackError()
-            }
-        )
-        return
-    }
-
     val context = LocalContext.current
     var mediaPlayer by remember(media.uri) { mutableStateOf<MediaPlayer?>(null) }
     var isPrepared by remember(media.uri) { mutableStateOf(false) }
@@ -831,102 +809,6 @@ private fun CropVideoTexturePreview(
                         runCatching { mediaPlayer?.stop() }
                         runCatching { mediaPlayer?.release() }
                         mediaPlayer = null
-                        return true
-                    }
-
-                    override fun onSurfaceTextureUpdated(surface: SurfaceTexture) = Unit
-                }
-            }
-        },
-        update = { view ->
-            view.requestLayout()
-        }
-    )
-}
-
-@Composable
-private fun EightKAv1SoftwareVideoPreview(
-    media: ImportedMediaInfo,
-    isPlaying: Boolean,
-    isMuted: Boolean,
-    trimStartMs: Long,
-    trimEndMs: Long,
-    seekRequestMs: Long?,
-    onPositionChanged: (Long) -> Unit,
-    onSeekHandled: () -> Unit,
-    onPlaybackError: (String) -> Unit
-) {
-    val context = LocalContext.current
-    val playbackUri = remember(media.uri, media.av1WorkspacePath) {
-        val ws = media.av1WorkspacePath?.let { File(it) }?.takeIf { it.exists() && it.length() > 0L }
-        if (ws != null) android.net.Uri.fromFile(ws) else media.uri
-    }
-    var swPlayer by remember(playbackUri) { mutableStateOf<EightKAv1SoftwarePlayer?>(null) }
-
-    DisposableEffect(playbackUri) {
-        onDispose {
-            swPlayer?.release()
-            swPlayer = null
-        }
-    }
-
-    LaunchedEffect(isPlaying, swPlayer) {
-        swPlayer?.setPlaying(isPlaying)
-    }
-
-    LaunchedEffect(isMuted, swPlayer) {
-        swPlayer?.setMuted(isMuted)
-    }
-
-    LaunchedEffect(trimStartMs, trimEndMs, swPlayer) {
-        swPlayer?.updateTrimRange(trimStartMs, trimEndMs)
-    }
-
-    LaunchedEffect(seekRequestMs, swPlayer) {
-        val targetMs = seekRequestMs ?: return@LaunchedEffect
-        val player = swPlayer ?: return@LaunchedEffect
-        player.seekTo(targetMs)
-        onPositionChanged(targetMs)
-        onSeekHandled()
-    }
-
-    AndroidView(
-        modifier = Modifier.fillMaxSize(),
-        factory = { ctx ->
-            TextureView(ctx).apply {
-                isOpaque = false
-                surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                    override fun onSurfaceTextureAvailable(
-                        surfaceTexture: SurfaceTexture,
-                        width: Int,
-                        height: Int
-                    ) {
-                        val surface = Surface(surfaceTexture)
-                        val player = EightKAv1SoftwarePlayer(
-                            context = context.applicationContext,
-                            videoUri = playbackUri,
-                            audioFallbackUri = if (playbackUri != media.uri) media.uri else null,
-                            surface = surface,
-                            initialTrimStartMs = trimStartMs,
-                            initialTrimEndMs = trimEndMs,
-                            initialMuted = isMuted,
-                            initialPlaying = isPlaying,
-                            onPositionChanged = onPositionChanged,
-                            onError = onPlaybackError
-                        )
-                        swPlayer = player
-                        player.start()
-                    }
-
-                    override fun onSurfaceTextureSizeChanged(
-                        surface: SurfaceTexture,
-                        width: Int,
-                        height: Int
-                    ) = Unit
-
-                    override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
-                        swPlayer?.release()
-                        swPlayer = null
                         return true
                     }
 

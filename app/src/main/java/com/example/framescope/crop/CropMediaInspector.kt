@@ -18,6 +18,13 @@ import java.util.Locale
 import kotlin.math.pow
 import kotlin.math.roundToInt
 
+class UnsupportedHardwareResolutionException(
+    val resolutionTier: String,
+    val width: Int,
+    val height: Int,
+    val popupMessage: String
+) : IllegalStateException(popupMessage)
+
 object CropMediaInspector {
 
     private val cachedCodecInfos: Array<MediaCodecInfo> by lazy {
@@ -155,12 +162,9 @@ object CropMediaInspector {
         var rotation = 0
         var durationMs = 0L
         var fps = 0
-        var exactFps: Float? = null
-        var videoProfile: Int? = null
         var colorStandard: Int? = null
         var colorRange: Int? = null
         var colorTransfer: Int? = null
-        var bitDepth = 8
         var originalBitrate: Long? = null
         var videoMime: String? = null
 
@@ -189,12 +193,8 @@ object CropMediaInspector {
                                 runCatching { format.getInteger(MediaFormat.KEY_FRAME_RATE).toFloat() }.getOrDefault(0f)
                             }
                         if (fVal > 0f) {
-                            exactFps = fVal
                             fps = fVal.roundToInt()
                         }
-                    }
-                    if (format.containsKey(MediaFormat.KEY_PROFILE)) {
-                        videoProfile = runCatching { format.getInteger(MediaFormat.KEY_PROFILE) }.getOrNull()
                     }
                     if (format.containsKey(MediaFormat.KEY_COLOR_STANDARD)) {
                         colorStandard = runCatching { format.getInteger(MediaFormat.KEY_COLOR_STANDARD) }.getOrNull()
@@ -205,7 +205,6 @@ object CropMediaInspector {
                     if (format.containsKey(MediaFormat.KEY_COLOR_TRANSFER)) {
                         colorTransfer = runCatching { format.getInteger(MediaFormat.KEY_COLOR_TRANSFER) }.getOrNull()
                     }
-                    bitDepth = EightKAv1HevcPipeline.detectBitDepth(videoMime, videoProfile, colorTransfer, format)
                     if (format.containsKey(MediaFormat.KEY_BIT_RATE)) {
                         val trackBitrate = format.getInteger(MediaFormat.KEY_BIT_RATE).toLong()
                         if (trackBitrate > 0L) {
@@ -253,27 +252,6 @@ object CropMediaInspector {
         check(videoMime != null && rawW > 0 && rawH > 0) {
             "No decodable video track found or unsupported video format."
         }
-        val is8kUhd = EightKAv1HevcPipeline.is8kResolution(rawW, rawH)
-        if (is8kUhd) {
-            val swDecoders = EightKAv1HevcPipeline.resolveSoftwareDecoders(videoMime!!)
-            check(swDecoders.isNotEmpty()) {
-                "8K (7680×4320) requires a compatible Software Decoder, but none is available on this device for $videoMime."
-            }
-            val swAv1Decoders = EightKAv1HevcPipeline.resolveSoftwareAv1Decoders()
-            check(swAv1Decoders.isNotEmpty()) {
-                "8K editing playback requires an AV1 Software Decoder (video/av01), but none is available on this device."
-            }
-            if (!videoMime.equals(MediaFormat.MIMETYPE_VIDEO_AV1, ignoreCase = true)) {
-                val swAv1Encoders = EightKAv1HevcPipeline.resolveSoftwareAv1Encoders()
-                check(swAv1Encoders.isNotEmpty()) {
-                    "8K import conversion to AV1 requires a Software AV1 Encoder (video/av01), but none is available on this device."
-                }
-            }
-        } else {
-            check(hasCompatibleDecoder(videoMime!!)) {
-                "No decoder available on this device for $videoMime."
-            }
-        }
 
         val normalizedRot = ((rotation % 360) + 360) % 360
         val (dispW, dispH) = if (normalizedRot == 90 || normalizedRot == 270) {
@@ -281,6 +259,15 @@ object CropMediaInspector {
         } else {
             rawW to rawH
         }
+
+        // Strict processor hardware decoder & encoder capability check (software codecs ignored)
+        validateHardwareResolutionSupport(
+            videoMime = videoMime!!,
+            rawW = rawW,
+            rawH = rawH,
+            dispW = dispW,
+            dispH = dispH
+        )
 
         val resolvedExt = ext.ifBlank { mimeToDefaultExtension(rawMime) }.ifBlank { "mp4" }
         val videoExportOptions = buildVideoExportOptions(resolvedExt, rawMime)
@@ -297,16 +284,13 @@ object CropMediaInspector {
             displayWidth = dispW,
             displayHeight = dispH,
             durationMs = durationMs.coerceAtLeast(0L),
-            fps = if (is8kUhd && fps > 0) fps else if (fps > 0) fps.coerceIn(15, 120) else 30,
+            fps = if (fps > 0) fps.coerceIn(15, 120) else 30,
             originalBitrateBps = originalBitrate,
             colorStandard = colorStandard,
             colorRange = colorRange,
             colorTransfer = colorTransfer,
             sourceVideoMime = videoMime,
-            videoExportOptions = videoExportOptions,
-            exactFps = exactFps,
-            videoProfile = videoProfile,
-            bitDepth = bitDepth
+            videoExportOptions = videoExportOptions
         )
     }
 
@@ -388,16 +372,133 @@ object CropMediaInspector {
         return listOf(mp4Opt)
     }
 
-    private fun hasCompatibleDecoder(mime: String): Boolean {
-        if (hasDecoderForMime(mime)) return true
-        if (mime.equals("video/dolby-vision", ignoreCase = true)) {
-            return hasDecoderForMime(MediaFormat.MIMETYPE_VIDEO_HEVC)
+    private fun validateHardwareResolutionSupport(
+        videoMime: String,
+        rawW: Int,
+        rawH: Int,
+        dispW: Int,
+        dispH: Int
+    ) {
+        val codecInfos = cachedCodecInfos
+        val decoderMimes = buildList {
+            add(videoMime)
+            if (videoMime.equals("video/dolby-vision", ignoreCase = true)) {
+                add(MediaFormat.MIMETYPE_VIDEO_HEVC)
+            }
         }
-        return false
+
+        // Only inspect genuine processor hardware decoders (MediaTek / Qualcomm / Exynos / Tensor / etc.)
+        val hwDecoderPairs = mutableListOf<Pair<MediaCodecInfo, MediaCodecInfo.VideoCapabilities>>()
+        for (mime in decoderMimes) {
+            for (info in codecInfos) {
+                if (info.isAlias || info.isEncoder || !info.isHardwareAccelerated || info.isSoftwareOnly) continue
+                val matchedType = info.supportedTypes.firstOrNull { it.equals(mime, ignoreCase = true) } ?: continue
+                val vCaps = runCatching { info.getCapabilitiesForType(matchedType).videoCapabilities }.getOrNull() ?: continue
+                hwDecoderPairs += info to vCaps
+            }
+        }
+
+        // Only inspect genuine processor hardware encoders capable of Surface-input MP4 export
+        val encoderMimes = listOf(MediaFormat.MIMETYPE_VIDEO_HEVC, MediaFormat.MIMETYPE_VIDEO_AVC)
+        val hwEncoderPairs = mutableListOf<Pair<MediaCodecInfo, MediaCodecInfo.VideoCapabilities>>()
+        for (mime in encoderMimes) {
+            for (info in codecInfos) {
+                if (info.isAlias || !info.isEncoder || !info.isHardwareAccelerated || info.isSoftwareOnly) continue
+                val matchedType = info.supportedTypes.firstOrNull { it.equals(mime, ignoreCase = true) } ?: continue
+                val caps = runCatching { info.getCapabilitiesForType(matchedType) }.getOrNull() ?: continue
+                val supportsSurface = MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface in caps.colorFormats
+                val vCaps = caps.videoCapabilities ?: continue
+                if (supportsSurface) {
+                    hwEncoderPairs += info to vCaps
+                }
+            }
+        }
+
+        val hwDecoderSupportsSize = hwDecoderPairs.any { (_, caps) ->
+            isSizeSupportedInAnyOrientation(caps, rawW, rawH)
+        }
+        val hwEncoderSupportsSize = hwEncoderPairs.any { (_, caps) ->
+            isSizeSupportedInAnyOrientation(caps, rawW, rawH)
+        }
+
+        if (!hwDecoderSupportsSize || !hwEncoderSupportsSize) {
+            val tierName = classifyResolutionTierName(dispW, dispH)
+            val hwDecMax = describeHardwareMaxResolution(hwDecoderPairs.map { it.second })
+            val hwEncMax = describeHardwareMaxResolution(hwEncoderPairs.map { it.second })
+            val reasonLine = when {
+                hwDecoderPairs.isEmpty() && hwEncoderPairs.isEmpty() ->
+                    "No hardware decoder or hardware encoder was detected for this processor."
+                !hwDecoderSupportsSize && !hwEncoderSupportsSize ->
+                    "Exceeds both processor hardware decoder max ($hwDecMax) and hardware encoder max ($hwEncMax)."
+                !hwEncoderSupportsSize ->
+                    "Exceeds processor hardware encoder max ($hwEncMax)."
+                else ->
+                    "Exceeds processor hardware decoder max ($hwDecMax)."
+            }
+            val popupMessage =
+                "This resolution is $tierName (${dispW}×${dispH}) — not supported your device.\n\n" +
+                    "$reasonLine\n" +
+                    "Hardware Decoder Max: $hwDecMax\n" +
+                    "Hardware Encoder Max: $hwEncMax"
+            throw UnsupportedHardwareResolutionException(
+                resolutionTier = tierName,
+                width = dispW,
+                height = dispH,
+                popupMessage = popupMessage
+            )
+        }
     }
 
-    private fun hasDecoderForMime(mime: String): Boolean {
-        return cachedCodecInfos.any { !it.isEncoder && it.supportedTypes.any { t -> t.equals(mime, ignoreCase = true) } }
+    private fun isSizeSupportedInAnyOrientation(
+        caps: MediaCodecInfo.VideoCapabilities,
+        width: Int,
+        height: Int
+    ): Boolean {
+        if (width <= 0 || height <= 0) return false
+        return runCatching {
+            caps.isSizeSupported(width, height) || caps.isSizeSupported(height, width)
+        }.getOrDefault(false)
+    }
+
+    private fun classifyResolutionTierName(w: Int, h: Int): String {
+        val longSide = maxOf(w, h)
+        val shortSide = minOf(w, h)
+        return when {
+            longSide >= 7600 || shortSide >= 4300 -> "8K"
+            longSide >= 5700 || shortSide >= 3200 -> "6K"
+            longSide >= 5000 || shortSide >= 2800 -> "5K"
+            longSide >= 3800 || shortSide >= 2100 -> "4K"
+            longSide >= 2500 || shortSide >= 1400 -> "2K"
+            longSide >= 1900 || shortSide >= 1070 -> "1080p"
+            longSide >= 1270 || shortSide >= 710 -> "720p"
+            longSide >= 850 || shortSide >= 470 -> "480p"
+            else -> "${w}×${h}"
+        }
+    }
+
+    private fun describeHardwareMaxResolution(capsList: List<MediaCodecInfo.VideoCapabilities>): String {
+        if (capsList.isEmpty()) return "Unavailable"
+        val standardTiers = listOf(
+            Triple("8K", 7680, 4320),
+            Triple("6K", 5760, 3240),
+            Triple("5K", 5120, 2880),
+            Triple("4K", 3840, 2160),
+            Triple("2K", 2560, 1440),
+            Triple("1080p", 1920, 1080),
+            Triple("720p", 1280, 720),
+            Triple("480p", 854, 480)
+        )
+        for ((tier, tw, th) in standardTiers) {
+            if (capsList.any { isSizeSupportedInAnyOrientation(it, tw, th) }) {
+                return "$tier (${tw}×${th})"
+            }
+        }
+        val best = capsList.maxByOrNull {
+            it.supportedWidths.upper.toLong() * it.supportedHeights.upper.toLong()
+        } ?: return "Unavailable"
+        val maxW = best.supportedWidths.upper
+        val maxH = runCatching { best.getSupportedHeightsFor(maxW).upper }.getOrDefault(best.supportedHeights.upper)
+        return "${maxW}×${maxH}"
     }
 
     private fun hasSurfaceEncoderForAny(codecInfos: Array<MediaCodecInfo>, mimes: List<String>): Boolean {
@@ -416,25 +517,8 @@ object CropMediaInspector {
 
     fun inspectVideoPipelineSupport(
         sourceVideoMime: String?,
-        container: VideoContainerFormat?,
-        is8kUhd: Boolean = false
+        container: VideoContainerFormat?
     ): CodecPipelineSupport {
-        if (is8kUhd) {
-            val swDecName = EightKAv1HevcPipeline.resolveSoftwareAv1Decoders().firstOrNull()
-                ?: if (!sourceVideoMime.isNullOrBlank()) {
-                    EightKAv1HevcPipeline.resolveSoftwareDecoders(sourceVideoMime).firstOrNull()?.first
-                } else {
-                    null
-                }
-            val swHevcEncName = EightKAv1HevcPipeline.resolveSoftwareHevcEncoders().firstOrNull()?.name
-            return CodecPipelineSupport(
-                isHardwareDecoder = false,
-                isHardwareEncoder = false,
-                decoderName = swDecName,
-                encoderName = swHevcEncName,
-                statusText = "✓ 8K Software AV1 Playback & Software H.265 Export"
-            )
-        }
         val codecInfos = cachedCodecInfos
 
         val decoderInfo = if (!sourceVideoMime.isNullOrBlank()) {

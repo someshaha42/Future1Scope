@@ -418,7 +418,8 @@ internal fun ProjectMediaViewer(
                                         dragAxis = ViewerDragAxis.PAN_ZOOMED
                                         val zoomDelta = event.calculateZoom()
                                         val panDelta = event.calculatePan()
-                                        val nextZoom = (latestZoom * zoomDelta).coerceIn(1f, 5f)
+                                        val safeDelta = if (zoomDelta.isFinite() && zoomDelta > 0.01f) zoomDelta else 1f
+                                        val nextZoom = (latestZoom * safeDelta).coerceIn(1f, 10_000f)
                                         val nextPan = if (nextZoom <= 1.02f) {
                                             Offset.Zero
                                         } else {
