@@ -1028,10 +1028,10 @@ class CropToolViewModel(
                         )
                     val orig = media.originalBitrateBps
                     val targetBps = if (orig != null && orig > 0L) {
-                        orig.coerceIn(250_000L, 100_000_000L).toInt()
+                        orig.coerceIn(250_000L, Int.MAX_VALUE.toLong()).toInt()
                     } else {
                         (state.outputWidth.toLong() * state.outputHeight.toLong() * 6L)
-                            .coerceIn(1_500_000L, 25_000_000L)
+                            .coerceIn(1_500_000L, Int.MAX_VALUE.toLong())
                             .toInt()
                     }
 
@@ -1223,9 +1223,11 @@ class CropToolViewModel(
                         )
                     val orig = inspected.originalBitrateBps
                     val targetBps = if (orig != null && orig > 0L) {
-                        orig.coerceIn(250_000L, 100_000_000L).toInt()
+                        orig.coerceIn(250_000L, Int.MAX_VALUE.toLong()).toInt()
                     } else {
-                        (outW.toLong() * outH.toLong() * 6L).coerceIn(1_500_000L, 25_000_000L).toInt()
+                        (outW.toLong() * outH.toLong() * 6L)
+                            .coerceIn(1_500_000L, Int.MAX_VALUE.toLong())
+                            .toInt()
                     }
                     val trimStart = project.trimStartMs.coerceIn(0L, inspected.durationMs)
                     val trimEnd = if (project.trimEndMs > trimStart) {

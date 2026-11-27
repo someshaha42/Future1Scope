@@ -187,7 +187,13 @@ object VideoCropProcessor {
                     } else {
                         MediaCodec.createEncoderByType(candidateSpec.mimeType)
                     }
-                    configureVideoEncoderWithFallback(probeEncoder!!, candidateSpec)
+                    configureVideoEncoderWithFallback(
+                        encoder = probeEncoder!!,
+                        spec = candidateSpec,
+                        colorStandard = media.colorStandard,
+                        colorRange = media.colorRange,
+                        colorTransfer = media.colorTransfer
+                    )
                     probeSurface = probeEncoder!!.createInputSurface()
                     probeEncoder!!.start()
                 }.isSuccess
@@ -715,19 +721,26 @@ object VideoCropProcessor {
 
     private fun configureVideoEncoderWithFallback(
         encoder: MediaCodec,
-        spec: SelectedVideoEncoder
+        spec: SelectedVideoEncoder,
+        colorStandard: Int?,
+        colorRange: Int?,
+        colorTransfer: Int?
     ) {
         data class Attempt(
             val bitrateMode: Int?,
-            val disableBFrames: Boolean,
-            val useFastComplexity: Boolean
+            val includeColorMetadata: Boolean
         )
 
-        val attempts = listOf(
-            Attempt(spec.bitrateMode, disableBFrames = true, useFastComplexity = !spec.isHardware),
-            Attempt(spec.bitrateMode, disableBFrames = false, useFastComplexity = !spec.isHardware),
-            Attempt(null, disableBFrames = false, useFastComplexity = false)
-        )
+        val hasColorMetadata = colorStandard != null || colorRange != null || colorTransfer != null
+        val attempts = buildList {
+            if (hasColorMetadata) {
+                add(Attempt(spec.bitrateMode, includeColorMetadata = true))
+            }
+            add(Attempt(spec.bitrateMode, includeColorMetadata = false))
+            if (spec.bitrateMode != null) {
+                add(Attempt(null, includeColorMetadata = false))
+            }
+        }
 
         var lastError: Throwable? = null
         for (attempt in attempts) {
@@ -739,11 +752,10 @@ object VideoCropProcessor {
                 setInteger(MediaFormat.KEY_BIT_RATE, spec.bitrateBps)
                 setInteger(MediaFormat.KEY_FRAME_RATE, spec.frameRate.coerceAtLeast(1))
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
-                if (attempt.disableBFrames) {
-                    setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
-                }
-                if (attempt.useFastComplexity && spec.fastestComplexity != null) {
-                    setInteger(MediaFormat.KEY_COMPLEXITY, spec.fastestComplexity)
+                if (attempt.includeColorMetadata) {
+                    colorStandard?.let { setInteger(MediaFormat.KEY_COLOR_STANDARD, it) }
+                    colorRange?.let { setInteger(MediaFormat.KEY_COLOR_RANGE, it) }
+                    colorTransfer?.let { setInteger(MediaFormat.KEY_COLOR_TRANSFER, it) }
                 }
                 if (attempt.bitrateMode != null) {
                     setInteger(MediaFormat.KEY_BITRATE_MODE, attempt.bitrateMode)

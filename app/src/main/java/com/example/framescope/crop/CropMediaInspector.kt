@@ -451,7 +451,7 @@ object CropMediaInspector {
         val rawBps = pixels * fpsScale * bpp
         val rawMbps = (rawBps / 1_000_000.0).toFloat()
         val stepped = (rawMbps * 2f).roundToInt() / 2f
-        return stepped.coerceIn(1.0f, 50.0f)
+        return stepped.coerceAtLeast(1.0f)
     }
 
     private fun queryDisplayName(context: Context, uri: Uri): String {
