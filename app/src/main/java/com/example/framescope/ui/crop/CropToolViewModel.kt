@@ -26,7 +26,7 @@ import com.example.framescope.crop.ImageCropProcessor
 import com.example.framescope.crop.ImageExportFormatOption
 import com.example.framescope.crop.ImportedMediaInfo
 import com.example.framescope.crop.NormalizedCropRect
-import com.example.framescope.crop.UnsupportedHardwareResolutionException
+import com.example.framescope.crop.UnsupportedVideoResolutionException
 import com.example.framescope.crop.VideoBitrateMode
 import com.example.framescope.crop.VideoCropProcessor
 import com.example.framescope.crop.VideoExportFormatOption
@@ -406,12 +406,12 @@ class CropToolViewModel(
 
             val initialResult = CropMediaInspector.inspect(appContext, uri)
             initialResult.onFailure { err ->
-                val hwErr = err as? UnsupportedHardwareResolutionException
+                val resErr = err as? UnsupportedVideoResolutionException
                 _uiState.update {
                     it.copy(
                         isLoadingMedia = false,
-                        unsupportedResolutionMessage = hwErr?.popupMessage,
-                        message = if (hwErr != null) null else (err.message ?: "Unable to import selected file.")
+                        unsupportedResolutionMessage = resErr?.popupMessage,
+                        message = if (resErr != null) null else (err.message ?: "Unable to import selected file.")
                     )
                 }
             }.onSuccess { inspectedInfo ->
@@ -588,12 +588,12 @@ class CropToolViewModel(
 
             val result = CropMediaInspector.inspect(appContext, uriToLoad)
             result.onFailure { err ->
-                val hwErr = err as? UnsupportedHardwareResolutionException
-                if (hwErr != null) {
+                val resErr = err as? UnsupportedVideoResolutionException
+                if (resErr != null) {
                     _uiState.update {
                         it.copy(
                             isLoadingMedia = false,
-                            unsupportedResolutionMessage = hwErr.popupMessage
+                            unsupportedResolutionMessage = resErr.popupMessage
                         )
                     }
                 } else {

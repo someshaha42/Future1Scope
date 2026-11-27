@@ -18,8 +18,7 @@ import java.util.Locale
 import kotlin.math.pow
 import kotlin.math.roundToInt
 
-class UnsupportedHardwareResolutionException(
-    val resolutionTier: String,
+class UnsupportedVideoResolutionException(
     val width: Int,
     val height: Int,
     val popupMessage: String
@@ -260,14 +259,18 @@ object CropMediaInspector {
             rawW to rawH
         }
 
-        // Strict processor hardware decoder & encoder capability check (software codecs ignored)
-        validateHardwareResolutionSupport(
-            videoMime = videoMime!!,
-            rawW = rawW,
-            rawH = rawH,
-            dispW = dispW,
-            dispH = dispH
-        )
+        // Metadata-only video resolution check (3840 × 2160 max; no capability tests)
+        val longSide = maxOf(dispW, dispH)
+        val shortSide = minOf(dispW, dispH)
+        if (longSide > 3840 || shortSide > 2160) {
+            throw UnsupportedVideoResolutionException(
+                width = dispW,
+                height = dispH,
+                popupMessage = "This resolution is not supported in your device.\n\n" +
+                    "Video Resolution: ${dispW} × ${dispH}\n" +
+                    "Maximum Supported: 3840 × 2160"
+            )
+        }
 
         val resolvedExt = ext.ifBlank { mimeToDefaultExtension(rawMime) }.ifBlank { "mp4" }
         val videoExportOptions = buildVideoExportOptions(resolvedExt, rawMime)
@@ -370,135 +373,6 @@ object CropMediaInspector {
         )
 
         return listOf(mp4Opt)
-    }
-
-    private fun validateHardwareResolutionSupport(
-        videoMime: String,
-        rawW: Int,
-        rawH: Int,
-        dispW: Int,
-        dispH: Int
-    ) {
-        val codecInfos = cachedCodecInfos
-        val decoderMimes = buildList {
-            add(videoMime)
-            if (videoMime.equals("video/dolby-vision", ignoreCase = true)) {
-                add(MediaFormat.MIMETYPE_VIDEO_HEVC)
-            }
-        }
-
-        // Only inspect genuine processor hardware decoders (MediaTek / Qualcomm / Exynos / Tensor / etc.)
-        val hwDecoderPairs = mutableListOf<Pair<MediaCodecInfo, MediaCodecInfo.VideoCapabilities>>()
-        for (mime in decoderMimes) {
-            for (info in codecInfos) {
-                if (info.isAlias || info.isEncoder || !info.isHardwareAccelerated || info.isSoftwareOnly) continue
-                val matchedType = info.supportedTypes.firstOrNull { it.equals(mime, ignoreCase = true) } ?: continue
-                val vCaps = runCatching { info.getCapabilitiesForType(matchedType).videoCapabilities }.getOrNull() ?: continue
-                hwDecoderPairs += info to vCaps
-            }
-        }
-
-        // Only inspect genuine processor hardware encoders capable of Surface-input MP4 export
-        val encoderMimes = listOf(MediaFormat.MIMETYPE_VIDEO_HEVC, MediaFormat.MIMETYPE_VIDEO_AVC)
-        val hwEncoderPairs = mutableListOf<Pair<MediaCodecInfo, MediaCodecInfo.VideoCapabilities>>()
-        for (mime in encoderMimes) {
-            for (info in codecInfos) {
-                if (info.isAlias || !info.isEncoder || !info.isHardwareAccelerated || info.isSoftwareOnly) continue
-                val matchedType = info.supportedTypes.firstOrNull { it.equals(mime, ignoreCase = true) } ?: continue
-                val caps = runCatching { info.getCapabilitiesForType(matchedType) }.getOrNull() ?: continue
-                val supportsSurface = MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface in caps.colorFormats
-                val vCaps = caps.videoCapabilities ?: continue
-                if (supportsSurface) {
-                    hwEncoderPairs += info to vCaps
-                }
-            }
-        }
-
-        val hwDecoderSupportsSize = hwDecoderPairs.any { (_, caps) ->
-            isSizeSupportedInAnyOrientation(caps, rawW, rawH)
-        }
-        val hwEncoderSupportsSize = hwEncoderPairs.any { (_, caps) ->
-            isSizeSupportedInAnyOrientation(caps, rawW, rawH)
-        }
-
-        if (!hwDecoderSupportsSize || !hwEncoderSupportsSize) {
-            val tierName = classifyResolutionTierName(dispW, dispH)
-            val hwDecMax = describeHardwareMaxResolution(hwDecoderPairs.map { it.second })
-            val hwEncMax = describeHardwareMaxResolution(hwEncoderPairs.map { it.second })
-            val reasonLine = when {
-                hwDecoderPairs.isEmpty() && hwEncoderPairs.isEmpty() ->
-                    "No hardware decoder or hardware encoder was detected for this processor."
-                !hwDecoderSupportsSize && !hwEncoderSupportsSize ->
-                    "Exceeds both processor hardware decoder max ($hwDecMax) and hardware encoder max ($hwEncMax)."
-                !hwEncoderSupportsSize ->
-                    "Exceeds processor hardware encoder max ($hwEncMax)."
-                else ->
-                    "Exceeds processor hardware decoder max ($hwDecMax)."
-            }
-            val popupMessage =
-                "This resolution is $tierName (${dispW}×${dispH}) — not supported your device.\n\n" +
-                    "$reasonLine\n" +
-                    "Hardware Decoder Max: $hwDecMax\n" +
-                    "Hardware Encoder Max: $hwEncMax"
-            throw UnsupportedHardwareResolutionException(
-                resolutionTier = tierName,
-                width = dispW,
-                height = dispH,
-                popupMessage = popupMessage
-            )
-        }
-    }
-
-    private fun isSizeSupportedInAnyOrientation(
-        caps: MediaCodecInfo.VideoCapabilities,
-        width: Int,
-        height: Int
-    ): Boolean {
-        if (width <= 0 || height <= 0) return false
-        return runCatching {
-            caps.isSizeSupported(width, height) || caps.isSizeSupported(height, width)
-        }.getOrDefault(false)
-    }
-
-    private fun classifyResolutionTierName(w: Int, h: Int): String {
-        val longSide = maxOf(w, h)
-        val shortSide = minOf(w, h)
-        return when {
-            longSide >= 7600 || shortSide >= 4300 -> "8K"
-            longSide >= 5700 || shortSide >= 3200 -> "6K"
-            longSide >= 5000 || shortSide >= 2800 -> "5K"
-            longSide >= 3800 || shortSide >= 2100 -> "4K"
-            longSide >= 2500 || shortSide >= 1400 -> "2K"
-            longSide >= 1900 || shortSide >= 1070 -> "1080p"
-            longSide >= 1270 || shortSide >= 710 -> "720p"
-            longSide >= 850 || shortSide >= 470 -> "480p"
-            else -> "${w}×${h}"
-        }
-    }
-
-    private fun describeHardwareMaxResolution(capsList: List<MediaCodecInfo.VideoCapabilities>): String {
-        if (capsList.isEmpty()) return "Unavailable"
-        val standardTiers = listOf(
-            Triple("8K", 7680, 4320),
-            Triple("6K", 5760, 3240),
-            Triple("5K", 5120, 2880),
-            Triple("4K", 3840, 2160),
-            Triple("2K", 2560, 1440),
-            Triple("1080p", 1920, 1080),
-            Triple("720p", 1280, 720),
-            Triple("480p", 854, 480)
-        )
-        for ((tier, tw, th) in standardTiers) {
-            if (capsList.any { isSizeSupportedInAnyOrientation(it, tw, th) }) {
-                return "$tier (${tw}×${th})"
-            }
-        }
-        val best = capsList.maxByOrNull {
-            it.supportedWidths.upper.toLong() * it.supportedHeights.upper.toLong()
-        } ?: return "Unavailable"
-        val maxW = best.supportedWidths.upper
-        val maxH = runCatching { best.getSupportedHeightsFor(maxW).upper }.getOrDefault(best.supportedHeights.upper)
-        return "${maxW}×${maxH}"
     }
 
     private fun hasSurfaceEncoderForAny(codecInfos: Array<MediaCodecInfo>, mimes: List<String>): Boolean {
