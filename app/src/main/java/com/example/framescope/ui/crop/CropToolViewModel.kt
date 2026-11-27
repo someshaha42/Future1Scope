@@ -26,7 +26,6 @@ import com.example.framescope.crop.ImageCropProcessor
 import com.example.framescope.crop.ImageExportFormatOption
 import com.example.framescope.crop.ImportedMediaInfo
 import com.example.framescope.crop.NormalizedCropRect
-import com.example.framescope.crop.UnsupportedVideoResolutionException
 import com.example.framescope.crop.VideoBitrateMode
 import com.example.framescope.crop.VideoCropProcessor
 import com.example.framescope.crop.VideoExportFormatOption
@@ -89,7 +88,6 @@ data class CropToolUiState(
     val isSharingProjectExport: Boolean = false,
     val shareExportProgress: Float = 0f,
     val shareExportStatus: String = "",
-    val unsupportedResolutionMessage: String? = null,
     val message: String? = null
 ) {
     val outputWidth: Int
@@ -399,19 +397,16 @@ class CropToolViewModel(
                     isVideoPlaying = false,
                     isPreviewMode = false,
                     exportState = CropExportState.Idle,
-                    unsupportedResolutionMessage = null,
                     message = null
                 )
             }
 
             val initialResult = CropMediaInspector.inspect(appContext, uri)
             initialResult.onFailure { err ->
-                val resErr = err as? UnsupportedVideoResolutionException
                 _uiState.update {
                     it.copy(
                         isLoadingMedia = false,
-                        unsupportedResolutionMessage = resErr?.popupMessage,
-                        message = if (resErr != null) null else (err.message ?: "Unable to import selected file.")
+                        message = err.message ?: "Unable to import selected file."
                     )
                 }
             }.onSuccess { inspectedInfo ->
@@ -561,7 +556,6 @@ class CropToolViewModel(
                     isVideoPlaying = false,
                     isPreviewMode = false,
                     exportState = CropExportState.Idle,
-                    unsupportedResolutionMessage = null,
                     message = null
                 )
             }
@@ -587,24 +581,14 @@ class CropToolViewModel(
             }
 
             val result = CropMediaInspector.inspect(appContext, uriToLoad)
-            result.onFailure { err ->
-                val resErr = err as? UnsupportedVideoResolutionException
-                if (resErr != null) {
-                    _uiState.update {
-                        it.copy(
-                            isLoadingMedia = false,
-                            unsupportedResolutionMessage = resErr.popupMessage
-                        )
-                    }
-                } else {
-                    projectsRepository.deleteProject(project.id)
-                    refreshRecentProjects()
-                    _uiState.update {
-                        it.copy(
-                            isLoadingMedia = false,
-                            message = "Unable to open project media; project removed."
-                        )
-                    }
+            result.onFailure {
+                projectsRepository.deleteProject(project.id)
+                refreshRecentProjects()
+                _uiState.update {
+                    it.copy(
+                        isLoadingMedia = false,
+                        message = "Unable to open project media; project removed."
+                    )
                 }
             }.onSuccess { inspected ->
                 val info = inspected.copy(uri = uriToLoad)
@@ -1340,10 +1324,6 @@ class CropToolViewModel(
 
     fun clearMessage() {
         _uiState.update { it.copy(message = null) }
-    }
-
-    fun dismissUnsupportedResolutionDialog() {
-        _uiState.update { it.copy(unsupportedResolutionMessage = null) }
     }
 
     private fun saveProjectNowAsync() {

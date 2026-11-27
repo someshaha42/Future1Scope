@@ -18,12 +18,6 @@ import java.util.Locale
 import kotlin.math.pow
 import kotlin.math.roundToInt
 
-class UnsupportedVideoResolutionException(
-    val width: Int,
-    val height: Int,
-    val popupMessage: String
-) : IllegalStateException(popupMessage)
-
 object CropMediaInspector {
 
     private val cachedCodecInfos: Array<MediaCodecInfo> by lazy {
@@ -257,19 +251,6 @@ object CropMediaInspector {
             rawH to rawW
         } else {
             rawW to rawH
-        }
-
-        // Metadata-only video resolution check (3840 × 2160 max; no capability tests)
-        val longSide = maxOf(dispW, dispH)
-        val shortSide = minOf(dispW, dispH)
-        if (longSide > 3840 || shortSide > 2160) {
-            throw UnsupportedVideoResolutionException(
-                width = dispW,
-                height = dispH,
-                popupMessage = "This resolution is not supported in your device.\n\n" +
-                    "Video Resolution: ${dispW} × ${dispH}\n" +
-                    "Maximum Supported: 3840 × 2160"
-            )
         }
 
         val resolvedExt = ext.ifBlank { mimeToDefaultExtension(rawMime) }.ifBlank { "mp4" }

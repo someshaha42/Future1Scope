@@ -289,35 +289,6 @@ fun CropToolScreen(
         )
     }
 
-    state.unsupportedResolutionMessage?.let { errMsg ->
-        AlertDialog(
-            onDismissRequest = viewModel::dismissUnsupportedResolutionDialog,
-            containerColor = FrameScopeColors.CardSurface,
-            modifier = Modifier.testTag("crop_unsupported_resolution_dialog"),
-            title = {
-                Text(
-                    text = "Unsupported Resolution",
-                    color = FrameScopeColors.SpecRedText,
-                    fontWeight = FontWeight.Bold
-                )
-            },
-            text = {
-                Text(
-                    text = errMsg,
-                    color = FrameScopeColors.TextPrimary
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = viewModel::dismissUnsupportedResolutionDialog,
-                    modifier = Modifier.testTag("crop_unsupported_resolution_ok_button")
-                ) {
-                    Text("OK", color = FrameScopeColors.SelectionBlue, fontWeight = FontWeight.Bold)
-                }
-            }
-        )
-    }
-
     val isWorkspaceEditingVisible = state.media != null && !state.showImportPanel
 
     Box(modifier = Modifier.fillMaxSize()) {
