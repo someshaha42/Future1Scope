@@ -5,4 +5,5 @@
     <color name="notif_pause_pill_bg">#1E293B</color>
     <color name="notif_resume_pill_bg">#2563EB</color>
     <color name="notif_stop_pill_bg">#DC2626</color>
+    <color name="splash_screen_bg">#B4CEFC</color>
 </resources>

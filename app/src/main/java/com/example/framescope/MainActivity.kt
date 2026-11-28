@@ -10,6 +10,9 @@ import com.example.framescope.ui.theme.FrameScopeTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        splashScreen.setOnExitAnimationListener { splashScreenView ->
+            splashScreenView.remove()
+        }
         enableEdgeToEdge()
         val app = application as FrameScopeApplication
         setContent {

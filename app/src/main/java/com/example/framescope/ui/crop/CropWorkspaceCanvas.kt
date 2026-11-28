@@ -31,6 +31,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -59,6 +60,9 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.framescope.crop.CropMediaType
 import com.example.framescope.crop.ImportedMediaInfo
 import com.example.framescope.crop.NormalizedCropRect
@@ -707,8 +711,49 @@ private fun CropVideoTexturePreview(
     onPlaybackError: () -> Unit
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     var mediaPlayer by remember(media.uri) { mutableStateOf<MediaPlayer?>(null) }
     var isPrepared by remember(media.uri) { mutableStateOf(false) }
+    var isLifecycleResumed by remember {
+        mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+    }
+    var lastKnownPositionMs by remember(media.uri) {
+        mutableLongStateOf(trimStartMs.coerceAtLeast(1L))
+    }
+
+    val latestIsPlaying by rememberUpdatedState(isPlaying)
+    val latestIsMuted by rememberUpdatedState(isMuted)
+    val latestIsLifecycleResumed by rememberUpdatedState(isLifecycleResumed)
+    val latestTrimStartMs by rememberUpdatedState(trimStartMs)
+    val latestTrimEndMs by rememberUpdatedState(trimEndMs)
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> {
+                    isLifecycleResumed = true
+                }
+                Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> {
+                    isLifecycleResumed = false
+                    runCatching {
+                        mediaPlayer?.let { mp ->
+                            if (isPrepared) {
+                                lastKnownPositionMs = mp.currentPosition.toLong().coerceAtLeast(0L)
+                            }
+                            if (mp.isPlaying) {
+                                mp.pause()
+                            }
+                        }
+                    }
+                }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     DisposableEffect(media.uri) {
         onDispose {
@@ -719,13 +764,15 @@ private fun CropVideoTexturePreview(
         }
     }
 
-    LaunchedEffect(isPlaying, isPrepared) {
+    LaunchedEffect(isPlaying, isPrepared, isLifecycleResumed) {
         val player = mediaPlayer ?: return@LaunchedEffect
         if (!isPrepared) return@LaunchedEffect
+        val shouldPlay = isPlaying && isLifecycleResumed
         runCatching {
-            if (isPlaying && !player.isPlaying) {
+            if (shouldPlay && !player.isPlaying) {
                 player.start()
-            } else if (!isPlaying && player.isPlaying) {
+            } else if (!shouldPlay && player.isPlaying) {
+                lastKnownPositionMs = player.currentPosition.toLong().coerceAtLeast(0L)
                 player.pause()
             }
         }
@@ -744,19 +791,22 @@ private fun CropVideoTexturePreview(
         if (!isPrepared) return@LaunchedEffect
         runCatching {
             player.seekTo(targetMs, MediaPlayer.SEEK_CLOSEST)
+            lastKnownPositionMs = targetMs
             onPositionChanged(targetMs)
         }
         onSeekHandled()
     }
 
-    LaunchedEffect(isPlaying, isPrepared, trimStartMs, trimEndMs) {
+    LaunchedEffect(isPlaying, isPrepared, isLifecycleResumed, trimStartMs, trimEndMs) {
         val player = mediaPlayer ?: return@LaunchedEffect
-        if (!isPrepared || !isPlaying) return@LaunchedEffect
+        if (!isPrepared || !isPlaying || !isLifecycleResumed) return@LaunchedEffect
         while (isActive) {
-            val pos = runCatching { player.currentPosition.toLong() }.getOrDefault(0L)
+            val pos = runCatching { player.currentPosition.toLong() }.getOrDefault(lastKnownPositionMs)
+            lastKnownPositionMs = pos
             onPositionChanged(pos)
             if (trimEndMs > trimStartMs && pos >= trimEndMs) {
                 runCatching { player.seekTo(trimStartMs, MediaPlayer.SEEK_CLOSEST) }
+                lastKnownPositionMs = trimStartMs
                 onPositionChanged(trimStartMs)
             }
             delay(50L)
@@ -783,10 +833,17 @@ private fun CropVideoTexturePreview(
                             player.isLooping = true
                             player.setOnPreparedListener { mp ->
                                 isPrepared = true
-                                val vol = if (isMuted) 0f else 1f
+                                val vol = if (latestIsMuted) 0f else 1f
                                 runCatching { mp.setVolume(vol, vol) }
-                                runCatching { mp.seekTo(1L, MediaPlayer.SEEK_CLOSEST) }
-                                if (isPlaying) {
+                                val minSeek = latestTrimStartMs.coerceAtLeast(1L)
+                                val resumeTargetMs = if (latestTrimEndMs > latestTrimStartMs) {
+                                    lastKnownPositionMs.coerceIn(minSeek, latestTrimEndMs)
+                                } else {
+                                    lastKnownPositionMs.coerceAtLeast(minSeek)
+                                }
+                                runCatching { mp.seekTo(resumeTargetMs, MediaPlayer.SEEK_CLOSEST) }
+                                onPositionChanged(resumeTargetMs)
+                                if (latestIsPlaying && latestIsLifecycleResumed) {
                                     runCatching { mp.start() }
                                 }
                             }
@@ -807,6 +864,13 @@ private fun CropVideoTexturePreview(
                     ) = Unit
 
                     override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
+                        runCatching {
+                            mediaPlayer?.let { mp ->
+                                if (isPrepared) {
+                                    lastKnownPositionMs = mp.currentPosition.toLong().coerceAtLeast(0L)
+                                }
+                            }
+                        }
                         isPrepared = false
                         runCatching { mediaPlayer?.stop() }
                         runCatching { mediaPlayer?.release() }

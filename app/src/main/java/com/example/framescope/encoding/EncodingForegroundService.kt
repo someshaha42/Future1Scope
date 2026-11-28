@@ -151,11 +151,15 @@ class EncodingForegroundService : Service() {
         createNotificationChannel()
         val notification = createNotification("00:00:00", paused = false)
 
+        val audioSource = intent.getStringExtra(EXTRA_AUDIO_SOURCE)?.let { raw ->
+            runCatching { AudioSourceMode.valueOf(raw) }.getOrNull()
+        } ?: AudioSourceMode.INTERNAL_AUDIO
+
         val hasMicPermission = ContextCompat.checkSelfPermission(
             this,
             Manifest.permission.RECORD_AUDIO
         ) == PackageManager.PERMISSION_GRANTED
-        val serviceTypes = if (hasMicPermission) {
+        val serviceTypes = if (audioSource == AudioSourceMode.MICROPHONE && hasMicPermission) {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
         } else {
@@ -188,9 +192,6 @@ class EncodingForegroundService : Service() {
             val orientation = intent.getStringExtra(EXTRA_ORIENTATION)?.let { raw ->
                 runCatching { RecordingOrientation.valueOf(raw) }.getOrNull()
             } ?: RecordingOrientation.PORTRAIT
-            val audioSource = intent.getStringExtra(EXTRA_AUDIO_SOURCE)?.let { raw ->
-                runCatching { AudioSourceMode.valueOf(raw) }.getOrNull()
-            } ?: AudioSourceMode.INTERNAL_AUDIO
 
             val width = intent.getIntExtra(EXTRA_WIDTH, 0)
             val height = intent.getIntExtra(EXTRA_HEIGHT, 0)
@@ -553,6 +554,11 @@ class EncodingForegroundService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        stopRecording(fatalError = null)
+        super.onTimeout(startId, fgsType)
+    }
 
     override fun onDestroy() {
         if (sessionActive.get() || tearingDown.get()) {

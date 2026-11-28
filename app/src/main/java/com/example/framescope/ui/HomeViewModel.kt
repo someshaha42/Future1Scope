@@ -88,12 +88,6 @@ class HomeViewModel(
         _statusMessage.value = null
     }
 
-    fun toggleKeepScreenAwake() {
-        viewModelScope.launch {
-            settingsRepository.setKeepScreenAwake(!settings.value.keepScreenAwake)
-        }
-    }
-
     fun createOutputFilePath(): String {
         return recordingsRepository.createNewOutputFile().absolutePath
     }

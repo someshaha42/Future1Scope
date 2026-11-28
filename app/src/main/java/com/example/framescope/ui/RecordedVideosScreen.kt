@@ -2,8 +2,8 @@ package com.example.framescope.ui
 
 import android.content.Intent
 import android.text.format.DateFormat
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -32,12 +32,10 @@ import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -50,16 +48,23 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.framescope.R
 import com.example.framescope.data.RecordedVideo
+import com.example.framescope.ui.components.AeroGlassBackground
+import com.example.framescope.ui.components.NeumorphicGlassCard
+import com.example.framescope.ui.components.NeumorphicIconButton
+import com.example.framescope.ui.components.neumorphicShadow
 import com.example.framescope.ui.theme.FrameScopeColors
 import kotlinx.coroutines.launch
 import java.io.File
@@ -86,7 +91,7 @@ fun RecordedVideosScreen(
     pendingDelete?.let { target ->
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
-            containerColor = FrameScopeColors.CardSurface,
+            containerColor = FrameScopeColors.BackgroundSecondary,
             title = { Text("Delete Recording?", color = FrameScopeColors.TextPrimary) },
             text = {
                 Text(
@@ -112,133 +117,157 @@ fun RecordedVideosScreen(
         )
     }
 
-    Scaffold(
-        containerColor = FrameScopeColors.Background,
-        contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        snackbarHost = {
-            SnackbarHost(
-                hostState = snackbarHostState,
-                modifier = Modifier.navigationBarsPadding()
-            )
-        },
-        topBar = {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(FrameScopeColors.Background)
-                    .statusBarsPadding()
-                    .padding(horizontal = 8.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(
-                    onClick = onBack,
-                    modifier = Modifier.testTag("videos_back_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                        contentDescription = "Back",
-                        tint = FrameScopeColors.TextPrimary
-                    )
-                }
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = "${stringResource(R.string.recorded_videos_title)} (${recordings.size})",
-                    style = MaterialTheme.typography.titleLarge,
-                    color = FrameScopeColors.TextPrimary
+    AeroGlassBackground {
+        Scaffold(
+            containerColor = Color.Transparent,
+            contentWindowInsets = WindowInsets(0, 0, 0, 0),
+            snackbarHost = {
+                SnackbarHost(
+                    hostState = snackbarHostState,
+                    modifier = Modifier.navigationBarsPadding()
                 )
-            }
-        }
-    ) { innerPadding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .navigationBarsPadding(),
-            contentAlignment = Alignment.TopCenter
-        ) {
-            if (recordings.isEmpty()) {
-                Column(
+            },
+            topBar = {
+                Row(
                     modifier = Modifier
-                        .fillMaxSize()
-                        .padding(32.dp),
-                    verticalArrangement = Arrangement.Center,
-                    horizontalAlignment = Alignment.CenterHorizontally
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(64.dp)
-                            .clip(RoundedCornerShape(18.dp))
-                            .background(FrameScopeColors.CardSurface),
-                        contentAlignment = Alignment.Center
+                    NeumorphicIconButton(
+                        onClick = onBack,
+                        modifier = Modifier.testTag("videos_back_button")
                     ) {
                         Icon(
-                            imageVector = Icons.Rounded.VideoLibrary,
-                            contentDescription = null,
-                            tint = FrameScopeColors.TextMuted,
-                            modifier = Modifier.size(32.dp)
+                            imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                            contentDescription = "Back",
+                            tint = FrameScopeColors.TextPrimary,
+                            modifier = Modifier.size(20.dp)
                         )
                     }
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.width(14.dp))
                     Text(
-                        text = "No Recorded Videos Yet",
-                        style = MaterialTheme.typography.titleMedium,
+                        text = "${stringResource(R.string.recorded_videos_title)} (${recordings.size})",
+                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
                         color = FrameScopeColors.TextPrimary
                     )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = "Tap Record on the home screen to capture an MP4 recording.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = FrameScopeColors.TextSecondary
-                    )
                 }
-            } else {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .widthIn(max = 760.dp)
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    items(recordings, key = { it.filePath }) { video ->
-                        RecordedVideoItemCard(
-                            video = video,
-                            onPlay = { onPlayVideo(video.filePath) },
-                            onShare = {
-                                runCatching {
-                                    val file = File(video.filePath)
-                                    require(file.exists() && file.length() > 0L) {
-                                        "Recording file is missing."
-                                    }
-                                    val uri = FileProvider.getUriForFile(
-                                        context,
-                                        "${context.packageName}.fileprovider",
-                                        file
+            }
+        ) { innerPadding ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+                    .navigationBarsPadding(),
+                contentAlignment = Alignment.TopCenter
+            ) {
+                if (recordings.isEmpty()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(28.dp),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        NeumorphicGlassCard(
+                            modifier = Modifier.widthIn(max = 360.dp),
+                            cornerRadius = 26.dp,
+                            elevation = 7.dp
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 24.dp, vertical = 32.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(64.dp)
+                                        .neumorphicShadow(
+                                            cornerRadius = 20.dp,
+                                            elevation = 4.dp,
+                                            lightColor = FrameScopeColors.NeuShadowLight,
+                                            darkColor = FrameScopeColors.NeuShadowDark
+                                        )
+                                        .clip(RoundedCornerShape(20.dp))
+                                        .background(FrameScopeColors.InnerSurface)
+                                        .border(1.dp, FrameScopeColors.GlassRimTop, RoundedCornerShape(20.dp)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.VideoLibrary,
+                                        contentDescription = null,
+                                        tint = FrameScopeColors.SelectionBlue,
+                                        modifier = Modifier.size(30.dp)
                                     )
-                                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                        type = "video/mp4"
-                                        putExtra(Intent.EXTRA_STREAM, uri)
-                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                                Spacer(modifier = Modifier.height(18.dp))
+                                Text(
+                                    text = "No Recorded Videos Yet",
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                                    color = FrameScopeColors.TextPrimary,
+                                    textAlign = TextAlign.Center
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = "Tap Record on the home screen to capture an MP4 recording.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = FrameScopeColors.TextSecondary,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .widthIn(max = 760.dp)
+                            .padding(horizontal = 18.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        items(recordings, key = { it.filePath }) { video ->
+                            RecordedVideoItemCard(
+                                video = video,
+                                onPlay = { onPlayVideo(video.filePath) },
+                                onShare = {
+                                    runCatching {
+                                        val file = File(video.filePath)
+                                        require(file.exists() && file.length() > 0L) {
+                                            "Recording file is missing."
+                                        }
+                                        val uri = FileProvider.getUriForFile(
+                                            context,
+                                            "${context.packageName}.fileprovider",
+                                            file
+                                        )
+                                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                            type = "video/mp4"
+                                            putExtra(Intent.EXTRA_STREAM, uri)
+                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        }
+                                        context.startActivity(
+                                            Intent.createChooser(shareIntent, "Share Recording")
+                                        )
+                                    }.onFailure {
+                                        coroutineScope.launch {
+                                            snackbarHostState.showSnackbar("Unable to share recording")
+                                        }
                                     }
-                                    context.startActivity(
-                                        Intent.createChooser(shareIntent, "Share Recording")
-                                    )
-                                }.onFailure {
+                                },
+                                onExport = {
                                     coroutineScope.launch {
-                                        snackbarHostState.showSnackbar("Unable to share recording")
+                                        val ok = viewModel.exportVideoToGallery(video.filePath)
+                                        snackbarHostState.showSnackbar(
+                                            if (ok) "Saved copy to Movies/FrameScope"
+                                            else "Could not export video"
+                                        )
                                     }
-                                }
-                            },
-                            onExport = {
-                                coroutineScope.launch {
-                                    val ok = viewModel.exportVideoToGallery(video.filePath)
-                                    snackbarHostState.showSnackbar(
-                                        if (ok) "Saved copy to Movies/FrameScope"
-                                        else "Could not export video"
-                                    )
-                                }
-                            },
-                            onDelete = { pendingDelete = video }
-                        )
+                                },
+                                onDelete = { pendingDelete = video }
+                            )
+                        }
                     }
                 }
             }
@@ -254,22 +283,18 @@ private fun RecordedVideoItemCard(
     onExport: () -> Unit,
     onDelete: () -> Unit
 ) {
-    val shape = RoundedCornerShape(16.dp)
-    Surface(
+    NeumorphicGlassCard(
         modifier = Modifier
-            .fillMaxWidth()
-            .clip(shape)
             .clickable(onClick = onPlay)
             .testTag("recorded_video_card"),
-        shape = shape,
-        color = FrameScopeColors.CardSurface,
-        border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle)
+        cornerRadius = 22.dp,
+        elevation = 6.dp
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -277,20 +302,31 @@ private fun RecordedVideoItemCard(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(44.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(FrameScopeColors.SelectionBlueTint),
+                        .size(48.dp)
+                        .neumorphicShadow(
+                            cornerRadius = 15.dp,
+                            elevation = 4.dp,
+                            lightColor = FrameScopeColors.NeuShadowLight,
+                            darkColor = FrameScopeColors.NeuShadowDark
+                        )
+                        .clip(RoundedCornerShape(15.dp))
+                        .background(
+                            brush = Brush.linearGradient(
+                                listOf(FrameScopeColors.SelectionBlueLight, FrameScopeColors.SelectionBlue)
+                            )
+                        )
+                        .border(1.dp, Color.White.copy(alpha = 0.45f), RoundedCornerShape(15.dp)),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = Icons.Rounded.PlayArrow,
                         contentDescription = "Play video",
-                        tint = FrameScopeColors.SelectionBlue,
+                        tint = Color.White,
                         modifier = Modifier.size(26.dp)
                     )
                 }
 
-                Spacer(modifier = Modifier.width(12.dp))
+                Spacer(modifier = Modifier.width(14.dp))
 
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
@@ -300,7 +336,7 @@ private fun RecordedVideoItemCard(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Spacer(modifier = Modifier.height(2.dp))
+                    Spacer(modifier = Modifier.height(3.dp))
                     Text(
                         text = buildMetadataSummary(video),
                         style = MaterialTheme.typography.bodyMedium,
@@ -311,27 +347,31 @@ private fun RecordedVideoItemCard(
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End
+                horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = onExport) {
+                NeumorphicIconButton(onClick = onExport, size = 40.dp) {
                     Icon(
                         imageVector = Icons.Rounded.SaveAlt,
                         contentDescription = "Save to Movies gallery",
-                        tint = FrameScopeColors.TextSecondary
+                        tint = FrameScopeColors.TextSecondary,
+                        modifier = Modifier.size(18.dp)
                     )
                 }
-                IconButton(onClick = onShare) {
+                NeumorphicIconButton(onClick = onShare, size = 40.dp) {
                     Icon(
                         imageVector = Icons.Rounded.Share,
                         contentDescription = "Share recording",
-                        tint = FrameScopeColors.TextSecondary
+                        tint = FrameScopeColors.SelectionBlue,
+                        modifier = Modifier.size(18.dp)
                     )
                 }
-                IconButton(onClick = onDelete) {
+                NeumorphicIconButton(onClick = onDelete, size = 40.dp) {
                     Icon(
                         imageVector = Icons.Rounded.Delete,
                         contentDescription = "Delete recording",
-                        tint = FrameScopeColors.SpecRedText
+                        tint = FrameScopeColors.SpecRedText,
+                        modifier = Modifier.size(18.dp)
                     )
                 }
             }

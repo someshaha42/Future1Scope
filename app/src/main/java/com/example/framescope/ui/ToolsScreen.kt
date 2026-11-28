@@ -1,6 +1,5 @@
 package com.example.framescope.ui
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -26,7 +25,6 @@ import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material.icons.rounded.Crop
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
@@ -35,6 +33,8 @@ import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -45,7 +45,9 @@ import com.example.framescope.R
 import com.example.framescope.capability.DeviceCapabilityEngine
 import com.example.framescope.capability.OptionSupportInfo
 import com.example.framescope.ui.components.AlternativeInUseBanner
+import com.example.framescope.ui.components.NeumorphicGlassCard
 import com.example.framescope.ui.components.SupportStatusPill
+import com.example.framescope.ui.components.neumorphicShadow
 import com.example.framescope.ui.theme.FrameScopeColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -87,37 +89,44 @@ fun ToolsScreen(
     )
 
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(FrameScopeColors.Background)
+        modifier = Modifier.fillMaxSize()
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(FrameScopeColors.Background)
                 .statusBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(horizontal = 18.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
                 modifier = Modifier
-                    .size(34.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(FrameScopeColors.SelectionBlueTint)
-                    .border(1.dp, FrameScopeColors.SelectionBlue, RoundedCornerShape(10.dp)),
+                    .size(40.dp)
+                    .neumorphicShadow(
+                        cornerRadius = 13.dp,
+                        elevation = 5.dp,
+                        lightColor = FrameScopeColors.NeuShadowLight,
+                        darkColor = FrameScopeColors.NeuShadowDark
+                    )
+                    .clip(RoundedCornerShape(13.dp))
+                    .background(
+                        brush = Brush.linearGradient(
+                            listOf(FrameScopeColors.SelectionBlueLight, FrameScopeColors.SelectionBlue)
+                        )
+                    )
+                    .border(1.dp, Color.White.copy(alpha = 0.45f), RoundedCornerShape(13.dp)),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = Icons.Rounded.Build,
                     contentDescription = null,
-                    tint = FrameScopeColors.SelectionBlue,
+                    tint = Color.White,
                     modifier = Modifier.size(18.dp)
                 )
             }
-            Spacer(modifier = Modifier.width(10.dp))
+            Spacer(modifier = Modifier.width(12.dp))
             Text(
                 text = stringResource(R.string.tab_tools),
-                style = MaterialTheme.typography.titleLarge,
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
                 color = FrameScopeColors.TextPrimary
             )
         }
@@ -126,19 +135,19 @@ fun ToolsScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 14.dp, vertical = 8.dp),
+                .padding(horizontal = 18.dp, vertical = 8.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .widthIn(max = 680.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 tools.forEach { tool ->
                     ToolCard(tool = tool)
                 }
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(10.dp))
             }
         }
     }
@@ -146,23 +155,19 @@ fun ToolsScreen(
 
 @Composable
 private fun ToolCard(tool: ToolEntry) {
-    val shape = RoundedCornerShape(16.dp)
-    Surface(
+    NeumorphicGlassCard(
         modifier = Modifier
-            .fillMaxWidth()
             .minimumInteractiveComponentSize()
-            .clip(shape)
             .clickable(onClick = tool.onClick)
             .testTag(tool.testTag),
-        shape = shape,
-        color = FrameScopeColors.CardSurface,
-        border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle)
+        cornerRadius = 22.dp,
+        elevation = 7.dp
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -171,23 +176,33 @@ private fun ToolCard(tool: ToolEntry) {
             ) {
                 Box(
                     modifier = Modifier
-                        .size(44.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(FrameScopeColors.SelectionBlueTint)
-                        .border(1.dp, FrameScopeColors.SelectionBlue, RoundedCornerShape(12.dp)),
+                        .size(48.dp)
+                        .neumorphicShadow(
+                            cornerRadius = 15.dp,
+                            elevation = 4.dp,
+                            lightColor = FrameScopeColors.NeuShadowLight,
+                            darkColor = FrameScopeColors.NeuShadowDark
+                        )
+                        .clip(RoundedCornerShape(15.dp))
+                        .background(
+                            brush = Brush.linearGradient(
+                                listOf(FrameScopeColors.SelectionBlueLight, FrameScopeColors.SelectionBlue)
+                            )
+                        )
+                        .border(1.dp, Color.White.copy(alpha = 0.45f), RoundedCornerShape(15.dp)),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = tool.icon,
                         contentDescription = tool.title,
-                        tint = FrameScopeColors.SelectionBlue,
-                        modifier = Modifier.size(22.dp)
+                        tint = Color.White,
+                        modifier = Modifier.size(23.dp)
                     )
                 }
 
                 Column(
                     modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,

@@ -235,6 +235,9 @@ internal fun ProjectMediaViewer(
     var mediaPlayerRef by remember(resolvedUri) { mutableStateOf<MediaPlayer?>(null) }
     var isPlayerPrepared by remember(resolvedUri) { mutableStateOf(false) }
     var isPlaying by remember(resolvedUri) { mutableStateOf(false) }
+    var isLifecycleResumed by remember {
+        mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+    }
     var videoDurationMs by remember(resolvedUri) {
         val fallbackDur = if (project.exportedDurationMs > 0L) project.exportedDurationMs else project.durationMs
         mutableLongStateOf(fallbackDur.coerceAtLeast(0L))
@@ -252,16 +255,27 @@ internal fun ProjectMediaViewer(
     }
     var playbackError by remember(resolvedUri) { mutableStateOf<String?>(null) }
 
-    // Pause video if lifecycle goes to ON_PAUSE
-    DisposableEffect(lifecycleOwner, mediaPlayerRef) {
+    // Pause video + audio when app leaves foreground, auto-resume on return unless manually paused
+    DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_PAUSE) {
-                isPlaying = false
-                runCatching {
-                    if (mediaPlayerRef?.isPlaying == true) {
-                        mediaPlayerRef?.pause()
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> {
+                    isLifecycleResumed = true
+                }
+                Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> {
+                    isLifecycleResumed = false
+                    runCatching {
+                        mediaPlayerRef?.let { mp ->
+                            if (isPlayerPrepared) {
+                                currentPosMs = mp.currentPosition.toLong().coerceAtLeast(0L)
+                            }
+                            if (mp.isPlaying) {
+                                mp.pause()
+                            }
+                        }
                     }
                 }
+                else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -270,17 +284,19 @@ internal fun ProjectMediaViewer(
         }
     }
 
-    LaunchedEffect(isPlaying, isPlayerPrepared) {
+    LaunchedEffect(isPlaying, isPlayerPrepared, isLifecycleResumed) {
         val mp = mediaPlayerRef ?: return@LaunchedEffect
         if (!isPlayerPrepared) return@LaunchedEffect
+        val shouldPlay = isPlaying && isLifecycleResumed
         runCatching {
-            if (isPlaying && !mp.isPlaying) {
+            if (shouldPlay && !mp.isPlaying) {
                 if (videoDurationMs > 0L && currentPosMs >= videoDurationMs - 80L) {
                     mp.seekTo(0L, MediaPlayer.SEEK_CLOSEST)
                     currentPosMs = 0L
                 }
                 mp.start()
-            } else if (!isPlaying && mp.isPlaying) {
+            } else if (!shouldPlay && mp.isPlaying) {
+                currentPosMs = mp.currentPosition.toLong().coerceAtLeast(0L)
                 mp.pause()
             }
         }
@@ -293,9 +309,9 @@ internal fun ProjectMediaViewer(
         runCatching { mp.setVolume(vol, vol) }
     }
 
-    LaunchedEffect(isPlaying, isPlayerPrepared, isScrubbing) {
+    LaunchedEffect(isPlaying, isPlayerPrepared, isLifecycleResumed, isScrubbing) {
         val mp = mediaPlayerRef ?: return@LaunchedEffect
-        if (!isPlayerPrepared || !isPlaying || isScrubbing) return@LaunchedEffect
+        if (!isPlayerPrepared || !isPlaying || !isLifecycleResumed || isScrubbing) return@LaunchedEffect
         while (isActive) {
             val pos = runCatching { mp.currentPosition.toLong() }.getOrDefault(currentPosMs)
             currentPosMs = pos.coerceAtLeast(0L)
@@ -321,6 +337,8 @@ internal fun ProjectMediaViewer(
     val latestBrightness by rememberUpdatedState(brightnessLevel)
     val latestVolume by rememberUpdatedState(volumeLevel)
     val latestIsMuted by rememberUpdatedState(isMuted)
+    val latestIsPlaying by rememberUpdatedState(isPlaying)
+    val latestIsLifecycleResumed by rememberUpdatedState(isLifecycleResumed)
     val latestMediaType by rememberUpdatedState(project.mediaType)
 
     val density = LocalDensity.current
@@ -553,10 +571,13 @@ internal fun ProjectMediaViewer(
                                                                 videoWidth = prepared.videoWidth
                                                                 videoHeight = prepared.videoHeight
                                                             }
-                                                            val vol = if (isMuted) 0f else 1f
+                                                            val vol = if (latestIsMuted) 0f else 1f
                                                             runCatching { prepared.setVolume(vol, vol) }
-                                                            // Show initial frame cleanly without auto-playing
-                                                            runCatching { prepared.seekTo(1L, MediaPlayer.SEEK_CLOSEST) }
+                                                            val resumePos = currentPosMs.coerceAtLeast(1L)
+                                                            runCatching { prepared.seekTo(resumePos, MediaPlayer.SEEK_CLOSEST) }
+                                                            if (latestIsPlaying && latestIsLifecycleResumed) {
+                                                                runCatching { prepared.start() }
+                                                            }
                                                         }
                                                         mp.setOnCompletionListener {
                                                             isPlaying = false
@@ -580,8 +601,14 @@ internal fun ProjectMediaViewer(
                                                 ) = Unit
 
                                                 override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
+                                                    runCatching {
+                                                        mediaPlayerRef?.let { mp ->
+                                                            if (isPlayerPrepared) {
+                                                                currentPosMs = mp.currentPosition.toLong().coerceAtLeast(0L)
+                                                            }
+                                                        }
+                                                    }
                                                     isPlayerPrepared = false
-                                                    isPlaying = false
                                                     runCatching { mediaPlayerRef?.stop() }
                                                     runCatching { mediaPlayerRef?.release() }
                                                     mediaPlayerRef = null

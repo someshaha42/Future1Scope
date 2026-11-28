@@ -44,4 +44,8 @@
     <string name="tool_crop_title">Crop</string>
     <string name="tool_crop_desc">Crop images and videos with aspect ratios, zoom and bitrate controls</string>
     <string name="crop_tool_title">Crop Tool</string>
+    <string name="export_notification_channel_name">Media Export</string>
+    <string name="export_notification_title">Exporting Media</string>
+    <string name="export_notification_cancel">Cancel</string>
+    <string name="export_notification_complete_title">Export Complete</string>
 </resources>

@@ -6,6 +6,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -91,9 +92,12 @@ import com.example.framescope.crop.ImageExportFormatOption
 import com.example.framescope.crop.VideoBitrateMode
 import com.example.framescope.crop.VideoExportFormatOption
 import java.io.File
+import androidx.compose.ui.graphics.Brush
 import com.example.framescope.ui.components.AlternativeInUseBanner
+import com.example.framescope.ui.components.NeumorphicGlassCard
 import com.example.framescope.ui.components.SectionCard
 import com.example.framescope.ui.components.SupportStatusPill
+import com.example.framescope.ui.components.neumorphicShadow
 import com.example.framescope.ui.theme.FrameScopeColors
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -218,16 +222,31 @@ private fun ImportTileButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val shape = RoundedCornerShape(12.dp)
-    Surface(
+    val shape = RoundedCornerShape(16.dp)
+    Box(
         modifier = modifier
             .minimumInteractiveComponentSize()
+            .neumorphicShadow(
+                cornerRadius = 16.dp,
+                elevation = 4.dp,
+                lightColor = FrameScopeColors.NeuShadowLight,
+                darkColor = FrameScopeColors.NeuShadowDark
+            )
             .clip(shape)
+            .background(
+                Brush.linearGradient(
+                    listOf(FrameScopeColors.GlassFillTop, FrameScopeColors.InnerSurface)
+                )
+            )
+            .border(
+                width = 1.dp,
+                brush = Brush.linearGradient(
+                    listOf(FrameScopeColors.GlassRimTop, FrameScopeColors.GlassRimBottom)
+                ),
+                shape = shape
+            )
             .clickable(onClick = onClick)
-            .testTag(testTag),
-        shape = shape,
-        color = FrameScopeColors.InnerSurface,
-        border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle)
+            .testTag(testTag)
     ) {
         Column(
             modifier = Modifier
@@ -353,13 +372,10 @@ internal fun VideoTimelineSection(
     val latestEnd by rememberUpdatedState(safeEnd)
     val latestPos by rememberUpdatedState(safePos)
 
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("crop_video_timeline_card"),
-        shape = RoundedCornerShape(14.dp),
-        color = FrameScopeColors.CardSurface,
-        border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle)
+    NeumorphicGlassCard(
+        modifier = Modifier.testTag("crop_video_timeline_card"),
+        cornerRadius = 20.dp,
+        elevation = 5.dp
     ) {
         Column(
             modifier = Modifier
@@ -587,14 +603,12 @@ internal fun AspectRatioSection(
 ) {
     val selectedSupport = aspectRatioSupport[selected] ?: OptionSupportInfo(true)
 
-    Surface(
+    NeumorphicGlassCard(
         modifier = Modifier
-            .fillMaxWidth()
             .alpha(if (enabled) 1f else 0.55f)
             .testTag("selection_aspect_ratio_section"),
-        shape = RoundedCornerShape(16.dp),
-        color = FrameScopeColors.CardSurface,
-        border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle)
+        cornerRadius = 22.dp,
+        elevation = 6.dp
     ) {
         Column(
             modifier = Modifier
@@ -1079,15 +1093,31 @@ internal fun RecentProjectsSection(
                     val thumb = thumbnails[project.id]
                     val expFileExists = !project.exportedFilePath.isNullOrBlank() &&
                         File(project.exportedFilePath).exists()
-                    val cardShape = RoundedCornerShape(12.dp)
+                    val cardShape = RoundedCornerShape(18.dp)
 
-                    Surface(
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .testTag("recent_project_item_$index"),
-                        shape = cardShape,
-                        color = FrameScopeColors.InnerSurface,
-                        border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle)
+                            .neumorphicShadow(
+                                cornerRadius = 18.dp,
+                                elevation = 4.dp,
+                                lightColor = FrameScopeColors.NeuShadowLight,
+                                darkColor = FrameScopeColors.NeuShadowDark
+                            )
+                            .clip(cardShape)
+                            .background(
+                                Brush.linearGradient(
+                                    listOf(FrameScopeColors.GlassFillTop, FrameScopeColors.InnerSurface)
+                                )
+                            )
+                            .border(
+                                width = 1.dp,
+                                brush = Brush.linearGradient(
+                                    listOf(FrameScopeColors.GlassRimTop, FrameScopeColors.GlassRimBottom)
+                                ),
+                                shape = cardShape
+                            )
+                            .testTag("recent_project_item_$index")
                     ) {
                         Column(modifier = Modifier.fillMaxWidth()) {
                             // Tapping project card opens the media directly in the phone's default Gallery viewer
@@ -1324,7 +1354,7 @@ internal fun ProjectSourceSettingsDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = FrameScopeColors.CardSurface,
+        containerColor = FrameScopeColors.BackgroundSecondary,
         title = {
             Text(
                 text = "Recent Projects Settings",

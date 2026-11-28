@@ -1,10 +1,13 @@
 package com.example.framescope.ui.crop
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -94,7 +97,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.framescope.R
 import com.example.framescope.capability.OptionSupportInfo
@@ -103,6 +110,11 @@ import com.example.framescope.crop.CodecPipelineSupport
 import com.example.framescope.crop.CropExportState
 import com.example.framescope.crop.CropMediaType
 import com.example.framescope.crop.CropProjectRecord
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
+import com.example.framescope.ui.components.AeroGlassBackground
+import com.example.framescope.ui.components.NeumorphicGlassCard
+import com.example.framescope.ui.components.NeumorphicIconButton
 import com.example.framescope.ui.components.SupportStatusPill
 import com.example.framescope.ui.theme.FrameScopeColors
 import kotlinx.coroutines.Dispatchers
@@ -167,6 +179,46 @@ fun CropToolScreen(
         }
     }
 
+    var pendingNotificationAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ ->
+        pendingNotificationAction?.invoke()
+        pendingNotificationAction = null
+    }
+
+    fun runWithExportNotificationPermission(action: () -> Unit) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            pendingNotificationAction = action
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            action()
+        }
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(state.shareExportReady, lifecycleOwner) {
+        if (state.shareExportReady == null) return@LaunchedEffect
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            val latest = viewModel.uiState.value.shareExportReady ?: return@repeatOnLifecycle
+            viewingRecentProjectId = latest.updatedProject.id
+            val shareUri = runCatching { Uri.parse(latest.shareUriString) }.getOrNull()
+            viewModel.consumeShareReadyEvent()
+            if (shareUri != null) {
+                val err = launchShareSheet(context, shareUri, latest.mimeType)
+                if (err != null) {
+                    snackbarHostState.showSnackbar(err)
+                }
+            }
+        }
+    }
+
     LaunchedEffect(state.message) {
         val msg = state.message ?: return@LaunchedEffect
         snackbarHostState.showSnackbar(msg)
@@ -199,7 +251,7 @@ fun CropToolScreen(
     pendingDeleteProject?.let { project ->
         AlertDialog(
             onDismissRequest = { pendingDeleteProject = null },
-            containerColor = FrameScopeColors.CardSurface,
+            containerColor = FrameScopeColors.BackgroundSecondary,
             title = {
                 Text(
                     text = "Delete Project?",
@@ -238,7 +290,7 @@ fun CropToolScreen(
         val result = state.exportState as CropExportState.Success
         AlertDialog(
             onDismissRequest = viewModel::dismissExportState,
-            containerColor = FrameScopeColors.CardSurface,
+            containerColor = FrameScopeColors.BackgroundSecondary,
             icon = {
                 Icon(
                     imageVector = Icons.Rounded.DownloadDone,
@@ -279,7 +331,7 @@ fun CropToolScreen(
         val err = (state.exportState as CropExportState.Error).message
         AlertDialog(
             onDismissRequest = viewModel::dismissExportState,
-            containerColor = FrameScopeColors.CardSurface,
+            containerColor = FrameScopeColors.BackgroundSecondary,
             title = { Text("Export Error", color = FrameScopeColors.TextPrimary) },
             text = { Text(err, color = FrameScopeColors.TextSecondary) },
             confirmButton = {
@@ -292,9 +344,10 @@ fun CropToolScreen(
 
     val isWorkspaceEditingVisible = state.media != null && !state.showImportPanel
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    AeroGlassBackground {
+        Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
-        containerColor = FrameScopeColors.Background,
+        containerColor = Color.Transparent,
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         snackbarHost = {
             SnackbarHost(
@@ -340,12 +393,11 @@ fun CropToolScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(FrameScopeColors.Background)
                         .statusBarsPadding()
-                        .padding(horizontal = 8.dp, vertical = 10.dp),
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    IconButton(
+                    NeumorphicIconButton(
                         onClick = {
                             viewModel.saveProjectOnExit()
                             onBack()
@@ -355,13 +407,14 @@ fun CropToolScreen(
                         Icon(
                             imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
                             contentDescription = "Back",
-                            tint = FrameScopeColors.TextPrimary
+                            tint = FrameScopeColors.TextPrimary,
+                            modifier = Modifier.size(20.dp)
                         )
                     }
-                    Spacer(modifier = Modifier.width(4.dp))
+                    Spacer(modifier = Modifier.width(14.dp))
                     Text(
                         text = stringResource(R.string.crop_tool_title),
-                        style = MaterialTheme.typography.titleLarge,
+                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
                         color = FrameScopeColors.TextPrimary,
                         modifier = Modifier.weight(1f)
                     )
@@ -773,7 +826,7 @@ fun CropToolScreen(
                             outputWidth = state.outputWidth,
                             outputHeight = state.outputHeight,
                             pipelineSupport = state.pipelineSupport,
-                            onExport = viewModel::startExport,
+                            onExport = { runWithExportNotificationPermission(viewModel::startExport) },
                             onCancelExport = viewModel::cancelExport
                         )
 
@@ -799,18 +852,21 @@ fun CropToolScreen(
                     viewModel.openProject(proj)
                 },
                 onShareProject = { proj ->
-                    viewModel.shareProjectFromViewer(proj) { shareUri, mimeType, updated ->
-                        viewingRecentProjectId = updated.id
-                        val err = launchShareSheet(context, shareUri, mimeType)
-                        if (err != null) {
-                            coroutineScope.launch {
-                                snackbarHostState.showSnackbar(err)
+                    runWithExportNotificationPermission {
+                        viewModel.shareProjectFromViewer(proj) { shareUri, mimeType, updated ->
+                            viewingRecentProjectId = updated.id
+                            val err = launchShareSheet(context, shareUri, mimeType)
+                            if (err != null) {
+                                coroutineScope.launch {
+                                    snackbarHostState.showSnackbar(err)
+                                }
                             }
                         }
                     }
                 },
                 onCancelShareExport = viewModel::cancelShareProjectExport
             )
+        }
         }
     }
 }
@@ -837,9 +893,9 @@ private fun CropWorkspaceTopToolbar(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(FrameScopeColors.Background)
+            .background(FrameScopeColors.CardSurface)
             .statusBarsPadding()
-            .padding(horizontal = 4.dp, vertical = 6.dp),
+            .padding(horizontal = 6.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(2.dp)
     ) {
@@ -1062,25 +1118,20 @@ private fun ExportActionCard(
     onExport: () -> Unit,
     onCancelExport: () -> Unit
 ) {
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("crop_export_card"),
-        shape = RoundedCornerShape(16.dp),
-        color = FrameScopeColors.CardSurface,
-        border = BorderStroke(
-            1.dp,
-            if (exportState is CropExportState.Exporting) {
-                FrameScopeColors.SelectionBlue
-            } else {
-                FrameScopeColors.BorderSubtle
-            }
-        )
+    NeumorphicGlassCard(
+        modifier = Modifier.testTag("crop_export_card"),
+        cornerRadius = 22.dp,
+        elevation = 6.dp,
+        accentBorder = if (exportState is CropExportState.Exporting) {
+            FrameScopeColors.SelectionBlue
+        } else {
+            null
+        }
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp),
+                .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             if (exportState is CropExportState.Exporting) {
@@ -1106,8 +1157,10 @@ private fun ExportActionCard(
                 LinearProgressIndicator(
                     progress = { exportState.progress.coerceIn(0f, 1f) },
                     color = FrameScopeColors.SelectionBlue,
-                    trackColor = FrameScopeColors.InnerSurface,
-                    modifier = Modifier.fillMaxWidth()
+                    trackColor = FrameScopeColors.InsetTrack,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(50))
                 )
                 TextButton(
                     onClick = onCancelExport,
@@ -1116,17 +1169,24 @@ private fun ExportActionCard(
                     Text("Cancel", color = FrameScopeColors.SpecRedText)
                 }
             } else {
+                val btnShape = RoundedCornerShape(50)
                 Button(
                     onClick = onExport,
-                    shape = RoundedCornerShape(12.dp),
+                    shape = btnShape,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = FrameScopeColors.SelectionBlue,
-                        contentColor = MaterialTheme.colorScheme.onPrimary
+                        contentColor = Color.White
                     ),
-                    contentPadding = PaddingValues(vertical = 14.dp),
+                    contentPadding = PaddingValues(vertical = 15.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .minimumInteractiveComponentSize()
+                        .shadow(
+                            elevation = 10.dp,
+                            shape = btnShape,
+                            ambientColor = FrameScopeColors.SelectionBlue.copy(alpha = 0.4f),
+                            spotColor = FrameScopeColors.SelectionBlue.copy(alpha = 0.5f)
+                        )
                         .testTag("crop_export_button")
                 ) {
                     Icon(
@@ -1148,18 +1208,18 @@ private fun ExportActionCard(
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("crop_export_codec_status"),
-                    shape = RoundedCornerShape(10.dp),
-                    color = if (hasAnyHw) FrameScopeColors.ReadyGreenBg else FrameScopeColors.InnerSurface,
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (hasAnyHw) FrameScopeColors.ReadyGreenBg else FrameScopeColors.InsetTrack.copy(alpha = 0.55f),
                     border = BorderStroke(
                         1.dp,
-                        if (hasAnyHw) FrameScopeColors.ReadyGreen.copy(alpha = 0.4f) else FrameScopeColors.BorderSubtle
+                        if (hasAnyHw) FrameScopeColors.ReadyGreen.copy(alpha = 0.4f) else FrameScopeColors.GlassRimBottom
                     )
                 ) {
                     Text(
                         text = pipelineSupport.statusText,
                         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
                         color = if (hasAnyHw) FrameScopeColors.ReadyGreen else FrameScopeColors.TextSecondary,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)
                     )
                 }
             }

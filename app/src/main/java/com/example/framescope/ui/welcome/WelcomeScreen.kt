@@ -1,9 +1,12 @@
 package com.example.framescope.ui.welcome
 
-import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -23,46 +26,50 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.Login
+import androidx.compose.material.icons.automirrored.rounded.ArrowForward
+import androidx.compose.material.icons.rounded.LocationOn
 import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.framescope.R
+import com.example.framescope.ui.components.NeumorphicGlassCard
+import com.example.framescope.ui.components.neumorphicShadow
+import com.example.framescope.ui.theme.FrameScopeColors
+import com.example.framescope.ui.theme.OutfitFontFamily
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -73,12 +80,24 @@ fun WelcomeScreen(
     var selectedElement by remember { mutableStateOf<WelcomeElementId?>(null) }
     var hasEntered by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
+    val latestOnEnter by rememberUpdatedState(onEnter)
+    val entranceProgress = remember { Animatable(0f) }
+    val timelineProgress = remember { Animatable(0f) }
 
-    // Pressing system Back on the Welcome Screen also enters the application
-    BackHandler(enabled = !hasEntered) {
+    LaunchedEffect(Unit) {
+        launch {
+            entranceProgress.animateTo(
+                targetValue = 1f,
+                animationSpec = tween(durationMillis = 850, easing = FastOutSlowInEasing)
+            )
+        }
+        timelineProgress.animateTo(
+            targetValue = 1f,
+            animationSpec = tween(durationMillis = 4000, easing = LinearEasing)
+        )
         if (!hasEntered) {
             hasEntered = true
-            onEnter()
+            latestOnEnter()
         }
     }
 
@@ -88,32 +107,38 @@ fun WelcomeScreen(
             .testTag("welcome_screen_root")
     ) {
         val compactVertical = maxHeight < 660.dp
-        val photoSize = (minOf(maxWidth * 0.54f, maxHeight * 0.28f)).coerceIn(140.dp, 224.dp)
+        val photoSize = (minOf(maxWidth * 0.50f, maxHeight * 0.26f)).coerceIn(136.dp, 206.dp)
 
-        // Full-screen scenic backdrop + clickable decorative elements
         WelcomeScenicBackdrop(
             selectedId = selectedElement,
             onSelect = { id -> selectedElement = id },
             onBackgroundTap = { selectedElement = null }
         )
 
-        // Foreground interactive Welcome elements
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .padding(horizontal = 18.dp)
-                .padding(top = if (compactVertical) 8.dp else 16.dp, bottom = 70.dp),
+                .padding(horizontal = 22.dp)
+                .padding(top = if (compactVertical) 14.dp else 24.dp, bottom = 74.dp)
+                .graphicsLayer {
+                    val p = entranceProgress.value
+                    alpha = 0.25f + (0.75f * p)
+                    translationY = (1f - p) * 26f
+                    val scale = 0.95f + (0.05f * p)
+                    scaleX = scale
+                    scaleY = scale
+                },
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            // 1. Bengali Welcome Title + Tricolor Swoosh
+            // 1. Minimalist Welcome Header with subtle tricolor ribbon
             PoppableWelcomeElement(
                 elementId = WelcomeElementId.SWAGATAM,
                 selectedId = selectedElement,
                 onSelect = { selectedElement = it },
-                glowShape = RoundedCornerShape(20.dp),
+                glowShape = RoundedCornerShape(22.dp),
                 testTag = "welcome_swagatam"
             ) { isSelected ->
                 SwagatamHeader(
@@ -122,69 +147,96 @@ fun WelcomeScreen(
                 )
             }
 
-            // 2. Actual 1:1 Square Profile Photograph with slightly rounded corners (NOT circular)
+            // 2. Neumorphic + Glassmorphic framed 1:1 Profile Photo
             PoppableWelcomeElement(
                 elementId = WelcomeElementId.PROFILE_PHOTO,
                 selectedId = selectedElement,
                 onSelect = { selectedElement = it },
-                glowShape = RoundedCornerShape(20.dp),
+                glowShape = RoundedCornerShape(28.dp),
                 popScale = 1.045f,
                 testTag = "welcome_profile_photo"
             ) { isSelected ->
-                val shape = RoundedCornerShape(20.dp)
+                val outerShape = RoundedCornerShape(28.dp)
+                val innerShape = RoundedCornerShape(22.dp)
                 Box(
                     modifier = Modifier
-                        .size(photoSize)
-                        .aspectRatio(1f)
-                        .shadow(
-                            elevation = if (isSelected) 22.dp else 12.dp,
-                            shape = shape,
-                            ambientColor = Color(0xFFFFF59D),
-                            spotColor = Color(0xFF000000)
+                        .size(photoSize + 16.dp)
+                        .neumorphicShadow(
+                            cornerRadius = 28.dp,
+                            elevation = if (isSelected) 12.dp else 8.dp,
+                            lightColor = FrameScopeColors.NeuShadowLight,
+                            darkColor = FrameScopeColors.NeuShadowDark
                         )
-                        .clip(shape)
-                        .border(
-                            width = if (isSelected) 3.dp else 2.5.dp,
+                        .clip(outerShape)
+                        .background(
                             brush = Brush.linearGradient(
-                                colors = if (isSelected) {
-                                    listOf(Color(0xFFFFF176), Color.White, Color(0xFFFFD54F))
-                                } else {
-                                    listOf(Color.White.copy(alpha = 0.92f), Color(0xFFFFE082))
-                                }
-                            ),
-                            shape = shape
+                                listOf(FrameScopeColors.GlassFillTop, FrameScopeColors.GlassFillBottom)
+                            )
                         )
+                        .border(
+                            width = if (isSelected) 2.dp else 1.25.dp,
+                            brush = Brush.linearGradient(
+                                listOf(
+                                    if (isSelected) FrameScopeColors.SelectionBlue else FrameScopeColors.GlassRimTop,
+                                    FrameScopeColors.GlassRimBottom
+                                )
+                            ),
+                            shape = outerShape
+                        )
+                        .padding(8.dp),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Image(
-                        painter = painterResource(id = R.drawable.welcome_profile_photo),
-                        contentDescription = "Raju Bera",
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .aspectRatio(1f)
+                            .clip(innerShape)
+                    ) {
+                        Image(
+                            painter = painterResource(id = R.drawable.welcome_profile_photo),
+                            contentDescription = "Raju Bera",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
                 }
             }
 
-            // 3. Info Pills & ENTER Button Column
+            // 3. Frosted Glass + Neumorphic Identity Card & Minimalist ENTER CTA
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .widthIn(max = 460.dp),
+                    .widthIn(max = 440.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(if (compactVertical) 8.dp else 12.dp)
+                verticalArrangement = Arrangement.spacedBy(if (compactVertical) 12.dp else 16.dp)
             ) {
-                // Blue Pill: Location Pin | [S 5] | India Flag + India
-                LocationInfoPill(
-                    selectedElement = selectedElement,
-                    onSelect = { selectedElement = it }
-                )
+                NeumorphicGlassCard(
+                    cornerRadius = 26.dp,
+                    elevation = 8.dp
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 18.dp, vertical = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        LocationInfoRow(
+                            selectedElement = selectedElement,
+                            onSelect = { selectedElement = it }
+                        )
 
-                // Purple Pill: Profile Icon | Raju Bera
-                ProfileNamePill(
-                    selectedElement = selectedElement,
-                    onSelect = { selectedElement = it }
-                )
+                        HorizontalDivider(
+                            thickness = 1.dp,
+                            color = FrameScopeColors.GlassRimBottom
+                        )
 
-                // Large Prominent Green ENTER Button (ONLY navigation trigger)
+                        ProfileNameRow(
+                            selectedElement = selectedElement,
+                            onSelect = { selectedElement = it }
+                        )
+                    }
+                }
+
                 WelcomeEnterButton(
                     enabled = !hasEntered,
                     onClick = {
@@ -197,6 +249,30 @@ fun WelcomeScreen(
                         }
                     }
                 )
+
+                // Subtle 4-second glassmorphic progress bar synced to welcome animation
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(0.52f)
+                        .height(4.dp)
+                        .clip(CircleShape)
+                        .background(FrameScopeColors.InsetTrack.copy(alpha = 0.65f))
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(timelineProgress.value.coerceIn(0f, 1f))
+                            .height(4.dp)
+                            .clip(CircleShape)
+                            .background(
+                                brush = Brush.horizontalGradient(
+                                    listOf(
+                                        FrameScopeColors.SelectionBlueLight,
+                                        FrameScopeColors.SelectionBlue
+                                    )
+                                )
+                            )
+                    )
+                }
             }
         }
     }
@@ -207,69 +283,45 @@ private fun SwagatamHeader(
     compact: Boolean,
     isSelected: Boolean
 ) {
-    val fontSize = if (compact) 44.sp else 54.sp
+    val fontSize = if (compact) 40.sp else 48.sp
     Column(
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Box(contentAlignment = Alignment.Center) {
-            // 3D drop shadow layer
-            Text(
-                text = "স্বাগতম",
-                style = TextStyle(
-                    fontSize = fontSize,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = Color(0xFF7F0000)
-                ),
-                modifier = Modifier.offset(x = 2.dp, y = 4.dp)
+        Text(
+            text = "স্বাগতম",
+            style = MaterialTheme.typography.headlineLarge.copy(
+                fontSize = fontSize,
+                fontWeight = FontWeight.ExtraBold,
+                color = if (isSelected) FrameScopeColors.SelectionBlue else FrameScopeColors.TextPrimary
             )
-            // White outline halo
-            Text(
-                text = "স্বাগতম",
-                style = TextStyle(
-                    fontSize = fontSize,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = Color.White,
-                    drawStyle = Stroke(
-                        width = 11f,
-                        join = StrokeJoin.Round
-                    )
-                )
-            )
-            // Primary vivid red fill
-            Text(
-                text = "স্বাগতম",
-                style = TextStyle(
-                    fontSize = fontSize,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = if (isSelected) Color(0xFFFF2E2E) else Color(0xFFE51515)
-                )
-            )
-        }
+        )
 
-        // Curved tricolor swoosh beneath স্বাগতম
+        Spacer(modifier = Modifier.height(4.dp))
+
+        // Minimalist curved tricolor accent swoosh
         Canvas(
             modifier = Modifier
-                .width(if (compact) 210.dp else 248.dp)
-                .height(18.dp)
+                .width(if (compact) 160.dp else 196.dp)
+                .height(10.dp)
         ) {
             val w = size.width
             val h = size.height
             val saffron = Path().apply {
-                moveTo(0f, h * 0.75f)
-                quadraticTo(w * 0.50f, -h * 0.10f, w, h * 0.60f)
-                quadraticTo(w * 0.50f, h * 0.25f, 0f, h * 0.90f)
+                moveTo(0f, h * 0.45f)
+                quadraticTo(w * 0.50f, 0f, w, h * 0.45f)
+                quadraticTo(w * 0.50f, h * 0.25f, 0f, h * 0.62f)
                 close()
             }
             val white = Path().apply {
-                moveTo(0f, h * 0.88f)
-                quadraticTo(w * 0.50f, h * 0.20f, w, h * 0.68f)
-                quadraticTo(w * 0.50f, h * 0.45f, 0f, h)
+                moveTo(0f, h * 0.62f)
+                quadraticTo(w * 0.50f, h * 0.25f, w, h * 0.62f)
+                quadraticTo(w * 0.50f, h * 0.48f, 0f, h * 0.80f)
                 close()
             }
             val green = Path().apply {
-                moveTo(w * 0.08f, h * 0.95f)
-                quadraticTo(w * 0.52f, h * 0.40f, w, h * 0.78f)
-                quadraticTo(w * 0.52f, h * 0.65f, w * 0.08f, h)
+                moveTo(w * 0.06f, h * 0.80f)
+                quadraticTo(w * 0.50f, h * 0.48f, w * 0.94f, h * 0.80f)
+                quadraticTo(w * 0.50f, h * 0.70f, w * 0.06f, h * 0.96f)
                 close()
             }
             drawPath(saffron, Color(0xFFFF7A00))
@@ -280,231 +332,171 @@ private fun SwagatamHeader(
 }
 
 @Composable
-private fun LocationInfoPill(
+private fun LocationInfoRow(
     selectedElement: WelcomeElementId?,
     onSelect: (WelcomeElementId) -> Unit
 ) {
-    val pillShape = RoundedCornerShape(30.dp)
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .shadow(10.dp, pillShape, spotColor = Color(0xFF041C68))
-            .clip(pillShape)
-            .background(
-                brush = Brush.horizontalGradient(
-                    colors = listOf(
-                        Color(0xFF0D5BF2),
-                        Color(0xFF0A43C4),
-                        Color(0xFF072B8A)
-                    )
-                )
-            )
-            .border(
-                width = 2.dp,
-                brush = Brush.horizontalGradient(
-                    colors = listOf(
-                        Color(0xFF93C5FD),
-                        Color(0xFFFDE047),
-                        Color(0xFF93C5FD)
-                    )
-                ),
-                shape = pillShape
-            )
-            .padding(horizontal = 14.dp, vertical = 10.dp)
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceEvenly
+        PoppableWelcomeElement(
+            elementId = WelcomeElementId.LOCATION_PIN,
+            selectedId = selectedElement,
+            onSelect = onSelect,
+            glowShape = CircleShape,
+            popScale = 1.12f,
+            testTag = "welcome_location_icon"
         ) {
-            // Red Location Pin Icon
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(CircleShape)
+                    .background(FrameScopeColors.SpecRedContainer)
+                    .border(1.dp, FrameScopeColors.SpecRedBorder, CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.LocationOn,
+                    contentDescription = "Location",
+                    tint = FrameScopeColors.RecordRed,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+
+        PoppableWelcomeElement(
+            elementId = WelcomeElementId.S5_BADGE,
+            selectedId = selectedElement,
+            onSelect = onSelect,
+            glowShape = RoundedCornerShape(12.dp),
+            popScale = 1.08f,
+            testTag = "welcome_s5_badge"
+        ) { isSelected ->
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = if (isSelected) FrameScopeColors.SelectionBlue else FrameScopeColors.SelectionBlueTint,
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = if (isSelected) Color.White.copy(alpha = 0.6f) else FrameScopeColors.SelectionBlue.copy(alpha = 0.45f)
+                )
+            ) {
+                Text(
+                    text = "S 5",
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontFamily = OutfitFontFamily,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp
+                    ),
+                    color = if (isSelected) Color.White else FrameScopeColors.SelectionBlue,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                )
+            }
+        }
+
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
             PoppableWelcomeElement(
-                elementId = WelcomeElementId.LOCATION_PIN,
+                elementId = WelcomeElementId.INDIA_FLAG,
                 selectedId = selectedElement,
                 onSelect = onSelect,
-                glowShape = RoundedCornerShape(14.dp),
-                popScale = 1.14f,
-                testTag = "welcome_location_icon"
+                glowShape = RoundedCornerShape(6.dp),
+                popScale = 1.12f,
+                testTag = "welcome_india_flag"
             ) {
-                Canvas(modifier = Modifier.size(30.dp)) {
-                    val w = size.width
-                    val h = size.height
-                    // White base ring
-                    drawOval(
-                        color = Color.White,
-                        topLeft = Offset(w * 0.15f, h * 0.76f),
-                        size = androidx.compose.ui.geometry.Size(w * 0.70f, h * 0.20f),
-                        style = Stroke(width = 2.dp.toPx())
-                    )
-                    // Red pin teardrop
-                    val pinPath = Path().apply {
-                        moveTo(w * 0.50f, h * 0.86f)
-                        cubicTo(w * 0.16f, h * 0.56f, w * 0.14f, h * 0.20f, w * 0.50f, h * 0.08f)
-                        cubicTo(w * 0.86f, h * 0.20f, w * 0.84f, h * 0.56f, w * 0.50f, h * 0.86f)
-                        close()
-                    }
-                    drawPath(pinPath, Color(0xFFFF1E1E))
-                    drawPath(pinPath, Color.White, style = Stroke(width = 1.6.dp.toPx()))
-                    drawCircle(Color.White, w * 0.15f, Offset(w * 0.50f, h * 0.36f))
+                Canvas(
+                    modifier = Modifier
+                        .size(width = 34.dp, height = 23.dp)
+                        .clip(RoundedCornerShape(5.dp))
+                        .border(1.dp, FrameScopeColors.GlassRimTop, RoundedCornerShape(5.dp))
+                ) {
+                    drawMiniIndianFlag()
                 }
             }
 
-            VerticalPillDivider()
-
-            // S 5 inside its own slightly rounded rectangular boundary
             PoppableWelcomeElement(
-                elementId = WelcomeElementId.S5_BADGE,
+                elementId = WelcomeElementId.INDIA_TEXT,
                 selectedId = selectedElement,
                 onSelect = onSelect,
-                glowShape = RoundedCornerShape(10.dp),
-                popScale = 1.10f,
-                testTag = "welcome_s5_badge"
-            ) { isSelected ->
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = if (isSelected) Color(0xFF1D4ED8) else Color(0x33FFFFFF),
-                    border = BorderStroke(
-                        width = if (isSelected) 2.dp else 1.5.dp,
-                        color = if (isSelected) Color(0xFFFDE047) else Color.White.copy(alpha = 0.85f)
-                    )
-                ) {
-                    Text(
-                        text = "S 5",
-                        style = MaterialTheme.typography.titleLarge.copy(
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 21.sp,
-                            letterSpacing = 1.sp
-                        ),
-                        color = Color.White,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
-                    )
-                }
-            }
-
-            VerticalPillDivider()
-
-            // Indian Flag Icon + India Text (each independently clickable & poppable)
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                glowShape = RoundedCornerShape(8.dp),
+                popScale = 1.08f,
+                testTag = "welcome_india_text"
             ) {
-                PoppableWelcomeElement(
-                    elementId = WelcomeElementId.INDIA_FLAG,
-                    selectedId = selectedElement,
-                    onSelect = onSelect,
-                    glowShape = RoundedCornerShape(6.dp),
-                    popScale = 1.14f,
-                    testTag = "welcome_india_flag"
-                ) {
-                    Canvas(
-                        modifier = Modifier
-                            .size(width = 40.dp, height = 27.dp)
-                            .clip(RoundedCornerShape(4.dp))
-                            .border(1.dp, Color.White.copy(alpha = 0.7f), RoundedCornerShape(4.dp))
-                    ) {
-                        drawMiniIndianFlag()
-                    }
-                }
-
-                PoppableWelcomeElement(
-                    elementId = WelcomeElementId.INDIA_TEXT,
-                    selectedId = selectedElement,
-                    onSelect = onSelect,
-                    glowShape = RoundedCornerShape(8.dp),
-                    popScale = 1.10f,
-                    testTag = "welcome_india_text"
-                ) {
-                    Text(
-                        text = "India",
-                        style = MaterialTheme.typography.titleLarge.copy(
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 21.sp
-                        ),
-                        color = Color.White,
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                    )
-                }
+                Text(
+                    text = "India",
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp
+                    ),
+                    color = FrameScopeColors.TextPrimary,
+                    modifier = Modifier.padding(horizontal = 2.dp, vertical = 2.dp)
+                )
             }
         }
     }
 }
 
 @Composable
-private fun ProfileNamePill(
+private fun ProfileNameRow(
     selectedElement: WelcomeElementId?,
     onSelect: (WelcomeElementId) -> Unit
 ) {
-    val pillShape = RoundedCornerShape(30.dp)
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .shadow(10.dp, pillShape, spotColor = Color(0xFF4A0072))
-            .clip(pillShape)
-            .background(
-                brush = Brush.horizontalGradient(
-                    colors = listOf(
-                        Color(0xFF7B1FA2),
-                        Color(0xFF9C27B0),
-                        Color(0xFF6A1B9A)
-                    )
-                )
-            )
-            .border(
-                width = 2.dp,
-                brush = Brush.horizontalGradient(
-                    colors = listOf(
-                        Color(0xFFE9D5FF),
-                        Color(0xFFFDE047),
-                        Color(0xFFE9D5FF)
-                    )
-                ),
-                shape = pillShape
-            )
-            .padding(horizontal = 18.dp, vertical = 10.dp)
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center
+        PoppableWelcomeElement(
+            elementId = WelcomeElementId.PROFILE_ICON,
+            selectedId = selectedElement,
+            onSelect = onSelect,
+            glowShape = CircleShape,
+            popScale = 1.12f,
+            testTag = "welcome_profile_icon"
         ) {
-            PoppableWelcomeElement(
-                elementId = WelcomeElementId.PROFILE_ICON,
-                selectedId = selectedElement,
-                onSelect = onSelect,
-                glowShape = RoundedCornerShape(14.dp),
-                popScale = 1.15f,
-                testTag = "welcome_profile_icon"
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(CircleShape)
+                    .background(
+                        brush = Brush.linearGradient(
+                            listOf(FrameScopeColors.SelectionBlueLight, FrameScopeColors.SelectionBlue)
+                        )
+                    )
+                    .border(1.dp, Color.White.copy(alpha = 0.45f), CircleShape),
+                contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = Icons.Rounded.Person,
                     contentDescription = "Profile",
                     tint = Color.White,
-                    modifier = Modifier.size(32.dp)
+                    modifier = Modifier.size(20.dp)
                 )
             }
+        }
 
-            Spacer(modifier = Modifier.width(14.dp))
-            VerticalPillDivider()
-            Spacer(modifier = Modifier.width(14.dp))
+        Spacer(modifier = Modifier.width(12.dp))
 
-            PoppableWelcomeElement(
-                elementId = WelcomeElementId.RAJU_BERA,
-                selectedId = selectedElement,
-                onSelect = onSelect,
-                glowShape = RoundedCornerShape(10.dp),
-                popScale = 1.09f,
-                testTag = "welcome_raju_bera_text"
-            ) {
-                Text(
-                    text = "Raju Bera",
-                    style = MaterialTheme.typography.titleLarge.copy(
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 22.sp
-                    ),
-                    color = Color.White,
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                )
-            }
+        PoppableWelcomeElement(
+            elementId = WelcomeElementId.RAJU_BERA,
+            selectedId = selectedElement,
+            onSelect = onSelect,
+            glowShape = RoundedCornerShape(10.dp),
+            popScale = 1.07f,
+            testTag = "welcome_raju_bera_text"
+        ) {
+            Text(
+                text = "Raju Bera",
+                style = MaterialTheme.typography.titleLarge.copy(
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 21.sp
+                ),
+                color = FrameScopeColors.TextPrimary,
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+            )
         }
     }
 }
@@ -524,36 +516,34 @@ private fun WelcomeEnterButton(
         ),
         label = "enter_btn_scale"
     )
-    val pillShape = RoundedCornerShape(32.dp)
+    val pillShape = RoundedCornerShape(50)
 
     Box(
         modifier = Modifier
-            .fillMaxWidth(0.84f)
+            .fillMaxWidth(0.78f)
             .minimumInteractiveComponentSize()
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
             }
-            .shadow(14.dp, pillShape, spotColor = Color(0xFF004D0E))
+            .shadow(
+                elevation = 14.dp,
+                shape = pillShape,
+                ambientColor = FrameScopeColors.SelectionBlue.copy(alpha = 0.45f),
+                spotColor = FrameScopeColors.SelectionBlue.copy(alpha = 0.6f)
+            )
             .clip(pillShape)
             .background(
-                brush = Brush.verticalGradient(
+                brush = Brush.linearGradient(
                     colors = listOf(
-                        Color(0xFF00C832),
-                        Color(0xFF009B22),
-                        Color(0xFF007516)
+                        FrameScopeColors.SelectionBlueLight,
+                        FrameScopeColors.SelectionBlue
                     )
                 )
             )
             .border(
-                width = 2.5.dp,
-                brush = Brush.horizontalGradient(
-                    colors = listOf(
-                        Color(0xFFD9F99D),
-                        Color(0xFFFEF08A),
-                        Color(0xFFD9F99D)
-                    )
-                ),
+                width = 1.25.dp,
+                color = Color.White.copy(alpha = 0.45f),
                 shape = pillShape
             )
             .clickable(
@@ -563,38 +553,29 @@ private fun WelcomeEnterButton(
                 onClick = onClick
             )
             .testTag("welcome_enter_button")
-            .padding(vertical = 13.dp, horizontal = 24.dp),
+            .padding(vertical = 15.dp, horizontal = 24.dp),
         contentAlignment = Alignment.Center
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Icon(
-                imageVector = Icons.AutoMirrored.Rounded.Login,
-                contentDescription = null,
-                tint = Color.White,
-                modifier = Modifier.size(30.dp)
-            )
             Text(
                 text = "ENTER",
-                style = MaterialTheme.typography.headlineLarge.copy(
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 24.sp,
-                    letterSpacing = 1.5.sp
+                style = MaterialTheme.typography.titleLarge.copy(
+                    fontFamily = OutfitFontFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp,
+                    letterSpacing = 1.2.sp
                 ),
                 color = Color.White
             )
+            Icon(
+                imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(22.dp)
+            )
         }
     }
-}
-
-@Composable
-private fun VerticalPillDivider() {
-    Box(
-        modifier = Modifier
-            .width(1.5.dp)
-            .height(24.dp)
-            .background(Color.White.copy(alpha = 0.65f))
-    )
 }
