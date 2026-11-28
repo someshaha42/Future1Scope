@@ -35,7 +35,7 @@ class CropExportForegroundService : Service() {
         private const val CHANNEL_ID = "framescope_crop_export"
         private const val PROGRESS_NOTIFICATION_ID = 4201
         private const val COMPLETE_NOTIFICATION_ID = 4202
-        private const val NOTIFY_MIN_INTERVAL_MS = 250L
+        private const val NOTIFY_MIN_INTERVAL_MS = 400L
     }
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -454,7 +454,7 @@ class CropExportForegroundService : Service() {
     ) {
         val now = System.currentTimeMillis()
         val pct = (progress * 100f).toInt().coerceIn(0, 100)
-        if (!force && (now - lastNotifyMs < NOTIFY_MIN_INTERVAL_MS) && (pct - lastNotifyPct < 3)) {
+        if (!force && ((now - lastNotifyMs < NOTIFY_MIN_INTERVAL_MS) || (pct == lastNotifyPct && now - lastNotifyMs < 1_000L))) {
             return
         }
         lastNotifyMs = now

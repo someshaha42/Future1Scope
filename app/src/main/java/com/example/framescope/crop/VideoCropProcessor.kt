@@ -44,11 +44,11 @@ import kotlin.math.roundToInt
 object VideoCropProcessor {
 
     private const val MIN_SAFE_ENCODER_BITRATE_BPS = 250_000
-    private const val CODEC_WAIT_US = 2_000L
+    private const val CODEC_WAIT_US = 1_000L
     private const val PROGRESS_UPDATE_INTERVAL_MS = 100L
     private const val DEFAULT_ENCODER_FRAME_RATE = 30
     private const val TURBO_OPERATING_RATE = Short.MAX_VALUE.toInt()
-    private const val LONG_VIDEO_THRESHOLD_US = 15L * 60L * 1_000_000L
+    private const val UNIFORM_KEY_FRAME_INTERVAL_SEC = 2
 
     private val cachedCodecInfos: Array<MediaCodecInfo> by lazy {
         MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos
@@ -94,8 +94,14 @@ object VideoCropProcessor {
         var glContext: EglCropSurface? = null
 
         var muxerStarted = false
+        val originalThreadPriority = runCatching {
+            android.os.Process.getThreadPriority(android.os.Process.myTid())
+        }.getOrNull()
 
         try {
+            runCatching {
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
+            }
             onProgress(0.02f, "Preparing encoder…")
 
             videoPfd = openExtractorDataSource(context, media.uri, videoExtractor)
@@ -166,7 +172,7 @@ object VideoCropProcessor {
             val trimEndUs = if (effectiveEndMs > 0L) effectiveEndMs * 1_000L else Long.MAX_VALUE
             val durationUs = ((if (trimEndUs < Long.MAX_VALUE) trimEndUs else (media.durationMs * 1_000L)) - trimStartUs)
                 .coerceAtLeast(1L)
-            val keyFrameIntervalSec = if (durationUs >= LONG_VIDEO_THRESHOLD_US) 3 else 2
+            val keyFrameIntervalSec = UNIFORM_KEY_FRAME_INTERVAL_SEC
 
             val rawOutW = ((cropRect.widthFraction * media.displayWidth).roundToInt() and 1.inv())
                 .coerceIn(16, media.displayWidth)
@@ -511,7 +517,10 @@ object VideoCropProcessor {
                             stopRequested.set(true)
                         }
                     }
-                }, "CropAudioMuxer").apply { start() }
+                }, "CropAudioMuxer").apply {
+                    priority = Thread.MAX_PRIORITY
+                    start()
+                }
             } else {
                 null
             }
@@ -682,6 +691,9 @@ object VideoCropProcessor {
             runCatching { frameThread?.quitSafely() }
             runCatching { glContext?.release() }
             runCatching { encoderInputSurface?.release() }
+            if (originalThreadPriority != null) {
+                runCatching { android.os.Process.setThreadPriority(originalThreadPriority) }
+            }
         }
     }
 
@@ -1007,65 +1019,71 @@ object VideoCropProcessor {
             muxer.start()
             muxerStarted = true
 
-            onProgress(0.15f, "Copying lossless video stream…")
+            onProgress(0.15f, "Copying lossless stream…")
             videoExtractor.selectTrack(videoTrackIndex)
+            if (muxerAudioTrack >= 0 && audioTrackIndex >= 0) {
+                videoExtractor.selectTrack(audioTrackIndex)
+            }
             val maxVideoSize = (if (videoInputFormat.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) {
                 videoInputFormat.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE)
             } else {
                 1024 * 1024
             }).coerceAtLeast(512 * 1024)
-            val videoBuf = ByteBuffer.allocateDirect(maxVideoSize)
+            val maxAudioSize = (if (compatibleAudioFormat != null && compatibleAudioFormat.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) {
+                compatibleAudioFormat.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE)
+            } else {
+                256 * 1024
+            }).coerceAtLeast(64 * 1024)
+            val sampleBuf = ByteBuffer.allocateDirect(maxOf(maxVideoSize, maxAudioSize))
             val info = MediaCodec.BufferInfo()
             var lastVideoPts = -1L
+            var lastAudioPts = -1L
+            var videoDone = false
+            var audioDone = muxerAudioTrack < 0 || audioTrackIndex < 0
             var lastProgressMs = 0L
 
-            while (coroutineContext.isActive) {
-                val sampleSize = videoExtractor.readSampleData(videoBuf, 0)
+            while (coroutineContext.isActive && !(videoDone && audioDone)) {
+                val sampleSize = videoExtractor.readSampleData(sampleBuf, 0)
                 if (sampleSize < 0) break
+                val trackIdx = videoExtractor.sampleTrackIndex
                 val rawPts = videoExtractor.sampleTime.coerceAtLeast(0L)
-                if (rawPts > trimEndUs) break
-                val pts = if (rawPts <= lastVideoPts) lastVideoPts + 1L else rawPts
-                lastVideoPts = pts
-                info.set(0, sampleSize, pts, videoExtractor.sampleFlags)
-                videoBuf.position(0)
-                videoBuf.limit(sampleSize)
-                muxer.writeSampleData(muxerVideoTrack, videoBuf, info)
 
-                val nowMs = System.currentTimeMillis()
-                if (nowMs - lastProgressMs >= PROGRESS_UPDATE_INTERVAL_MS) {
-                    lastProgressMs = nowMs
-                    val ratio = (pts.toFloat() / effectiveDurationUs.toFloat()).coerceIn(0f, 1f)
-                    onProgress(0.15f + ratio * 0.72f, "Copying lossless video stream…")
+                if (trackIdx == videoTrackIndex) {
+                    if (rawPts > trimEndUs) {
+                        videoDone = true
+                        runCatching { videoExtractor.unselectTrack(videoTrackIndex) }
+                    } else {
+                        val pts = if (rawPts <= lastVideoPts) lastVideoPts + 1L else rawPts
+                        lastVideoPts = pts
+                        info.set(0, sampleSize, pts, videoExtractor.sampleFlags)
+                        sampleBuf.position(0)
+                        sampleBuf.limit(sampleSize)
+                        muxer.writeSampleData(muxerVideoTrack, sampleBuf, info)
+
+                        val nowMs = System.currentTimeMillis()
+                        if (nowMs - lastProgressMs >= PROGRESS_UPDATE_INTERVAL_MS) {
+                            lastProgressMs = nowMs
+                            val ratio = (pts.toFloat() / effectiveDurationUs.toFloat()).coerceIn(0f, 1f)
+                            onProgress(0.15f + ratio * 0.78f, "Copying lossless stream…")
+                        }
+                    }
+                } else if (trackIdx == audioTrackIndex && muxerAudioTrack >= 0) {
+                    val pastEnd = rawPts > trimEndUs || (videoDone && lastVideoPts > 0L && rawPts > lastVideoPts + 100_000L)
+                    if (pastEnd) {
+                        audioDone = true
+                        runCatching { videoExtractor.unselectTrack(audioTrackIndex) }
+                    } else {
+                        val pts = if (rawPts <= lastAudioPts) lastAudioPts + 1L else rawPts
+                        lastAudioPts = pts
+                        info.set(0, sampleSize, pts, videoExtractor.sampleFlags)
+                        sampleBuf.position(0)
+                        sampleBuf.limit(sampleSize)
+                        muxer.writeSampleData(muxerAudioTrack, sampleBuf, info)
+                    }
                 }
+
+                if (videoDone && audioDone) break
                 if (!videoExtractor.advance()) break
-            }
-
-            if (muxerAudioTrack >= 0 && compatibleAudioFormat != null && audioTrackIndex >= 0) {
-                onProgress(0.90f, "Muxing audio track…")
-                videoExtractor.unselectTrack(videoTrackIndex)
-                videoExtractor.selectTrack(audioTrackIndex)
-                videoExtractor.seekTo(0L, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
-                val maxAudioSize = (if (compatibleAudioFormat.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) {
-                    compatibleAudioFormat.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE)
-                } else {
-                    256 * 1024
-                }).coerceAtLeast(64 * 1024)
-                val audioBuf = ByteBuffer.allocateDirect(maxAudioSize)
-                var lastAudioPts = -1L
-                while (coroutineContext.isActive) {
-                    val sampleSize = videoExtractor.readSampleData(audioBuf, 0)
-                    if (sampleSize < 0) break
-                    val rawPts = videoExtractor.sampleTime.coerceAtLeast(0L)
-                    if (rawPts > trimEndUs) break
-                    if (lastVideoPts > 0L && rawPts > lastVideoPts + 100_000L) break
-                    val pts = if (rawPts <= lastAudioPts) lastAudioPts + 1L else rawPts
-                    lastAudioPts = pts
-                    info.set(0, sampleSize, pts, videoExtractor.sampleFlags)
-                    audioBuf.position(0)
-                    audioBuf.limit(sampleSize)
-                    muxer.writeSampleData(muxerAudioTrack, audioBuf, info)
-                    if (!videoExtractor.advance()) break
-                }
             }
 
             muxer.stop()
@@ -1353,7 +1371,7 @@ object VideoCropProcessor {
                     if (remaining <= 0L) {
                         error("Timed out waiting for decoded video frame.")
                     }
-                    frameSync.wait(minOf(remaining, 20L))
+                    frameSync.wait(minOf(remaining, 10L))
                 }
                 frameAvailable = false
             }
