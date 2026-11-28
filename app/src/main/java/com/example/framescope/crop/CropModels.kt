@@ -177,6 +177,25 @@ data class CropExportJob(
 )
 
 @Serializable
+data class CropExportHistoryItem(
+    val jobId: String,
+    val configSignature: String = "",
+    val mediaTypeName: String = CropMediaType.VIDEO.name,
+    val formatLabel: String,
+    val outputWidth: Int,
+    val outputHeight: Int,
+    val clickedAtMs: Long,
+    val completedAtMs: Long,
+    val outputPath: String? = null,
+    val fileName: String? = null,
+    val savedToGallery: Boolean = false,
+    val galleryUriString: String? = null
+) {
+    val mediaType: CropMediaType
+        get() = runCatching { CropMediaType.valueOf(mediaTypeName) }.getOrDefault(CropMediaType.VIDEO)
+}
+
+@Serializable
 data class CropProjectRecord(
     val id: String,
     val title: String,
@@ -209,7 +228,8 @@ data class CropProjectRecord(
     val exportedDurationMs: Long = 0L,
     val updatedAtMs: Long = 0L,
     val exportedAtMs: Long? = null,
-    val lastExportedConfigSignature: String? = null
+    val lastExportedConfigSignature: String? = null,
+    val exportHistory: List<CropExportHistoryItem> = emptyList()
 ) {
     val mediaType: CropMediaType
         get() = runCatching { CropMediaType.valueOf(mediaTypeName) }.getOrDefault(CropMediaType.VIDEO)

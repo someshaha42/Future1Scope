@@ -37,6 +37,7 @@ import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.PlayCircleOutline
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
@@ -1060,6 +1061,7 @@ internal fun RecentProjectsSection(
     onOpenSettings: () -> Unit,
     onOpenInGallery: (CropProjectRecord) -> Unit,
     onEditProject: (CropProjectRecord) -> Unit,
+    onShareProject: (CropProjectRecord) -> Unit = {},
     onRequestDelete: (CropProjectRecord) -> Unit
 ) {
     val timeFormat = remember { SimpleDateFormat("hh:mm a • MMM d", Locale.getDefault()) }
@@ -1287,7 +1289,7 @@ internal fun RecentProjectsSection(
                                 color = FrameScopeColors.BorderSubtle.copy(alpha = 0.7f)
                             )
 
-                            // Bottom Action Bar: Delete on the LEFT, Edit Project on the RIGHT
+                            // Bottom Action Bar: Remove on the LEFT, Share & Edit Project on the RIGHT
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -1303,59 +1305,99 @@ internal fun RecentProjectsSection(
                                         .minimumInteractiveComponentSize()
                                         .clip(RoundedCornerShape(8.dp))
                                         .clickable { onRequestDelete(project) }
-                                        .testTag("delete_project_item_$index")
+                                        .testTag("remove_project_item_$index")
                                 ) {
                                     Row(
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                                     ) {
                                         Icon(
                                             imageVector = Icons.Rounded.DeleteOutline,
-                                            contentDescription = "Delete ${project.title}",
+                                            contentDescription = "Remove ${project.title}",
                                             tint = FrameScopeColors.SpecRedText,
-                                            modifier = Modifier.size(16.dp)
+                                            modifier = Modifier.size(15.dp)
                                         )
                                         Text(
-                                            text = "Delete",
+                                            text = "Remove",
                                             style = MaterialTheme.typography.labelMedium.copy(
                                                 fontWeight = FontWeight.SemiBold,
-                                                fontSize = 12.sp
+                                                fontSize = 11.5.sp
                                             ),
-                                            color = FrameScopeColors.SpecRedText
+                                            color = FrameScopeColors.SpecRedText,
+                                            maxLines = 1
                                         )
                                     }
                                 }
 
-                                Surface(
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = FrameScopeColors.SelectionBlueTint,
-                                    border = BorderStroke(1.dp, FrameScopeColors.SelectionBlue),
-                                    modifier = Modifier
-                                        .minimumInteractiveComponentSize()
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .clickable { onEditProject(project) }
-                                        .testTag("edit_project_item_$index")
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = FrameScopeColors.ElevatedSurface,
+                                        border = BorderStroke(1.dp, FrameScopeColors.BorderSubtle),
+                                        modifier = Modifier
+                                            .minimumInteractiveComponentSize()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable { onShareProject(project) }
+                                            .testTag("share_project_item_$index")
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Rounded.Edit,
-                                            contentDescription = "Edit project ${project.title}",
-                                            tint = FrameScopeColors.SelectionBlue,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                        Text(
-                                            text = "Edit Project",
-                                            style = MaterialTheme.typography.labelMedium.copy(
-                                                fontWeight = FontWeight.SemiBold,
-                                                fontSize = 12.sp
-                                            ),
-                                            color = FrameScopeColors.TextPrimary
-                                        )
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Share,
+                                                contentDescription = "Share ${project.title}",
+                                                tint = FrameScopeColors.SelectionBlue,
+                                                modifier = Modifier.size(15.dp)
+                                            )
+                                            Text(
+                                                text = "Share",
+                                                style = MaterialTheme.typography.labelMedium.copy(
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    fontSize = 11.5.sp
+                                                ),
+                                                color = FrameScopeColors.TextPrimary,
+                                                maxLines = 1
+                                            )
+                                        }
+                                    }
+
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = FrameScopeColors.SelectionBlueTint,
+                                        border = BorderStroke(1.dp, FrameScopeColors.SelectionBlue),
+                                        modifier = Modifier
+                                            .minimumInteractiveComponentSize()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable { onEditProject(project) }
+                                            .testTag("edit_project_item_$index")
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Edit,
+                                                contentDescription = "Edit project ${project.title}",
+                                                tint = FrameScopeColors.SelectionBlue,
+                                                modifier = Modifier.size(15.dp)
+                                            )
+                                            Text(
+                                                text = "Edit Project",
+                                                style = MaterialTheme.typography.labelMedium.copy(
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    fontSize = 11.5.sp
+                                                ),
+                                                color = FrameScopeColors.TextPrimary,
+                                                maxLines = 1
+                                            )
+                                        }
                                     }
                                 }
                             }

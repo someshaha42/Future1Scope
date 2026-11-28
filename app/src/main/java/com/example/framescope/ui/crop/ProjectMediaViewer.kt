@@ -149,6 +149,7 @@ import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.ui.compose.PlayerSurface
 import androidx.media3.ui.compose.SURFACE_TYPE_TEXTURE_VIEW
 import com.example.framescope.crop.CanvasAspectMode
@@ -505,9 +506,9 @@ internal fun ProjectMediaViewer(
         }
     }
 
-    LaunchedEffect(exoPlayer, isPlaying, isLifecycleResumed, project.id) {
+    LaunchedEffect(exoPlayer, isPlaying, isLifecycleResumed, isScrubbing, project.id) {
         val player = exoPlayer ?: return@LaunchedEffect
-        val shouldPlay = isPlaying && isLifecycleResumed
+        val shouldPlay = isPlaying && isLifecycleResumed && !isScrubbing
         if (shouldPlay) {
             val minStart = if (isDraftTrimmed) project.trimStartMs.coerceAtLeast(0L) else 0L
             val maxEnd = if (isDraftTrimmed) project.trimEndMs else videoDurationMs
@@ -521,8 +522,37 @@ internal fun ProjectMediaViewer(
             }
             player.playWhenReady = true
         } else {
-            currentPosMs = player.currentPosition.coerceAtLeast(0L)
+            if (!isScrubbing) {
+                currentPosMs = player.currentPosition.coerceAtLeast(0L)
+            }
             player.playWhenReady = false
+        }
+    }
+
+    LaunchedEffect(exoPlayer, isScrubbing) {
+        val player = exoPlayer ?: return@LaunchedEffect
+        if (isScrubbing) {
+            player.setSeekParameters(SeekParameters.CLOSEST_SYNC)
+            player.playWhenReady = false
+            var lastDispatchedMs = -1L
+            var lastSeekAtMs = 0L
+            while (isActive && isScrubbing) {
+                val target = scrubPreviewMs
+                val now = SystemClock.uptimeMillis()
+                if (target != lastDispatchedMs) {
+                    val readyForNext = player.playbackState == Player.STATE_READY ||
+                        lastDispatchedMs < 0L ||
+                        (now - lastSeekAtMs) >= 110L
+                    if (readyForNext) {
+                        player.seekTo(target)
+                        lastDispatchedMs = target
+                        lastSeekAtMs = now
+                    }
+                }
+                delay(24L)
+            }
+        } else {
+            player.setSeekParameters(SeekParameters.DEFAULT)
         }
     }
 
@@ -1237,10 +1267,13 @@ internal fun ProjectMediaViewer(
                                         hasCompleted = false
                                         scrubPreviewMs = targetMs
                                         currentPosMs = targetMs
-                                        exoPlayer?.seekTo(targetMs)
                                         controlsInteractionNonce++
                                     },
                                     onSeekFinished = {
+                                        val finalTarget = scrubPreviewMs
+                                        exoPlayer?.setSeekParameters(SeekParameters.DEFAULT)
+                                        exoPlayer?.seekTo(finalTarget)
+                                        currentPosMs = finalTarget
                                         isScrubbing = false
                                         controlsInteractionNonce++
                                     },
@@ -2028,26 +2061,29 @@ private fun SlimGoogleFilesSeekBar(
                     val down = awaitFirstDown(requireUnconsumed = false)
                     down.consume()
                     isDragging = true
-                    val usableWidth = (size.width - maxThumbPadPx * 2f).coerceAtLeast(1f)
-                    fun seekAt(x: Float) {
-                        val frac = ((x - maxThumbPadPx) / usableWidth).coerceIn(0f, 1f)
-                        val targetMs = (frac * latestDuration).roundToLong().coerceIn(0L, latestDuration)
-                        latestOnSeek(targetMs)
-                    }
-                    seekAt(down.position.x)
-
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val change = event.changes.firstOrNull { it.id == down.id }
-                            ?: event.changes.firstOrNull()
-                        if (change == null || !change.pressed) {
-                            break
+                    try {
+                        val usableWidth = (size.width - maxThumbPadPx * 2f).coerceAtLeast(1f)
+                        fun seekAt(x: Float) {
+                            val frac = ((x - maxThumbPadPx) / usableWidth).coerceIn(0f, 1f)
+                            val targetMs = (frac * latestDuration).roundToLong().coerceIn(0L, latestDuration)
+                            latestOnSeek(targetMs)
                         }
-                        change.consume()
-                        seekAt(change.position.x)
+                        seekAt(down.position.x)
+
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id }
+                                ?: event.changes.firstOrNull()
+                            if (change == null || !change.pressed) {
+                                break
+                            }
+                            change.consume()
+                            seekAt(change.position.x)
+                        }
+                    } finally {
+                        isDragging = false
+                        latestOnSeekFinished()
                     }
-                    isDragging = false
-                    latestOnSeekFinished()
                 }
             },
         contentAlignment = Alignment.Center

@@ -19,6 +19,7 @@ import com.example.framescope.crop.CodecPipelineSupport
 import com.example.framescope.crop.CropAspectRatio
 import com.example.framescope.crop.CropEditSnapshot
 import com.example.framescope.crop.CropExportForegroundService
+import com.example.framescope.crop.CropExportHistoryItem
 import com.example.framescope.crop.CropExportJob
 import com.example.framescope.crop.CropExportJobStatus
 import com.example.framescope.crop.CropExportManager
@@ -28,7 +29,6 @@ import com.example.framescope.crop.CropMediaType
 import com.example.framescope.crop.CropProjectRecord
 import com.example.framescope.crop.CropProjectsRepository
 import com.example.framescope.crop.CropShareExportReady
-import com.example.framescope.crop.CropShareExportRequest
 import com.example.framescope.crop.CropWorkspaceExportRequest
 import com.example.framescope.crop.ImageCropProcessor
 import com.example.framescope.crop.ImageExportFormatOption
@@ -91,9 +91,12 @@ data class CropToolUiState(
     val recentProjects: List<CropProjectRecord> = emptyList(),
     val projectThumbnails: Map<String, Bitmap> = emptyMap(),
     val allExportJobs: List<CropExportJob> = emptyList(),
+    val currentProjectExportHistory: List<CropExportHistoryItem> = emptyList(),
     val highlightedExportJobId: String? = null,
     val persistedExportedSignature: String? = null,
     val isSharingProjectExport: Boolean = false,
+    val sharingProjectId: String? = null,
+    val sharingProjectTitle: String = "",
     val shareExportProgress: Float = 0f,
     val shareExportStatus: String = "",
     val shareExportReady: CropShareExportReady? = null,
@@ -102,7 +105,32 @@ data class CropToolUiState(
     val projectExportJobs: List<CropExportJob>
         get() {
             val pid = currentProjectId ?: return emptyList()
-            return allExportJobs.filter { it.projectId == pid }
+            val title = currentProjectTitle ?: ""
+            val persistedMap = currentProjectExportHistory.associate { item ->
+                item.jobId to CropExportJob(
+                    jobId = item.jobId,
+                    notificationId = 0,
+                    projectId = pid,
+                    projectTitle = title,
+                    configSignature = item.configSignature,
+                    mediaType = item.mediaType,
+                    formatLabel = item.formatLabel,
+                    outputWidth = item.outputWidth,
+                    outputHeight = item.outputHeight,
+                    clickedAtMs = item.clickedAtMs,
+                    progress = 1f,
+                    statusText = "100% Complete",
+                    status = CropExportJobStatus.COMPLETED,
+                    outputPath = item.outputPath,
+                    fileName = item.fileName,
+                    savedToGallery = item.savedToGallery,
+                    galleryUriString = item.galleryUriString
+                )
+            }
+            val liveMap = allExportJobs
+                .filter { it.projectId == pid }
+                .associateBy { it.jobId }
+            return (persistedMap + liveMap).values.sortedBy { it.clickedAtMs }
         }
 
     val activeExportCountsByProject: Map<String, Int>
@@ -256,7 +284,7 @@ class CropToolViewModel(
                         jobs.any {
                             it.jobId == hid &&
                                 (it.status == CropExportJobStatus.RUNNING || it.status == CropExportJobStatus.COMPLETED)
-                        }
+                        } || current.currentProjectExportHistory.any { it.jobId == hid }
                     } == true
                     current.copy(
                         allExportJobs = jobs,
@@ -270,6 +298,8 @@ class CropToolViewModel(
                 _uiState.update { current ->
                     current.copy(
                         isSharingProjectExport = shareState.isExporting,
+                        sharingProjectId = shareState.projectId,
+                        sharingProjectTitle = shareState.projectTitle,
                         shareExportProgress = shareState.progress,
                         shareExportStatus = shareState.statusText,
                         shareExportReady = shareState.readyEvent,
@@ -287,7 +317,8 @@ class CropToolViewModel(
                     val (_, projectId) = update
                     val latest = projectsRepository.getProjectById(projectId)
                     _uiState.update { s ->
-                        val nextPersistedSig = if (s.currentProjectId == projectId && latest != null) {
+                        val isCurrent = s.currentProjectId == projectId && latest != null
+                        val nextPersistedSig = if (isCurrent) {
                             val hasFile = !latest.exportedFilePath.isNullOrBlank() && File(latest.exportedFilePath).exists()
                             if (hasFile) latest.lastExportedConfigSignature else null
                         } else {
@@ -295,7 +326,8 @@ class CropToolViewModel(
                         }
                         s.copy(
                             projectThumbnails = s.projectThumbnails - projectId,
-                            persistedExportedSignature = nextPersistedSig
+                            persistedExportedSignature = nextPersistedSig,
+                            currentProjectExportHistory = if (isCurrent) latest.exportHistory else s.currentProjectExportHistory
                         )
                     }
                     refreshRecentProjects()
@@ -650,6 +682,7 @@ class CropToolViewModel(
                         selectedImageFormat = info.imageExportOptions.firstOrNull(),
                         selectedVideoFormat = firstVideoFormat,
                         pipelineSupport = pipelineSupport,
+                        currentProjectExportHistory = emptyList(),
                         persistedExportedSignature = null,
                         highlightedExportJobId = null
                     ).withDynamicSupport()
@@ -836,6 +869,7 @@ class CropToolViewModel(
                         selectedImageFormat = savedImageFormat,
                         selectedVideoFormat = savedVideoFormat,
                         pipelineSupport = pipelineSupport,
+                        currentProjectExportHistory = latestProject.exportHistory,
                         persistedExportedSignature = persistedSigIfValid
                     ).withHistoryFlags().withDynamicSupport()
                 }
@@ -1135,7 +1169,7 @@ class CropToolViewModel(
         val existingJob = CropExportManager.findActiveOrCompletedJobBySignature(
             projectId = projectId,
             configSignature = configSignature
-        )
+        ) ?: state.matchingExistingExportJob
         if (existingJob != null) {
             when (existingJob.status) {
                 CropExportJobStatus.RUNNING -> {
@@ -1234,11 +1268,10 @@ class CropToolViewModel(
     }
 
     fun cancelShareProjectExport() {
-        val cancelIntent = Intent(appContext, CropExportForegroundService::class.java).apply {
-            action = CropExportForegroundService.ACTION_CANCEL_EXPORT
-            putExtra(CropExportForegroundService.EXTRA_JOB_ID, "__share__")
+        val activeJobId = CropExportManager.shareState.value.activeJobId
+        if (!activeJobId.isNullOrBlank()) {
+            cancelExportJob(activeJobId)
         }
-        runCatching { appContext.startService(cancelIntent) }
         CropExportManager.resetShareExportState()
     }
 
@@ -1284,14 +1317,23 @@ class CropToolViewModel(
             }
         }
 
-        // Draft project has not been exported yet: export via Foreground Service so minimizing does not interrupt it
-        CropExportManager.enqueueShareExport(CropShareExportRequest(project = project))
+        // If an export for this project is already running, attach Share Sheet trigger to it instead of duplicating
+        val runningJob = CropExportManager.findRunningJobForProject(project.id)
+        if (runningJob != null) {
+            CropExportManager.attachShareToExistingJob(runningJob)
+            return
+        }
+
+        // Draft project has not been exported yet: run standard export via Foreground Service + history + notification
+        val job = CropExportManager.enqueueShareExport(project)
         val serviceIntent = Intent(appContext, CropExportForegroundService::class.java).apply {
             action = CropExportForegroundService.ACTION_START_SHARE_EXPORT
+            putExtra(CropExportForegroundService.EXTRA_JOB_ID, job.jobId)
         }
         runCatching {
             ContextCompat.startForegroundService(appContext, serviceIntent)
         }.onFailure { err ->
+            CropExportManager.removeJob(job.jobId)
             CropExportManager.resetShareExportState()
             _uiState.update {
                 it.copy(message = err.message ?: "Unable to start export service.")
@@ -1374,7 +1416,10 @@ class CropToolViewModel(
             exportedDurationMs = existing?.exportedDurationMs ?: 0L,
             updatedAtMs = System.currentTimeMillis(),
             exportedAtMs = existing?.exportedAtMs,
-            lastExportedConfigSignature = existing?.lastExportedConfigSignature
+            lastExportedConfigSignature = existing?.lastExportedConfigSignature,
+            exportHistory = ((existing?.exportHistory ?: emptyList()) + state.currentProjectExportHistory)
+                .distinctBy { it.jobId }
+                .sortedBy { it.clickedAtMs }
         )
     }
 

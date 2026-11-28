@@ -673,54 +673,6 @@ private fun HeroRecordingCard(
                 .padding(horizontal = 22.dp, vertical = 22.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Minimalist frosted status pill
-            Surface(
-                shape = RoundedCornerShape(50),
-                color = if (isRecording) {
-                    FrameScopeColors.SpecRedContainer
-                } else {
-                    FrameScopeColors.InsetTrack.copy(alpha = 0.65f)
-                },
-                border = BorderStroke(
-                    1.dp,
-                    if (isRecording) {
-                        FrameScopeColors.RecordRed.copy(alpha = 0.45f)
-                    } else {
-                        FrameScopeColors.GlassRimTop
-                    }
-                )
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(7.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .clip(CircleShape)
-                            .background(
-                                when {
-                                    isRecording -> FrameScopeColors.RecordRed.copy(alpha = pulseAlpha)
-                                    isStopping -> FrameScopeColors.SelectionBlue
-                                    else -> FrameScopeColors.ReadyGreen
-                                }
-                            )
-                    )
-                    Text(
-                        text = when {
-                            isStopping -> stringResource(R.string.recording_stopping)
-                            isRecording -> stringResource(R.string.recording_active)
-                            else -> stringResource(R.string.ready_to_record)
-                        },
-                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                        color = FrameScopeColors.TextSecondary
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
             Text(
                 text = formatTimer(elapsedSeconds),
                 style = MaterialTheme.typography.headlineLarge.copy(
@@ -738,7 +690,8 @@ private fun HeroRecordingCard(
             Spacer(modifier = Modifier.height(18.dp))
 
             val buttonShape = RoundedCornerShape(50)
-            val buttonColor = if (isRecording) FrameScopeColors.RecordRedDark else FrameScopeColors.SelectionBlue
+            val idleGreenColor = if (FrameScopeColors.IsDark) Color(0xFF16A34A) else FrameScopeColors.ReadyGreen
+            val buttonColor = if (isRecording) FrameScopeColors.RecordRedDark else idleGreenColor
 
             Button(
                 onClick = onRecordClick,
@@ -886,5 +839,9 @@ private fun formatTimer(totalSeconds: Long): String {
     val hrs = totalSeconds / 3600
     val mins = (totalSeconds % 3600) / 60
     val secs = totalSeconds % 60
-    return String.format(Locale.getDefault(), "%02d : %02d : %02d", hrs, mins, secs)
+    return if (hrs > 0) {
+        String.format(Locale.getDefault(), "%02d:%02d:%02d", hrs, mins, secs)
+    } else {
+        String.format(Locale.getDefault(), "%02d:%02d", mins, secs)
+    }
 }

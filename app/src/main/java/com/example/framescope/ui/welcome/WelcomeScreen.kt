@@ -3,18 +3,12 @@ package com.example.framescope.ui.welcome
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -34,7 +28,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.rounded.LocationOn
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material3.HorizontalDivider
@@ -42,26 +35,28 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -72,8 +67,10 @@ import com.example.framescope.ui.components.NeumorphicGlassCard
 import com.example.framescope.ui.components.neumorphicShadow
 import com.example.framescope.ui.theme.FrameScopeColors
 import com.example.framescope.ui.theme.OutfitFontFamily
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.PI
+import kotlin.math.roundToInt
+import kotlin.math.sin
 
 @Composable
 fun WelcomeScreen(
@@ -81,9 +78,10 @@ fun WelcomeScreen(
 ) {
     var selectedElement by remember { mutableStateOf<WelcomeElementId?>(null) }
     var hasEntered by remember { mutableStateOf(false) }
-    val coroutineScope = rememberCoroutineScope()
     val latestOnEnter by rememberUpdatedState(onEnter)
+    val density = LocalDensity.current.density
     val entranceProgress = remember { Animatable(0f) }
+    val logoSpinProgress = remember { Animatable(0f) }
     val timelineProgress = remember { Animatable(0f) }
 
     LaunchedEffect(Unit) {
@@ -91,6 +89,12 @@ fun WelcomeScreen(
             entranceProgress.animateTo(
                 targetValue = 1f,
                 animationSpec = tween(durationMillis = 850, easing = FastOutSlowInEasing)
+            )
+        }
+        launch {
+            logoSpinProgress.animateTo(
+                targetValue = 1f,
+                animationSpec = tween(durationMillis = 2400, easing = FastOutSlowInEasing)
             )
         }
         timelineProgress.animateTo(
@@ -123,7 +127,7 @@ fun WelcomeScreen(
                 .statusBarsPadding()
                 .navigationBarsPadding()
                 .padding(horizontal = 22.dp)
-                .padding(top = if (compactVertical) 14.dp else 24.dp, bottom = 74.dp)
+                .padding(top = if (compactVertical) 14.dp else 24.dp, bottom = 28.dp)
                 .graphicsLayer {
                     val p = entranceProgress.value
                     alpha = 0.25f + (0.75f * p)
@@ -149,7 +153,7 @@ fun WelcomeScreen(
                 )
             }
 
-            // 2. Neumorphic + Glassmorphic framed 1:1 Profile Photo
+            // 2. Neumorphic + Glassmorphic framed 1:1 Profile Photo with 3D spin & steady hold
             PoppableWelcomeElement(
                 elementId = WelcomeElementId.PROFILE_PHOTO,
                 selectedId = selectedElement,
@@ -160,9 +164,19 @@ fun WelcomeScreen(
             ) { isSelected ->
                 val outerShape = RoundedCornerShape(28.dp)
                 val innerShape = RoundedCornerShape(22.dp)
+                val spin = logoSpinProgress.value
+                val arcBoost = sin(spin * PI).toFloat()
+                val logoScale = 0.86f + (0.14f * spin) + (0.07f * arcBoost)
                 Box(
                     modifier = Modifier
                         .size(photoSize + 16.dp)
+                        .graphicsLayer {
+                            rotationY = spin * 360f
+                            rotationX = arcBoost * 10f
+                            scaleX = logoScale
+                            scaleY = logoScale
+                            cameraDistance = 14f * density
+                        }
                         .neumorphicShadow(
                             cornerRadius = 28.dp,
                             elevation = if (isSelected) 12.dp else 8.dp,
@@ -204,13 +218,13 @@ fun WelcomeScreen(
                 }
             }
 
-            // 3. Frosted Glass + Neumorphic Identity Card & Minimalist ENTER CTA
+            // 3. Frosted Glass + Neumorphic Identity Card & Bottom 0%-100% Loading Slider
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .widthIn(max = 440.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(if (compactVertical) 12.dp else 16.dp)
+                verticalArrangement = Arrangement.spacedBy(if (compactVertical) 14.dp else 18.dp)
             ) {
                 NeumorphicGlassCard(
                     cornerRadius = 26.dp,
@@ -239,42 +253,12 @@ fun WelcomeScreen(
                     }
                 }
 
-                WelcomeEnterButton(
-                    enabled = !hasEntered,
-                    onClick = {
-                        if (!hasEntered) {
-                            hasEntered = true
-                            coroutineScope.launch {
-                                delay(95L)
-                                onEnter()
-                            }
-                        }
-                    }
-                )
-
-                // Subtle 4-second glassmorphic progress bar synced to welcome animation
-                Box(
+                WelcomeLoadingSlider(
+                    progress = timelineProgress.value,
                     modifier = Modifier
-                        .fillMaxWidth(0.52f)
-                        .height(4.dp)
-                        .clip(CircleShape)
-                        .background(FrameScopeColors.InsetTrack.copy(alpha = 0.65f))
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth(timelineProgress.value.coerceIn(0f, 1f))
-                            .height(4.dp)
-                            .clip(CircleShape)
-                            .background(
-                                brush = Brush.horizontalGradient(
-                                    listOf(
-                                        FrameScopeColors.SelectionBlueLight,
-                                        FrameScopeColors.SelectionBlue
-                                    )
-                                )
-                            )
-                    )
-                }
+                        .fillMaxWidth(0.84f)
+                        .testTag("welcome_loading_slider")
+                )
             }
         }
     }
@@ -518,79 +502,96 @@ private fun ProfileNameRow(
 }
 
 @Composable
-private fun WelcomeEnterButton(
-    enabled: Boolean,
-    onClick: () -> Unit
+private fun WelcomeLoadingSlider(
+    progress: Float,
+    modifier: Modifier = Modifier
 ) {
-    val interactionSource = remember { MutableInteractionSource() }
-    val isPressed by interactionSource.collectIsPressedAsState()
-    val scale by animateFloatAsState(
-        targetValue = if (isPressed) 0.96f else 1f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessMedium
-        ),
-        label = "enter_btn_scale"
-    )
-    val pillShape = RoundedCornerShape(50)
+    val clamped = progress.coerceIn(0f, 1f)
+    val percent = (clamped * 100f).roundToInt().coerceIn(0, 100)
+    val trackBg = FrameScopeColors.InsetTrack.copy(alpha = 0.78f)
+    val accentLight = FrameScopeColors.SelectionBlueLight
+    val accentPrimary = FrameScopeColors.SelectionBlue
 
-    Box(
-        modifier = Modifier
-            .fillMaxWidth(0.78f)
-            .minimumInteractiveComponentSize()
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            }
-            .shadow(
-                elevation = 14.dp,
-                shape = pillShape,
-                ambientColor = FrameScopeColors.SelectionBlue.copy(alpha = 0.45f),
-                spotColor = FrameScopeColors.SelectionBlue.copy(alpha = 0.6f)
-            )
-            .clip(pillShape)
-            .background(
-                brush = Brush.linearGradient(
-                    colors = listOf(
-                        FrameScopeColors.SelectionBlueLight,
-                        FrameScopeColors.SelectionBlue
-                    )
-                )
-            )
-            .border(
-                width = 1.25.dp,
-                color = Color.White.copy(alpha = 0.45f),
-                shape = pillShape
-            )
-            .clickable(
-                enabled = enabled,
-                interactionSource = interactionSource,
-                indication = null,
-                onClick = onClick
-            )
-            .testTag("welcome_enter_button")
-            .padding(vertical = 15.dp, horizontal = 24.dp),
-        contentAlignment = Alignment.Center
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "ENTER",
-                style = MaterialTheme.typography.titleLarge.copy(
-                    fontFamily = OutfitFontFamily,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp,
-                    letterSpacing = 1.2.sp
+                text = "Loading",
+                style = MaterialTheme.typography.labelMedium.copy(
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = 0.4.sp
                 ),
-                color = Color.White
+                color = FrameScopeColors.TextSecondary
             )
-            Icon(
-                imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
-                contentDescription = null,
-                tint = Color.White,
-                modifier = Modifier.size(22.dp)
+            Text(
+                text = "$percent%",
+                style = MaterialTheme.typography.labelLarge.copy(
+                    fontFamily = FontFamily.Default,
+                    fontFeatureSettings = "tnum",
+                    fontWeight = FontWeight.Bold
+                ),
+                color = FrameScopeColors.SelectionBlue,
+                modifier = Modifier.testTag("welcome_loading_percent_text")
+            )
+        }
+
+        Canvas(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(22.dp)
+        ) {
+            val padPx = 8.dp.toPx()
+            val trackHeight = 7.dp.toPx()
+            val left = padPx
+            val right = (size.width - padPx).coerceAtLeast(left + 1f)
+            val usableWidth = right - left
+            val centerY = size.height * 0.5f
+            val trackTop = centerY - trackHeight * 0.5f
+            val corner = CornerRadius(trackHeight * 0.5f, trackHeight * 0.5f)
+            val thumbX = left + usableWidth * clamped
+
+            drawRoundRect(
+                color = trackBg,
+                topLeft = Offset(left, trackTop),
+                size = Size(usableWidth, trackHeight),
+                cornerRadius = corner
+            )
+
+            val activeWidth = (thumbX - left).coerceAtLeast(0f)
+            if (activeWidth > 0f) {
+                drawRoundRect(
+                    brush = Brush.horizontalGradient(
+                        colors = listOf(accentLight, accentPrimary),
+                        startX = left,
+                        endX = thumbX.coerceAtLeast(left + 1f)
+                    ),
+                    topLeft = Offset(left, trackTop),
+                    size = Size(activeWidth, trackHeight),
+                    cornerRadius = corner
+                )
+            }
+
+            drawCircle(
+                color = accentPrimary.copy(alpha = 0.22f),
+                radius = 10.5.dp.toPx(),
+                center = Offset(thumbX, centerY)
+            )
+            drawCircle(
+                color = accentPrimary,
+                radius = 6.5.dp.toPx(),
+                center = Offset(thumbX, centerY)
+            )
+            drawCircle(
+                color = Color.White,
+                radius = 2.8.dp.toPx(),
+                center = Offset(thumbX, centerY)
             )
         }
     }

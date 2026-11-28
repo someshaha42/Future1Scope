@@ -23,7 +23,9 @@ data class CropWorkspaceExportRequest(
 )
 
 data class CropShareExportRequest(
-    val project: CropProjectRecord
+    val project: CropProjectRecord,
+    val jobId: String = "",
+    val notificationId: Int = 0
 )
 
 data class CropShareExportReady(
@@ -34,6 +36,9 @@ data class CropShareExportReady(
 
 data class CropShareExportUiState(
     val isExporting: Boolean = false,
+    val activeJobId: String? = null,
+    val projectId: String? = null,
+    val projectTitle: String = "",
     val progress: Float = 0f,
     val statusText: String = "",
     val errorMessage: String? = null,
@@ -53,7 +58,8 @@ object CropExportManager {
     val lastUpdatedProjectId: StateFlow<Pair<Long, String>?> = _lastUpdatedProjectId.asStateFlow()
 
     private val pendingWorkspaceRequests = ConcurrentHashMap<String, CropWorkspaceExportRequest>()
-    private val pendingShareRequest = AtomicReference<CropShareExportRequest?>(null)
+    private val pendingShareRequests = ConcurrentHashMap<String, CropShareExportRequest>()
+    private val shareTargetJobId = AtomicReference<String?>(null)
 
     fun enqueueWorkspaceExport(
         projectId: String,
@@ -92,12 +98,41 @@ object CropExportManager {
             ?: matching.firstOrNull { it.status == CropExportJobStatus.COMPLETED }
     }
 
+    fun findRunningJobForProject(projectId: String): CropExportJob? {
+        return _jobs.value.firstOrNull {
+            it.projectId == projectId && it.status == CropExportJobStatus.RUNNING
+        }
+    }
+
     fun consumeWorkspaceRequest(jobId: String): CropWorkspaceExportRequest? {
         return pendingWorkspaceRequests.remove(jobId)
     }
 
     fun getJob(jobId: String): CropExportJob? {
         return _jobs.value.firstOrNull { it.jobId == jobId }
+    }
+
+    fun updateJobMetadata(
+        jobId: String,
+        formatLabel: String,
+        outputWidth: Int,
+        outputHeight: Int,
+        configSignature: String
+    ) {
+        _jobs.update { list ->
+            list.map { job ->
+                if (job.jobId == jobId) {
+                    job.copy(
+                        formatLabel = formatLabel,
+                        outputWidth = outputWidth,
+                        outputHeight = outputHeight,
+                        configSignature = configSignature
+                    )
+                } else {
+                    job
+                }
+            }
+        }
     }
 
     fun updateJobProgress(jobId: String, progress: Float, statusText: String) {
@@ -109,6 +144,16 @@ object CropExportManager {
                 } else {
                     job
                 }
+            }
+        }
+        if (shareTargetJobId.get() == jobId) {
+            _shareState.update { current ->
+                current.copy(
+                    isExporting = true,
+                    progress = clamped,
+                    statusText = statusText,
+                    errorMessage = null
+                )
             }
         }
     }
@@ -148,38 +193,85 @@ object CropExportManager {
                 }
             }
         }
+        if (shareTargetJobId.compareAndSet(jobId, null)) {
+            failShareExport(message)
+        }
     }
 
     fun removeJob(jobId: String) {
         pendingWorkspaceRequests.remove(jobId)
+        pendingShareRequests.remove(jobId)
         _jobs.update { list -> list.filterNot { it.jobId == jobId } }
+        if (shareTargetJobId.compareAndSet(jobId, null)) {
+            _shareState.value = CropShareExportUiState()
+        }
     }
 
-    fun enqueueShareExport(request: CropShareExportRequest) {
-        pendingShareRequest.set(request)
+    fun enqueueShareExport(project: CropProjectRecord): CropExportJob {
+        val jobId = UUID.randomUUID().toString()
+        val notificationId = nextNotificationId.getAndIncrement()
+        val fallbackFormat = project.selectedFormatLabel
+            ?: if (project.mediaType == CropMediaType.VIDEO) "MP4" else "PNG"
+        val job = CropExportJob(
+            jobId = jobId,
+            notificationId = notificationId,
+            projectId = project.id,
+            projectTitle = project.title,
+            configSignature = "",
+            mediaType = project.mediaType,
+            formatLabel = fallbackFormat,
+            outputWidth = project.outputWidth,
+            outputHeight = project.outputHeight,
+            clickedAtMs = System.currentTimeMillis(),
+            progress = 0f,
+            statusText = "Processing…",
+            status = CropExportJobStatus.RUNNING
+        )
+        pendingShareRequests[jobId] = CropShareExportRequest(
+            project = project,
+            jobId = jobId,
+            notificationId = notificationId
+        )
+        shareTargetJobId.set(jobId)
+        _jobs.update { current -> current + job }
         _shareState.value = CropShareExportUiState(
             isExporting = true,
-            progress = 0.05f,
-            statusText = "Exporting project to share…"
+            activeJobId = jobId,
+            projectId = project.id,
+            projectTitle = project.title,
+            progress = 0f,
+            statusText = "Processing…"
         )
+        return job
     }
 
-    fun consumeShareRequest(): CropShareExportRequest? {
-        return pendingShareRequest.getAndSet(null)
-    }
-
-    fun updateShareProgress(progress: Float, statusText: String) {
-        _shareState.value = _shareState.value.copy(
+    fun attachShareToExistingJob(job: CropExportJob) {
+        shareTargetJobId.set(job.jobId)
+        _shareState.value = CropShareExportUiState(
             isExporting = true,
-            progress = progress,
-            statusText = statusText,
-            errorMessage = null
+            activeJobId = job.jobId,
+            projectId = job.projectId,
+            projectTitle = job.projectTitle,
+            progress = job.progress,
+            statusText = job.statusText
         )
+    }
+
+    fun consumeShareTargetForJob(jobId: String): Boolean {
+        return shareTargetJobId.compareAndSet(jobId, null)
+    }
+
+    fun consumeShareRequest(jobId: String): CropShareExportRequest? {
+        return pendingShareRequests.remove(jobId)
     }
 
     fun completeShareSuccess(ready: CropShareExportReady) {
+        shareTargetJobId.set(null)
         _shareState.value = CropShareExportUiState(
             isExporting = false,
+            activeJobId = null,
+            projectId = null,
+            projectTitle = "",
             progress = 0f,
             statusText = "",
             errorMessage = null,
@@ -188,8 +280,12 @@ object CropExportManager {
     }
 
     fun failShareExport(message: String) {
+        shareTargetJobId.set(null)
         _shareState.value = CropShareExportUiState(
             isExporting = false,
+            activeJobId = null,
+            projectId = null,
+            projectTitle = "",
             progress = 0f,
             statusText = "",
             errorMessage = message,
@@ -198,7 +294,7 @@ object CropExportManager {
     }
 
     fun resetShareExportState() {
-        pendingShareRequest.set(null)
+        shareTargetJobId.set(null)
         _shareState.value = CropShareExportUiState()
     }
 

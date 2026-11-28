@@ -140,11 +140,60 @@ class CropProjectsRepository(private val context: Context) {
             val list = readAllLocked().toMutableList()
             val idx = list.indexOfFirst { it.id == project.id }
             if (idx >= 0) {
-                list[idx] = project
+                val existing = list[idx]
+                val mergedHistory = (existing.exportHistory + project.exportHistory)
+                    .distinctBy { it.jobId }
+                    .sortedBy { it.clickedAtMs }
+                list[idx] = project.copy(
+                    exportedFilePath = project.exportedFilePath ?: existing.exportedFilePath,
+                    exportedGalleryUriString = project.exportedGalleryUriString ?: existing.exportedGalleryUriString,
+                    exportedFormatLabel = project.exportedFormatLabel ?: existing.exportedFormatLabel,
+                    exportedWidth = if (project.exportedWidth > 0) project.exportedWidth else existing.exportedWidth,
+                    exportedHeight = if (project.exportedHeight > 0) project.exportedHeight else existing.exportedHeight,
+                    exportedDurationMs = if (project.exportedDurationMs > 0L) project.exportedDurationMs else existing.exportedDurationMs,
+                    exportedAtMs = project.exportedAtMs ?: existing.exportedAtMs,
+                    lastExportedConfigSignature = project.lastExportedConfigSignature ?: existing.lastExportedConfigSignature,
+                    exportHistory = mergedHistory
+                )
             } else {
                 list.add(0, project)
             }
             writeAllLocked(list)
+        }
+    }
+
+    suspend fun recordCompletedExport(
+        projectId: String,
+        fallbackRecord: CropProjectRecord?,
+        historyItem: CropExportHistoryItem,
+        exportedDurationMs: Long,
+        completedAtMs: Long
+    ): CropProjectRecord? = withContext(Dispatchers.IO) {
+        storeMutex.withLock {
+            val list = readAllLocked().toMutableList()
+            val idx = list.indexOfFirst { it.id == projectId }
+            val base = if (idx >= 0) list[idx] else fallbackRecord ?: return@withLock null
+            val mergedHistory = (base.exportHistory.filterNot { it.jobId == historyItem.jobId } + historyItem)
+                .sortedBy { it.clickedAtMs }
+            val updated = base.copy(
+                exportedFilePath = historyItem.outputPath,
+                exportedGalleryUriString = historyItem.galleryUriString,
+                exportedFormatLabel = historyItem.formatLabel,
+                exportedWidth = historyItem.outputWidth,
+                exportedHeight = historyItem.outputHeight,
+                exportedDurationMs = exportedDurationMs,
+                updatedAtMs = completedAtMs,
+                exportedAtMs = completedAtMs,
+                lastExportedConfigSignature = historyItem.configSignature.ifBlank { base.lastExportedConfigSignature },
+                exportHistory = mergedHistory
+            )
+            if (idx >= 0) {
+                list[idx] = updated
+            } else {
+                list.add(0, updated)
+            }
+            writeAllLocked(list)
+            updated
         }
     }
 
@@ -160,8 +209,14 @@ class CropProjectsRepository(private val context: Context) {
                 runCatching { File(path).delete() }
             }
 
-            // Delete app-private working export file ONLY (public Gallery MediaStore exports stay untouched!).
-            target.exportedFilePath?.let { expPath ->
+            // Delete app-private working export files ONLY (public Gallery MediaStore exports stay untouched!).
+            val privatePaths = buildList {
+                target.exportedFilePath?.let { add(it) }
+                target.exportHistory.forEach { item ->
+                    item.outputPath?.let { add(it) }
+                }
+            }.distinct()
+            privatePaths.forEach { expPath ->
                 val expFile = File(expPath)
                 if (expFile.exists() && isInsideAppPrivateExports(expFile)) {
                     runCatching { expFile.delete() }

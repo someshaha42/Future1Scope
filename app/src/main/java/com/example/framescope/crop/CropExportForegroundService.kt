@@ -38,9 +38,6 @@ class CropExportForegroundService : Service() {
         const val EXTRA_JOB_ID = "com.example.framescope.crop.EXTRA_JOB_ID"
 
         private const val CHANNEL_ID = "framescope_crop_export"
-        private const val SHARE_JOB_KEY = "__share__"
-        private const val SHARE_NOTIFICATION_ID = 4205
-        private const val SHARE_COMPLETE_NOTIFICATION_ID = 4206
         private const val COMPLETE_NOTIFICATION_OFFSET = 10000
         private const val NOTIFY_MIN_INTERVAL_MS = 350L
     }
@@ -82,8 +79,10 @@ class CropExportForegroundService : Service() {
             }
 
             ACTION_START_SHARE_EXPORT -> {
-                val request = CropExportManager.consumeShareRequest()
-                if (request == null) {
+                val jobId = intent.getStringExtra(EXTRA_JOB_ID)
+                val request = jobId?.let { CropExportManager.consumeShareRequest(it) }
+                val job = jobId?.let { CropExportManager.getJob(it) }
+                if (jobId == null || request == null || job == null) {
                     if (activeJobs.isEmpty()) {
                         stopSelf()
                     }
@@ -91,22 +90,17 @@ class CropExportForegroundService : Service() {
                 }
 
                 createNotificationChannel()
-                activeJobs[SHARE_JOB_KEY]?.cancel()
-                val shareNotif = buildShareProgressNotification(
-                    statusText = "Exporting project to share…",
-                    progress = 0.05f
-                )
                 postOrStartForegroundForJob(
-                    jobKey = SHARE_JOB_KEY,
-                    notifId = SHARE_NOTIFICATION_ID,
-                    notification = shareNotif,
-                    initialPct = 5
+                    jobKey = job.jobId,
+                    notifId = job.notificationId,
+                    notification = buildJobProgressNotification(job),
+                    initialPct = 0
                 )
 
                 val coroutineJob = serviceScope.launch {
-                    runShareExport(request)
+                    runShareExport(job, request)
                 }
-                activeJobs[SHARE_JOB_KEY] = coroutineJob
+                activeJobs[job.jobId] = coroutineJob
             }
 
             ACTION_CANCEL_EXPORT -> {
@@ -227,28 +221,58 @@ class CropExportForegroundService : Service() {
                 is CropExportState.Success -> {
                     val now = System.currentTimeMillis()
                     val repo = CropProjectsRepository(applicationContext)
-                    val latestBase = request.projectRecord?.id?.let { repo.getProjectById(it) }
-                        ?: request.projectRecord
-                    val updatedRecord = latestBase?.copy(
-                        exportedFilePath = result.outputPath,
-                        exportedGalleryUriString = result.galleryUriString,
-                        exportedFormatLabel = request.formatLabel,
-                        exportedWidth = request.outputWidth,
-                        exportedHeight = request.outputHeight,
-                        exportedDurationMs = if (media.mediaType == CropMediaType.VIDEO) {
-                            (request.trimEndMs - request.trimStartMs).coerceAtLeast(0L)
-                        } else {
-                            0L
-                        },
-                        updatedAtMs = now,
-                        exportedAtMs = now,
-                        lastExportedConfigSignature = initialJob.configSignature.ifBlank { latestBase.lastExportedConfigSignature }
+                    val projectId = initialJob.projectId
+                    val exportedDuration = if (media.mediaType == CropMediaType.VIDEO) {
+                        (request.trimEndMs - request.trimStartMs).coerceAtLeast(0L)
+                    } else {
+                        0L
+                    }
+                    val historyItem = CropExportHistoryItem(
+                        jobId = initialJob.jobId,
+                        configSignature = initialJob.configSignature,
+                        mediaTypeName = media.mediaType.name,
+                        formatLabel = request.formatLabel,
+                        outputWidth = request.outputWidth,
+                        outputHeight = request.outputHeight,
+                        clickedAtMs = initialJob.clickedAtMs,
+                        completedAtMs = now,
+                        outputPath = result.outputPath,
+                        fileName = result.fileName,
+                        savedToGallery = result.savedToGallery,
+                        galleryUriString = result.galleryUriString
+                    )
+                    val updatedRecord = repo.recordCompletedExport(
+                        projectId = projectId,
+                        fallbackRecord = request.projectRecord,
+                        historyItem = historyItem,
+                        exportedDurationMs = exportedDuration,
+                        completedAtMs = now
                     )
                     if (updatedRecord != null) {
-                        repo.upsertProject(updatedRecord)
                         CropExportManager.notifyProjectUpdated(updatedRecord.id)
                     }
                     CropExportManager.completeJobSuccess(jobId, result)
+                    if (updatedRecord != null && CropExportManager.consumeShareTargetForJob(jobId)) {
+                        val authority = "${applicationContext.packageName}.fileprovider"
+                        val defaultMime = if (media.mediaType == CropMediaType.VIDEO) "video/mp4" else "image/*"
+                        val outFile = File(result.outputPath)
+                        val shareUri = runCatching { FileProvider.getUriForFile(applicationContext, authority, outFile) }.getOrNull()
+                            ?: result.galleryUriString?.let { runCatching { Uri.parse(it) }.getOrNull() }
+                        val mime = MimeTypeMap.getSingleton()
+                            .getMimeTypeFromExtension(outFile.extension.lowercase(Locale.US))
+                            ?: defaultMime
+                        if (shareUri != null) {
+                            CropExportManager.completeShareSuccess(
+                                CropShareExportReady(
+                                    shareUriString = shareUri.toString(),
+                                    mimeType = mime,
+                                    updatedProject = updatedRecord
+                                )
+                            )
+                        } else {
+                            CropExportManager.failShareExport("Export finished, but unable to prepare share link.")
+                        }
+                    }
                     val timeLabel = formatClickTime(initialJob.clickedAtMs)
                     postCompletionNotification(
                         notificationId = initialJob.notificationId + COMPLETE_NOTIFICATION_OFFSET,
@@ -292,11 +316,18 @@ class CropExportForegroundService : Service() {
         }
     }
 
-    private suspend fun runShareExport(request: CropShareExportRequest) {
+    private suspend fun runShareExport(
+        initialJob: CropExportJob,
+        request: CropShareExportRequest
+    ) {
+        val jobId = initialJob.jobId
         val project = request.project
         val authority = "${applicationContext.packageName}.fileprovider"
         val defaultMime = if (project.mediaType == CropMediaType.VIDEO) "video/mp4" else "image/*"
         try {
+            CropExportManager.updateJobProgress(jobId, 0.0f, "Processing…")
+            maybeUpdateJobProgressNotification(jobKey = jobId, force = true)
+
             val localFile = project.localCopyPath?.let { File(it) }?.takeIf { it.exists() && it.length() > 0L }
             val sourceUri = if (localFile != null) {
                 Uri.fromFile(localFile)
@@ -308,7 +339,7 @@ class CropExportForegroundService : Service() {
                 .getOrNull()
                 ?.copy(uri = sourceUri)
             if (inspected == null) {
-                CropExportManager.failShareExport("Unable to access source media for export.")
+                CropExportManager.failJob(jobId, "Unable to access source media for export.")
                 return
             }
 
@@ -329,51 +360,98 @@ class CropExportForegroundService : Service() {
                 else raw.coerceIn(1, inspected.displayHeight)
             }
 
+            val selectedImageOpt = if (inspected.mediaType == CropMediaType.IMAGE) {
+                inspected.imageExportOptions.firstOrNull {
+                    it.label == project.selectedFormatLabel
+                } ?: inspected.imageExportOptions.firstOrNull()
+            } else null
+
+            val selectedVideoOpt = if (inspected.mediaType == CropMediaType.VIDEO) {
+                inspected.videoExportOptions.firstOrNull()
+                    ?: VideoExportFormatOption(
+                        label = "MP4",
+                        container = VideoContainerFormat.MP4,
+                        isOriginal = inspected.extension.equals("mp4", ignoreCase = true)
+                    )
+            } else null
+
             val formatLabel = if (inspected.mediaType == CropMediaType.VIDEO) {
                 "MP4"
             } else {
-                inspected.imageExportOptions.firstOrNull { it.label == project.selectedFormatLabel }?.label
-                    ?: inspected.imageExportOptions.firstOrNull()?.label
-                    ?: "PNG"
+                val chosen = selectedImageOpt
+                if (chosen != null && !chosen.supportInfo.isSupported && !chosen.supportInfo.alternativeName.isNullOrBlank()) {
+                    chosen.supportInfo.alternativeName
+                } else {
+                    chosen?.label ?: "PNG"
+                }
             }
+
+            val trimStart = if (inspected.mediaType == CropMediaType.VIDEO) {
+                project.trimStartMs.coerceIn(0L, inspected.durationMs)
+            } else {
+                0L
+            }
+            val trimEnd = if (inspected.mediaType == CropMediaType.VIDEO) {
+                if (project.trimEndMs > trimStart) {
+                    project.trimEndMs.coerceAtMost(inspected.durationMs)
+                } else {
+                    inspected.durationMs
+                }
+            } else {
+                0L
+            }
+
+            val origBps = inspected.originalBitrateBps
+            val customBitrateMbps = if (inspected.mediaType == CropMediaType.VIDEO && origBps != null && origBps > 0L) {
+                (origBps / 1_000_000f).coerceIn(0f, 50f)
+            } else {
+                12f
+            }
+
+            val configSignature = listOf(
+                project.id,
+                inspected.mediaType.name,
+                String.format(Locale.US, "%.4f,%.4f,%.4f,%.4f", crop.left, crop.top, crop.right, crop.bottom),
+                "${outW}x${outH}",
+                if (inspected.mediaType == CropMediaType.VIDEO) "${trimStart}-${trimEnd}" else "0-0",
+                formatLabel,
+                selectedImageOpt?.id?.name ?: "",
+                selectedVideoOpt?.container?.name ?: "",
+                VideoBitrateMode.ORIGINAL_PRESERVATION.name,
+                String.format(Locale.US, "%.2f", customBitrateMbps)
+            ).joinToString("|")
+
+            CropExportManager.updateJobMetadata(
+                jobId = jobId,
+                formatLabel = formatLabel,
+                outputWidth = outW,
+                outputHeight = outH,
+                configSignature = configSignature
+            )
 
             val result = when (inspected.mediaType) {
                 CropMediaType.IMAGE -> {
-                    val format = inspected.imageExportOptions.firstOrNull {
-                        it.label == project.selectedFormatLabel
-                    } ?: inspected.imageExportOptions.first()
+                    val format = selectedImageOpt ?: inspected.imageExportOptions.first()
                     ImageCropProcessor.exportCroppedImage(
                         context = applicationContext,
                         media = inspected,
                         cropRect = crop,
                         formatOption = format,
                         onProgress = { progress, text ->
-                            CropExportManager.updateShareProgress(progress, text)
-                            maybeUpdateShareProgressNotification(text, progress)
+                            CropExportManager.updateJobProgress(jobId, progress, text)
+                            maybeUpdateJobProgressNotification(jobKey = jobId)
                         }
                     )
                 }
 
                 CropMediaType.VIDEO -> {
-                    val format = inspected.videoExportOptions.firstOrNull()
-                        ?: VideoExportFormatOption(
-                            label = "MP4",
-                            container = VideoContainerFormat.MP4,
-                            isOriginal = inspected.extension.equals("mp4", ignoreCase = true)
-                        )
-                    val orig = inspected.originalBitrateBps
-                    val targetBps = if (orig != null && orig > 0L) {
-                        orig.coerceIn(250_000L, Int.MAX_VALUE.toLong()).toInt()
+                    val format = selectedVideoOpt!!
+                    val targetBps = if (origBps != null && origBps > 0L) {
+                        origBps.coerceIn(250_000L, Int.MAX_VALUE.toLong()).toInt()
                     } else {
                         (outW.toLong() * outH.toLong() * 6L)
                             .coerceIn(1_500_000L, Int.MAX_VALUE.toLong())
                             .toInt()
-                    }
-                    val trimStart = project.trimStartMs.coerceIn(0L, inspected.durationMs)
-                    val trimEnd = if (project.trimEndMs > trimStart) {
-                        project.trimEndMs.coerceAtMost(inspected.durationMs)
-                    } else {
-                        inspected.durationMs
                     }
                     VideoCropProcessor.exportCroppedVideo(
                         context = applicationContext,
@@ -385,8 +463,8 @@ class CropExportForegroundService : Service() {
                         trimEndMs = trimEnd,
                         allowLosslessPassthrough = true,
                         onProgress = { progress, text ->
-                            CropExportManager.updateShareProgress(progress, text)
-                            maybeUpdateShareProgressNotification(text, progress)
+                            CropExportManager.updateJobProgress(jobId, progress, text)
+                            maybeUpdateJobProgressNotification(jobKey = jobId)
                         }
                     )
                 }
@@ -396,26 +474,34 @@ class CropExportForegroundService : Service() {
                 is CropExportState.Success -> {
                     val now = System.currentTimeMillis()
                     val trimDuration = if (inspected.mediaType == CropMediaType.VIDEO) {
-                        val s = project.trimStartMs.coerceIn(0L, inspected.durationMs)
-                        val e = if (project.trimEndMs > s) project.trimEndMs.coerceAtMost(inspected.durationMs) else inspected.durationMs
-                        (e - s).coerceAtLeast(0L)
+                        (trimEnd - trimStart).coerceAtLeast(0L)
                     } else {
                         0L
                     }
                     val repo = CropProjectsRepository(applicationContext)
-                    val latestBase = repo.getProjectById(project.id) ?: project
-                    val updatedRecord = latestBase.copy(
-                        exportedFilePath = result.outputPath,
-                        exportedGalleryUriString = result.galleryUriString,
-                        exportedFormatLabel = formatLabel,
-                        exportedWidth = outW,
-                        exportedHeight = outH,
-                        exportedDurationMs = trimDuration,
-                        updatedAtMs = now,
-                        exportedAtMs = now
+                    val historyItem = CropExportHistoryItem(
+                        jobId = jobId,
+                        configSignature = configSignature,
+                        mediaTypeName = inspected.mediaType.name,
+                        formatLabel = formatLabel,
+                        outputWidth = outW,
+                        outputHeight = outH,
+                        clickedAtMs = initialJob.clickedAtMs,
+                        completedAtMs = now,
+                        outputPath = result.outputPath,
+                        fileName = result.fileName,
+                        savedToGallery = result.savedToGallery,
+                        galleryUriString = result.galleryUriString
                     )
-                    repo.upsertProject(updatedRecord)
+                    val updatedRecord = repo.recordCompletedExport(
+                        projectId = project.id,
+                        fallbackRecord = project,
+                        historyItem = historyItem,
+                        exportedDurationMs = trimDuration,
+                        completedAtMs = now
+                    ) ?: project
                     CropExportManager.notifyProjectUpdated(updatedRecord.id)
+                    CropExportManager.completeJobSuccess(jobId, result)
 
                     val outFile = File(result.outputPath)
                     val shareUri = runCatching { FileProvider.getUriForFile(applicationContext, authority, outFile) }.getOrNull()
@@ -424,6 +510,7 @@ class CropExportForegroundService : Service() {
                         .getMimeTypeFromExtension(outFile.extension.lowercase(Locale.US))
                         ?: defaultMime
 
+                    val timeLabel = formatClickTime(initialJob.clickedAtMs)
                     if (shareUri != null) {
                         CropExportManager.completeShareSuccess(
                             CropShareExportReady(
@@ -433,10 +520,14 @@ class CropExportForegroundService : Service() {
                             )
                         )
                         postCompletionNotification(
-                            notificationId = SHARE_COMPLETE_NOTIFICATION_ID,
-                            requestCode = SHARE_COMPLETE_NOTIFICATION_ID,
+                            notificationId = initialJob.notificationId + COMPLETE_NOTIFICATION_OFFSET,
+                            requestCode = initialJob.notificationId + COMPLETE_NOTIFICATION_OFFSET,
                             title = "${getString(R.string.export_notification_complete_title)} • 100%",
-                            text = "${result.fileName} is ready to share"
+                            text = if (result.savedToGallery) {
+                                "${result.fileName} saved to Gallery ($timeLabel)"
+                            } else {
+                                "${result.fileName} ready to share ($timeLabel)"
+                            }
                         )
                     } else {
                         CropExportManager.failShareExport("Export finished, but unable to prepare share link.")
@@ -444,35 +535,36 @@ class CropExportForegroundService : Service() {
                 }
 
                 is CropExportState.Error -> {
-                    CropExportManager.failShareExport(result.message)
+                    CropExportManager.failJob(jobId, result.message)
                     postCompletionNotification(
-                        notificationId = SHARE_COMPLETE_NOTIFICATION_ID,
-                        requestCode = SHARE_COMPLETE_NOTIFICATION_ID,
-                        title = "Export Failed",
+                        notificationId = initialJob.notificationId + COMPLETE_NOTIFICATION_OFFSET,
+                        requestCode = initialJob.notificationId + COMPLETE_NOTIFICATION_OFFSET,
+                        title = "Export Failed (${formatClickTime(initialJob.clickedAtMs)})",
                         text = result.message
                     )
                 }
 
                 else -> {
-                    CropExportManager.resetShareExportState()
+                    CropExportManager.removeJob(jobId)
                 }
             }
         } catch (_: CancellationException) {
-            CropExportManager.resetShareExportState()
+            CropExportManager.removeJob(jobId)
         } catch (t: Throwable) {
-            CropExportManager.failShareExport(t.message ?: "Failed to export project.")
+            val message = t.message ?: "Failed to export project."
+            CropExportManager.failJob(jobId, message)
+            postCompletionNotification(
+                notificationId = initialJob.notificationId + COMPLETE_NOTIFICATION_OFFSET,
+                requestCode = initialJob.notificationId + COMPLETE_NOTIFICATION_OFFSET,
+                title = "Export Failed (${formatClickTime(initialJob.clickedAtMs)})",
+                text = message
+            )
         } finally {
-            finishJobSession(SHARE_JOB_KEY, SHARE_NOTIFICATION_ID)
+            finishJobSession(jobId, initialJob.notificationId)
         }
     }
 
     private fun cancelSingleExport(jobId: String) {
-        if (jobId == SHARE_JOB_KEY) {
-            activeJobs[SHARE_JOB_KEY]?.cancel()
-            CropExportManager.resetShareExportState()
-            finishJobSession(SHARE_JOB_KEY, SHARE_NOTIFICATION_ID)
-            return
-        }
         val notifId = activeNotificationIds[jobId] ?: CropExportManager.getJob(jobId)?.notificationId
         activeJobs[jobId]?.cancel()
         CropExportManager.removeJob(jobId)
@@ -488,11 +580,7 @@ class CropExportForegroundService : Service() {
         val keys = activeJobs.keys.toList()
         keys.forEach { key ->
             activeJobs[key]?.cancel()
-            if (key == SHARE_JOB_KEY) {
-                CropExportManager.resetShareExportState()
-            } else {
-                CropExportManager.removeJob(key)
-            }
+            CropExportManager.removeJob(key)
         }
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         activeNotificationIds.values.forEach { notifId ->
@@ -525,14 +613,8 @@ class CropExportForegroundService : Service() {
                     if (nextEntry != null) {
                         val nextKey = nextEntry.key
                         val nextNotifId = nextEntry.value
-                        val nextNotification = if (nextKey == SHARE_JOB_KEY) {
-                            val shareState = CropExportManager.shareState.value
-                            buildShareProgressNotification(
-                                statusText = shareState.statusText.ifBlank { "Exporting project to share…" },
-                                progress = shareState.progress
-                            )
-                        } else {
-                            CropExportManager.getJob(nextKey)?.let { buildJobProgressNotification(it) }
+                        val nextNotification = CropExportManager.getJob(nextKey)?.let {
+                            buildJobProgressNotification(it)
                         }
                         if (nextNotification != null) {
                             startForegroundCompat(nextNotifId, nextNotification)
@@ -579,26 +661,6 @@ class CropExportForegroundService : Service() {
         }
     }
 
-    private fun maybeUpdateShareProgressNotification(
-        statusText: String,
-        progress: Float,
-        force: Boolean = false
-    ) {
-        val now = System.currentTimeMillis()
-        val pct = (progress * 100f).toInt().coerceIn(0, 100)
-        val prev = lastNotifyByJobId[SHARE_JOB_KEY]
-        if (!force && prev != null && ((now - prev.first < NOTIFY_MIN_INTERVAL_MS) || (pct == prev.second && now - prev.first < 900L))) {
-            return
-        }
-        lastNotifyByJobId[SHARE_JOB_KEY] = now to pct
-        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-        runCatching {
-            nm.notify(
-                SHARE_NOTIFICATION_ID,
-                buildShareProgressNotification(statusText, progress)
-            )
-        }
-    }
 
     private fun buildJobProgressNotification(job: CropExportJob): Notification {
         val pct = (job.progress * 100f).toInt().coerceIn(0, 100)
@@ -643,49 +705,6 @@ class CropExportForegroundService : Service() {
             .build()
     }
 
-    private fun buildShareProgressNotification(
-        statusText: String,
-        progress: Float
-    ): Notification {
-        val pct = (progress * 100f).toInt().coerceIn(0, 100)
-        val openIntent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        }
-        val openPending = PendingIntent.getActivity(
-            this,
-            SHARE_NOTIFICATION_ID,
-            openIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val cancelIntent = Intent(this, CropExportForegroundService::class.java).apply {
-            action = ACTION_CANCEL_EXPORT
-            putExtra(EXTRA_JOB_ID, SHARE_JOB_KEY)
-        }
-        val cancelPending = PendingIntent.getService(
-            this,
-            SHARE_NOTIFICATION_ID,
-            cancelIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val cancelAction = Notification.Action.Builder(
-            null,
-            getString(R.string.export_notification_cancel),
-            cancelPending
-        ).build()
-
-        return Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle(getString(R.string.export_notification_title))
-            .setContentText("$statusText • $pct%")
-            .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setContentIntent(openPending)
-            .setOnlyAlertOnce(true)
-            .setOngoing(true)
-            .setProgress(100, pct, false)
-            .addAction(cancelAction)
-            .build()
-    }
 
     private fun postCompletionNotification(
         notificationId: Int,

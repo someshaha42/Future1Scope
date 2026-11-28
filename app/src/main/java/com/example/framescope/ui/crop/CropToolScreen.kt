@@ -214,7 +214,9 @@ fun CropToolScreen(
         if (state.shareExportReady == null) return@LaunchedEffect
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             val latest = viewModel.uiState.value.shareExportReady ?: return@repeatOnLifecycle
-            viewingRecentProjectId = latest.updatedProject.id
+            if (viewingRecentProjectId != null) {
+                viewingRecentProjectId = latest.updatedProject.id
+            }
             val shareUri = runCatching { Uri.parse(latest.shareUriString) }.getOrNull()
             viewModel.consumeShareReadyEvent()
             if (shareUri != null) {
@@ -261,13 +263,13 @@ fun CropToolScreen(
             containerColor = FrameScopeColors.BackgroundSecondary,
             title = {
                 Text(
-                    text = "Delete Project?",
+                    text = "Remove Project?",
                     color = FrameScopeColors.TextPrimary
                 )
             },
             text = {
                 Text(
-                    text = "Are you sure you want to delete \"${project.title}\"? Your exported file in the Gallery will not be deleted.",
+                    text = "Remove \"${project.title}\" from Recent Projects history? Your files saved in the Gallery will not be deleted.",
                     color = FrameScopeColors.TextSecondary
                 )
             },
@@ -287,7 +289,7 @@ fun CropToolScreen(
                     },
                     modifier = Modifier.testTag("confirm_delete_project_button")
                 ) {
-                    Text("Delete", color = FrameScopeColors.SpecRedText, fontWeight = FontWeight.Bold)
+                    Text("Remove", color = FrameScopeColors.SpecRedText, fontWeight = FontWeight.Bold)
                 }
             }
         )
@@ -446,6 +448,89 @@ fun CropToolScreen(
                             onCancelImport = viewModel::closeImportPanelIfLoaded
                         )
 
+                        if (state.isSharingProjectExport && viewingRecentProjectId == null) {
+                            val pct = (state.shareExportProgress * 100f).toInt().coerceIn(0, 100)
+                            NeumorphicGlassCard(
+                                cornerRadius = 18.dp,
+                                elevation = 5.dp,
+                                accentBorder = FrameScopeColors.SelectionBlue,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("recent_share_export_progress_card")
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = if (state.sharingProjectTitle.isNotBlank()) {
+                                                "Exporting ${state.sharingProjectTitle} to share…"
+                                            } else {
+                                                state.shareExportStatus.ifBlank { "Exporting to share…" }
+                                            },
+                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                            color = FrameScopeColors.TextPrimary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = "$pct%",
+                                            style = MaterialTheme.typography.labelLarge.copy(
+                                                fontFamily = FontFamily.Default,
+                                                fontFeatureSettings = "tnum",
+                                                fontWeight = FontWeight.Bold
+                                            ),
+                                            color = FrameScopeColors.SelectionBlue
+                                        )
+                                    }
+                                    LinearProgressIndicator(
+                                        progress = { state.shareExportProgress.coerceIn(0f, 1f) },
+                                        color = FrameScopeColors.SelectionBlue,
+                                        trackColor = FrameScopeColors.InsetTrack,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(6.dp)
+                                            .clip(RoundedCornerShape(50))
+                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = state.shareExportStatus.ifBlank { "Processing…" },
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = FrameScopeColors.TextSecondary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        TextButton(
+                                            onClick = viewModel::cancelShareProjectExport,
+                                            modifier = Modifier
+                                                .minimumInteractiveComponentSize()
+                                                .testTag("recent_share_export_cancel_button")
+                                        ) {
+                                            Text(
+                                                text = "Cancel",
+                                                color = FrameScopeColors.SpecRedText,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         RecentProjectsSection(
                             projects = state.recentProjects,
                             thumbnails = state.projectThumbnails,
@@ -455,6 +540,18 @@ fun CropToolScreen(
                                 viewingRecentProjectId = project.id
                             },
                             onEditProject = viewModel::openProject,
+                            onShareProject = { proj ->
+                                runWithExportNotificationPermission {
+                                    viewModel.shareProjectFromViewer(proj) { shareUri, mimeType, _ ->
+                                        val err = launchShareSheet(context, shareUri, mimeType)
+                                        if (err != null) {
+                                            coroutineScope.launch {
+                                                snackbarHostState.showSnackbar(err)
+                                            }
+                                        }
+                                    }
+                                }
+                            },
                             onRequestDelete = { project ->
                                 pendingDeleteProject = project
                             }
@@ -1198,7 +1295,7 @@ private fun ExportActionCard(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Running Export Processes",
+                            text = "Export Processes",
                             style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
                             color = FrameScopeColors.TextPrimary
                         )
@@ -1388,7 +1485,7 @@ private fun ExportActionCard(
                                                 )
                                             }
                                         }
-                                    } else {
+                                    } else if (job.status == CropExportJobStatus.FAILED) {
                                         TextButton(
                                             onClick = { onDismissExportJob(job.jobId) },
                                             modifier = Modifier
