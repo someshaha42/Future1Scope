@@ -14,11 +14,13 @@ import android.media.ExifInterface
 import android.os.Environment
 import android.provider.MediaStore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
+import kotlin.coroutines.coroutineContext
 import kotlin.math.roundToInt
 
 object ImageCropProcessor {
@@ -53,20 +55,27 @@ object ImageCropProcessor {
         context: Context,
         media: ImportedMediaInfo,
         cropRect: NormalizedCropRect,
-        formatOption: ImageExportFormatOption
+        formatOption: ImageExportFormatOption,
+        onProgress: (Float, String) -> Unit = { _, _ -> }
     ): CropExportState = withContext(Dispatchers.IO) {
         var croppedBitmap: Bitmap? = null
         var finalBitmap: Bitmap? = null
+        var outFile: File? = null
 
         try {
+            coroutineContext.ensureActive()
+            onProgress(0.10f, "Decoding image…")
             croppedBitmap = decodeCroppedBitmapFast(context, media.uri, cropRect)
                 ?: return@withContext CropExportState.Error("Unable to decode the selected image.")
+
+            coroutineContext.ensureActive()
+            onProgress(0.45f, "Cropping image…")
 
             val outW = croppedBitmap.width.coerceAtLeast(1)
             val outH = croppedBitmap.height.coerceAtLeast(1)
 
             val outputSpec = resolveCompressSpec(formatOption, croppedBitmap.hasAlpha())
-            val outFile = CropExportsRepository(context).createImageExportFile(outputSpec.extension)
+            outFile = CropExportsRepository(context).createImageExportFile(outputSpec.extension)
 
             finalBitmap = if (!outputSpec.supportsAlpha && croppedBitmap.hasAlpha()) {
                 val targetColorSpace = croppedBitmap.colorSpace
@@ -80,13 +89,18 @@ object ImageCropProcessor {
                 croppedBitmap
             }
 
+            coroutineContext.ensureActive()
+            onProgress(0.75f, "Encoding image…")
             BufferedOutputStream(FileOutputStream(outFile), 256 * 1024).use { bos ->
                 val ok = finalBitmap.compress(outputSpec.compressFormat, outputSpec.quality, bos)
                 if (!ok) {
+                    runCatching { outFile?.delete() }
                     return@withContext CropExportState.Error("Image encoder failed for ${outputSpec.extension.uppercase(Locale.US)}.")
                 }
             }
 
+            coroutineContext.ensureActive()
+            onProgress(0.92f, "Saving to gallery…")
             val galleryUri = exportImageToMediaStore(
                 context = context,
                 file = outFile,
@@ -101,6 +115,11 @@ object ImageCropProcessor {
                 galleryUriString = galleryUri
             )
         } catch (t: Throwable) {
+            if (t is kotlinx.coroutines.CancellationException) {
+                runCatching { outFile?.delete() }
+                throw t
+            }
+            runCatching { outFile?.delete() }
             CropExportState.Error(t.message ?: "Failed to crop and export image.")
         } finally {
             if (finalBitmap != null && finalBitmap !== croppedBitmap) {

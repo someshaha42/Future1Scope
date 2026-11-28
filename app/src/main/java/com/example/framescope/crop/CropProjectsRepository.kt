@@ -34,8 +34,6 @@ class CropProjectsRepository(private val context: Context) {
         encodeDefaults = true
     }
 
-    private val storeMutex = Mutex()
-
     private val projectsDir: File
         get() = File(context.filesDir, "crop_projects").apply { if (!exists()) mkdirs() }
 
@@ -128,6 +126,12 @@ class CropProjectsRepository(private val context: Context) {
             }
 
             valid.sortedByDescending { it.updatedAtMs }
+        }
+    }
+
+    suspend fun getProjectById(projectId: String): CropProjectRecord? = withContext(Dispatchers.IO) {
+        storeMutex.withLock {
+            readAllLocked().firstOrNull { it.id == projectId }
         }
     }
 
@@ -283,5 +287,9 @@ class CropProjectsRepository(private val context: Context) {
             }
             tmp.renameTo(projectsFile)
         }
+    }
+
+    private companion object {
+        val storeMutex = Mutex()
     }
 }

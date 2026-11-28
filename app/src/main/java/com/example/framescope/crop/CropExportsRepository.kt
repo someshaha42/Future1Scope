@@ -41,22 +41,29 @@ class CropExportsRepository(private val context: Context) {
     }
 
     private fun createClockDatedExportFile(dir: File, extension: String): File {
-        val now = Date()
-        val timePattern = if (DateFormat.is24HourFormat(context)) "HH-mm" else "h-mm a"
-        val timeText = SimpleDateFormat(timePattern, Locale.getDefault()).format(now)
-        val dateText = SimpleDateFormat("d MMM", Locale.getDefault()).format(now)
-        val safeBase = "$timeText, $dateText"
-            .replace(':', '-')
-            .replace('/', '-')
-            .replace('\\', '-')
-        val safeExt = extension.ifBlank { "mp4" }.lowercase(Locale.US)
-        var candidate = File(dir, "$safeBase.$safeExt")
-        var suffix = 2
-        while (candidate.exists()) {
-            candidate = File(dir, "$safeBase ($suffix).$safeExt")
-            suffix++
+        synchronized(fileCreationLock) {
+            val now = Date()
+            val timePattern = if (DateFormat.is24HourFormat(context)) "HH-mm" else "h-mm a"
+            val timeText = SimpleDateFormat(timePattern, Locale.getDefault()).format(now)
+            val dateText = SimpleDateFormat("d MMM", Locale.getDefault()).format(now)
+            val safeBase = "$timeText, $dateText"
+                .replace(':', '-')
+                .replace('/', '-')
+                .replace('\\', '-')
+            val safeExt = extension.ifBlank { "mp4" }.lowercase(Locale.US)
+            var candidate = File(dir, "$safeBase.$safeExt")
+            var suffix = 2
+            while (candidate.exists()) {
+                candidate = File(dir, "$safeBase ($suffix).$safeExt")
+                suffix++
+            }
+            runCatching { candidate.createNewFile() }
+            return candidate
         }
-        return candidate
+    }
+
+    private companion object {
+        val fileCreationLock = Any()
     }
 
     suspend fun loadRecentExports(): List<CropExportedItem> = withContext(Dispatchers.IO) {

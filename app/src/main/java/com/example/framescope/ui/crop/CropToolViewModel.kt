@@ -19,8 +19,9 @@ import com.example.framescope.crop.CodecPipelineSupport
 import com.example.framescope.crop.CropAspectRatio
 import com.example.framescope.crop.CropEditSnapshot
 import com.example.framescope.crop.CropExportForegroundService
+import com.example.framescope.crop.CropExportJob
+import com.example.framescope.crop.CropExportJobStatus
 import com.example.framescope.crop.CropExportManager
-import com.example.framescope.crop.CropExportState
 import com.example.framescope.crop.CropExportsRepository
 import com.example.framescope.crop.CropMediaInspector
 import com.example.framescope.crop.CropMediaType
@@ -89,13 +90,24 @@ data class CropToolUiState(
     val bitrateModeSupport: Map<VideoBitrateMode, OptionSupportInfo> = emptyMap(),
     val recentProjects: List<CropProjectRecord> = emptyList(),
     val projectThumbnails: Map<String, Bitmap> = emptyMap(),
-    val exportState: CropExportState = CropExportState.Idle,
+    val allExportJobs: List<CropExportJob> = emptyList(),
     val isSharingProjectExport: Boolean = false,
     val shareExportProgress: Float = 0f,
     val shareExportStatus: String = "",
     val shareExportReady: CropShareExportReady? = null,
     val message: String? = null
 ) {
+    val projectExportJobs: List<CropExportJob>
+        get() {
+            val pid = currentProjectId ?: return emptyList()
+            return allExportJobs.filter { it.projectId == pid }
+        }
+
+    val activeExportCountsByProject: Map<String, Int>
+        get() = allExportJobs
+            .filter { it.status == CropExportJobStatus.RUNNING }
+            .groupingBy { it.projectId }
+            .eachCount()
     val outputWidth: Int
         get() {
             val info = media ?: return 0
@@ -184,8 +196,8 @@ class CropToolViewModel(
             }
         }
         viewModelScope.launch {
-            CropExportManager.exportState.collect { expState ->
-                _uiState.update { it.copy(exportState = expState) }
+            CropExportManager.jobs.collect { jobs ->
+                _uiState.update { it.copy(allExportJobs = jobs) }
             }
         }
         viewModelScope.launch {
@@ -420,11 +432,6 @@ class CropToolViewModel(
     }
 
     fun importMedia(uri: Uri) {
-        if (_uiState.value.exportState is CropExportState.Exporting) {
-            cancelExport()
-        } else {
-            CropExportManager.resetExportState()
-        }
         undoStack.clear()
         redoStack.clear()
         pendingGestureStartSnapshot = null
@@ -435,7 +442,6 @@ class CropToolViewModel(
                     isLoadingMedia = true,
                     isVideoPlaying = false,
                     isPreviewMode = false,
-                    exportState = CropExportState.Idle,
                     message = null
                 )
             }
@@ -568,8 +574,7 @@ class CropToolViewModel(
                         customBitrateMbps = initialCustomMbps,
                         selectedImageFormat = info.imageExportOptions.firstOrNull(),
                         selectedVideoFormat = firstVideoFormat,
-                        pipelineSupport = pipelineSupport,
-                        exportState = CropExportState.Idle
+                        pipelineSupport = pipelineSupport
                     ).withDynamicSupport()
                 }
 
@@ -583,11 +588,6 @@ class CropToolViewModel(
     }
 
     fun openProject(project: CropProjectRecord) {
-        if (_uiState.value.exportState is CropExportState.Exporting) {
-            cancelExport()
-        } else {
-            CropExportManager.resetExportState()
-        }
         undoStack.clear()
         redoStack.clear()
         pendingGestureStartSnapshot = null
@@ -598,7 +598,6 @@ class CropToolViewModel(
                     isLoadingMedia = true,
                     isVideoPlaying = false,
                     isPreviewMode = false,
-                    exportState = CropExportState.Idle,
                     message = null
                 )
             }
@@ -748,8 +747,7 @@ class CropToolViewModel(
                         customBitrateMbps = restoredBitrateMbps,
                         selectedImageFormat = savedImageFormat,
                         selectedVideoFormat = savedVideoFormat,
-                        pipelineSupport = pipelineSupport,
-                        exportState = CropExportState.Idle
+                        pipelineSupport = pipelineSupport
                     ).withHistoryFlags().withDynamicSupport()
                 }
             }
@@ -1026,7 +1024,6 @@ class CropToolViewModel(
     fun startExport() {
         val state = _uiState.value
         val media = state.media ?: return
-        if (state.exportState is CropExportState.Exporting) return
 
         _uiState.update { it.copy(isVideoPlaying = false, message = null) }
 
@@ -1041,6 +1038,18 @@ class CropToolViewModel(
             }
         }
 
+        val record = buildProjectRecordFromState(state)
+        val projectId = record?.id ?: state.currentProjectId ?: UUID.randomUUID().toString()
+        val projectTitle = record?.title
+            ?: state.currentProjectTitle
+            ?: CropExportsRepository(appContext).formatClockDateTitle(System.currentTimeMillis())
+
+        if (record != null) {
+            viewModelScope.launch {
+                projectsRepository.upsertProject(record)
+            }
+        }
+
         val request = CropWorkspaceExportRequest(
             media = media,
             cropRect = state.cropRect,
@@ -1051,42 +1060,45 @@ class CropToolViewModel(
             outputHeight = state.outputHeight,
             trimStartMs = state.trimStartMs,
             trimEndMs = state.trimEndMs,
-            projectRecord = buildProjectRecordFromState(state)
+            projectRecord = record
         )
-        CropExportManager.enqueueWorkspaceExport(request)
+        val job = CropExportManager.enqueueWorkspaceExport(
+            projectId = projectId,
+            projectTitle = projectTitle,
+            request = request
+        )
 
         val serviceIntent = Intent(appContext, CropExportForegroundService::class.java).apply {
             action = CropExportForegroundService.ACTION_START_EXPORT
+            putExtra(CropExportForegroundService.EXTRA_JOB_ID, job.jobId)
         }
         runCatching {
             ContextCompat.startForegroundService(appContext, serviceIntent)
         }.onFailure { err ->
-            CropExportManager.resetExportState()
-            _uiState.update {
-                it.copy(
-                    exportState = CropExportState.Error(
-                        err.message ?: "Unable to start background export service."
-                    )
-                )
-            }
+            CropExportManager.failJob(
+                jobId = job.jobId,
+                message = err.message ?: "Unable to start background export service."
+            )
         }
     }
 
-    fun cancelExport() {
+    fun cancelExportJob(jobId: String) {
         val cancelIntent = Intent(appContext, CropExportForegroundService::class.java).apply {
             action = CropExportForegroundService.ACTION_CANCEL_EXPORT
+            putExtra(CropExportForegroundService.EXTRA_JOB_ID, jobId)
         }
         runCatching { appContext.startService(cancelIntent) }
-        CropExportManager.resetExportState()
+        CropExportManager.removeJob(jobId)
     }
 
-    fun dismissExportState() {
-        CropExportManager.resetExportState()
+    fun dismissExportJob(jobId: String) {
+        CropExportManager.removeJob(jobId)
     }
 
     fun cancelShareProjectExport() {
         val cancelIntent = Intent(appContext, CropExportForegroundService::class.java).apply {
             action = CropExportForegroundService.ACTION_CANCEL_EXPORT
+            putExtra(CropExportForegroundService.EXTRA_JOB_ID, "__share__")
         }
         runCatching { appContext.startService(cancelIntent) }
         CropExportManager.resetShareExportState()

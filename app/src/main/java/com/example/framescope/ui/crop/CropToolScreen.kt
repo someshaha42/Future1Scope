@@ -45,12 +45,15 @@ import androidx.compose.material.icons.automirrored.rounded.VolumeOff
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Crop
+import android.text.format.DateFormat
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.ZoomIn
 import androidx.compose.material3.AlertDialog
@@ -107,7 +110,8 @@ import com.example.framescope.R
 import com.example.framescope.capability.OptionSupportInfo
 import com.example.framescope.crop.CanvasAspectMode
 import com.example.framescope.crop.CodecPipelineSupport
-import com.example.framescope.crop.CropExportState
+import com.example.framescope.crop.CropExportJob
+import com.example.framescope.crop.CropExportJobStatus
 import com.example.framescope.crop.CropMediaType
 import com.example.framescope.crop.CropProjectRecord
 import androidx.compose.ui.draw.shadow
@@ -120,6 +124,9 @@ import com.example.framescope.ui.theme.FrameScopeColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun CropToolScreen(
@@ -286,62 +293,6 @@ fun CropToolScreen(
         )
     }
 
-    if (state.exportState is CropExportState.Success) {
-        val result = state.exportState as CropExportState.Success
-        AlertDialog(
-            onDismissRequest = viewModel::dismissExportState,
-            containerColor = FrameScopeColors.BackgroundSecondary,
-            icon = {
-                Icon(
-                    imageVector = Icons.Rounded.DownloadDone,
-                    contentDescription = null,
-                    tint = FrameScopeColors.ReadyGreen
-                )
-            },
-            title = { Text("Export Complete", color = FrameScopeColors.TextPrimary) },
-            text = {
-                Text(
-                    text = if (result.savedToGallery) {
-                        "${result.fileName} exported and saved to your Gallery."
-                    } else {
-                        "${result.fileName} exported to ${result.outputPath}."
-                    },
-                    color = FrameScopeColors.TextSecondary
-                )
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = {
-                        viewModel.dismissExportState()
-                        viewModel.openImportPanel()
-                    }
-                ) {
-                    Text("View Projects", color = FrameScopeColors.TextSecondary)
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = viewModel::dismissExportState) {
-                    Text("Done", color = FrameScopeColors.SelectionBlue)
-                }
-            }
-        )
-    }
-
-    if (state.exportState is CropExportState.Error) {
-        val err = (state.exportState as CropExportState.Error).message
-        AlertDialog(
-            onDismissRequest = viewModel::dismissExportState,
-            containerColor = FrameScopeColors.BackgroundSecondary,
-            title = { Text("Export Error", color = FrameScopeColors.TextPrimary) },
-            text = { Text(err, color = FrameScopeColors.TextSecondary) },
-            confirmButton = {
-                TextButton(onClick = viewModel::dismissExportState) {
-                    Text("OK", color = FrameScopeColors.SelectionBlue)
-                }
-            }
-        )
-    }
-
     val isWorkspaceEditingVisible = state.media != null && !state.showImportPanel
 
     AeroGlassBackground {
@@ -498,6 +449,7 @@ fun CropToolScreen(
                         RecentProjectsSection(
                             projects = state.recentProjects,
                             thumbnails = state.projectThumbnails,
+                            activeExportCounts = state.activeExportCountsByProject,
                             onOpenSettings = { showProjectSettingsDialog = true },
                             onOpenInGallery = { project ->
                                 viewingRecentProjectId = project.id
@@ -820,13 +772,14 @@ fun CropToolScreen(
                             state.selectedImageFormat?.label ?: "PNG"
                         }
                         ExportActionCard(
-                            exportState = state.exportState,
+                            exportJobs = state.projectExportJobs,
                             formatLabel = formatLabel,
                             outputWidth = state.outputWidth,
                             outputHeight = state.outputHeight,
                             pipelineSupport = state.pipelineSupport,
                             onExport = { runWithExportNotificationPermission(viewModel::startExport) },
-                            onCancelExport = viewModel::cancelExport
+                            onCancelExportJob = viewModel::cancelExportJob,
+                            onDismissExportJob = viewModel::dismissExportJob
                         )
 
                         Spacer(modifier = Modifier.height(10.dp))
@@ -1113,96 +1066,60 @@ private fun ToolbarIconLabelAction(
 
 @Composable
 private fun ExportActionCard(
-    exportState: CropExportState,
+    exportJobs: List<CropExportJob>,
     formatLabel: String,
     outputWidth: Int,
     outputHeight: Int,
     pipelineSupport: CodecPipelineSupport?,
     onExport: () -> Unit,
-    onCancelExport: () -> Unit
+    onCancelExportJob: (String) -> Unit,
+    onDismissExportJob: (String) -> Unit
 ) {
+    val context = LocalContext.current
+    val runningCount = exportJobs.count { it.status == CropExportJobStatus.RUNNING }
+
     NeumorphicGlassCard(
         modifier = Modifier.testTag("crop_export_card"),
         cornerRadius = 22.dp,
         elevation = 6.dp,
-        accentBorder = if (exportState is CropExportState.Exporting) {
-            FrameScopeColors.SelectionBlue
-        } else {
-            null
-        }
+        accentBorder = if (runningCount > 0) FrameScopeColors.SelectionBlue else null
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            if (exportState is CropExportState.Exporting) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = exportState.statusText,
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                        color = FrameScopeColors.TextPrimary
+            val btnShape = RoundedCornerShape(50)
+            Button(
+                onClick = onExport,
+                shape = btnShape,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = FrameScopeColors.SelectionBlue,
+                    contentColor = Color.White
+                ),
+                contentPadding = PaddingValues(vertical = 15.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .minimumInteractiveComponentSize()
+                    .shadow(
+                        elevation = 10.dp,
+                        shape = btnShape,
+                        ambientColor = FrameScopeColors.SelectionBlue.copy(alpha = 0.4f),
+                        spotColor = FrameScopeColors.SelectionBlue.copy(alpha = 0.5f)
                     )
-                    Text(
-                        text = "${(exportState.progress * 100f).toInt()}%",
-                        style = MaterialTheme.typography.labelMedium.copy(
-                            fontFamily = FontFamily.Default,
-                            fontFeatureSettings = "tnum"
-                        ),
-                        color = FrameScopeColors.SelectionBlue
-                    )
-                }
-                LinearProgressIndicator(
-                    progress = { exportState.progress.coerceIn(0f, 1f) },
-                    color = FrameScopeColors.SelectionBlue,
-                    trackColor = FrameScopeColors.InsetTrack,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(50))
+                    .testTag("crop_export_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Crop,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
                 )
-                TextButton(
-                    onClick = onCancelExport,
-                    modifier = Modifier.align(Alignment.End)
-                ) {
-                    Text("Cancel", color = FrameScopeColors.SpecRedText)
-                }
-            } else {
-                val btnShape = RoundedCornerShape(50)
-                Button(
-                    onClick = onExport,
-                    shape = btnShape,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = FrameScopeColors.SelectionBlue,
-                        contentColor = Color.White
-                    ),
-                    contentPadding = PaddingValues(vertical = 15.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .minimumInteractiveComponentSize()
-                        .shadow(
-                            elevation = 10.dp,
-                            shape = btnShape,
-                            ambientColor = FrameScopeColors.SelectionBlue.copy(alpha = 0.4f),
-                            spotColor = FrameScopeColors.SelectionBlue.copy(alpha = 0.5f)
-                        )
-                        .testTag("crop_export_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Crop,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Export $formatLabel (${outputWidth}×${outputHeight})",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
-                    )
-                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Export $formatLabel (${outputWidth}×${outputHeight})",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
+                )
             }
 
             if (pipelineSupport != null) {
@@ -1226,8 +1143,223 @@ private fun ExportActionCard(
                     )
                 }
             }
+
+            if (exportJobs.isNotEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("crop_running_export_list"),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Running Export Processes",
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                            color = FrameScopeColors.TextPrimary
+                        )
+                        if (runningCount > 0) {
+                            Surface(
+                                shape = RoundedCornerShape(50),
+                                color = FrameScopeColors.SelectionBlueTint,
+                                border = BorderStroke(1.dp, FrameScopeColors.SelectionBlue)
+                            ) {
+                                Text(
+                                    text = "$runningCount Active",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = FrameScopeColors.SelectionBlue,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    exportJobs.forEachIndexed { index, job ->
+                        val pct = (job.progress * 100f).toInt().coerceIn(0, 100)
+                        val isRunning = job.status == CropExportJobStatus.RUNNING
+                        val isCompleted = job.status == CropExportJobStatus.COMPLETED
+                        val borderColor = when (job.status) {
+                            CropExportJobStatus.RUNNING -> FrameScopeColors.SelectionBlue.copy(alpha = 0.65f)
+                            CropExportJobStatus.COMPLETED -> FrameScopeColors.ReadyGreen.copy(alpha = 0.65f)
+                            CropExportJobStatus.FAILED -> FrameScopeColors.SpecRedBorder
+                        }
+                        val progressColor = when (job.status) {
+                            CropExportJobStatus.RUNNING -> FrameScopeColors.SelectionBlue
+                            CropExportJobStatus.COMPLETED -> FrameScopeColors.ReadyGreen
+                            CropExportJobStatus.FAILED -> FrameScopeColors.SpecRedText
+                        }
+
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("crop_export_process_item_$index"),
+                            shape = RoundedCornerShape(14.dp),
+                            color = FrameScopeColors.InnerSurface,
+                            border = BorderStroke(1.dp, borderColor)
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalArrangement = Arrangement.spacedBy(7.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(
+                                        modifier = Modifier.weight(1f),
+                                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                                    ) {
+                                        Text(
+                                            text = "#${index + 1} • ${job.formatLabel} (${job.outputWidth}×${job.outputHeight})",
+                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                                            color = FrameScopeColors.TextPrimary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Schedule,
+                                                contentDescription = null,
+                                                tint = FrameScopeColors.TextMuted,
+                                                modifier = Modifier.size(13.dp)
+                                            )
+                                            Text(
+                                                text = "Clicked at ${formatExportClickTime(context, job.clickedAtMs)}",
+                                                style = MaterialTheme.typography.labelMedium.copy(
+                                                    fontFamily = FontFamily.Default,
+                                                    fontFeatureSettings = "tnum"
+                                                ),
+                                                color = FrameScopeColors.TextSecondary,
+                                                maxLines = 1
+                                            )
+                                        }
+                                    }
+
+                                    Text(
+                                        text = "$pct%",
+                                        style = MaterialTheme.typography.titleSmall.copy(
+                                            fontFamily = FontFamily.Default,
+                                            fontFeatureSettings = "tnum",
+                                            fontWeight = FontWeight.Bold
+                                        ),
+                                        color = progressColor
+                                    )
+                                }
+
+                                LinearProgressIndicator(
+                                    progress = { job.progress.coerceIn(0f, 1f) },
+                                    color = progressColor,
+                                    trackColor = FrameScopeColors.InsetTrack,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(6.dp)
+                                        .clip(RoundedCornerShape(50))
+                                )
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        modifier = Modifier.weight(1f),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                    ) {
+                                        if (isCompleted) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.DownloadDone,
+                                                contentDescription = null,
+                                                tint = FrameScopeColors.ReadyGreen,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                        Text(
+                                            text = when (job.status) {
+                                                CropExportJobStatus.RUNNING -> job.statusText
+                                                CropExportJobStatus.COMPLETED -> job.fileName?.let {
+                                                    if (job.savedToGallery) "$it • Saved to Gallery" else "$it • Complete"
+                                                } ?: "100% Complete"
+                                                CropExportJobStatus.FAILED -> job.errorMessage ?: "Export failed"
+                                            },
+                                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium),
+                                            color = when (job.status) {
+                                                CropExportJobStatus.RUNNING -> FrameScopeColors.TextSecondary
+                                                CropExportJobStatus.COMPLETED -> FrameScopeColors.ReadyGreen
+                                                CropExportJobStatus.FAILED -> FrameScopeColors.SpecRedText
+                                            },
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.width(8.dp))
+
+                                    if (isRunning) {
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = FrameScopeColors.SpecRedContainer,
+                                            border = BorderStroke(1.dp, FrameScopeColors.SpecRedBorder),
+                                            modifier = Modifier
+                                                .minimumInteractiveComponentSize()
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .clickable { onCancelExportJob(job.jobId) }
+                                                .testTag("cancel_export_job_$index")
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.Close,
+                                                    contentDescription = "Cancel export #${index + 1}",
+                                                    tint = FrameScopeColors.SpecRedText,
+                                                    modifier = Modifier.size(15.dp)
+                                                )
+                                                Text(
+                                                    text = "Cancel",
+                                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                                    color = FrameScopeColors.SpecRedText
+                                                )
+                                            }
+                                        }
+                                    } else {
+                                        TextButton(
+                                            onClick = { onDismissExportJob(job.jobId) },
+                                            modifier = Modifier
+                                                .minimumInteractiveComponentSize()
+                                                .testTag("dismiss_export_job_$index")
+                                        ) {
+                                            Text(
+                                                text = "Dismiss",
+                                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                                color = FrameScopeColors.TextSecondary
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
+}
+
+private fun formatExportClickTime(context: Context, timestampMs: Long): String {
+    val pattern = if (DateFormat.is24HourFormat(context)) "HH:mm:ss" else "h:mm:ss a"
+    return SimpleDateFormat(pattern, Locale.getDefault()).format(Date(timestampMs))
 }
 
 @Composable

@@ -1056,6 +1056,7 @@ private fun FormatChip(
 internal fun RecentProjectsSection(
     projects: List<CropProjectRecord>,
     thumbnails: Map<String, Bitmap>,
+    activeExportCounts: Map<String, Int> = emptyMap(),
     onOpenSettings: () -> Unit,
     onOpenInGallery: (CropProjectRecord) -> Unit,
     onEditProject: (CropProjectRecord) -> Unit,
@@ -1247,6 +1248,26 @@ internal fun RecentProjectsSection(
                                                 color = FrameScopeColors.TextSecondary,
                                                 maxLines = 1
                                             )
+                                        }
+
+                                        val activeCount = activeExportCounts[project.id] ?: 0
+                                        if (activeCount > 0) {
+                                            Surface(
+                                                shape = RoundedCornerShape(6.dp),
+                                                color = FrameScopeColors.SelectionBlueTint,
+                                                border = BorderStroke(1.dp, FrameScopeColors.SelectionBlue)
+                                            ) {
+                                                Text(
+                                                    text = if (activeCount == 1) "Exporting" else "Exporting ($activeCount)",
+                                                    style = MaterialTheme.typography.labelMedium.copy(
+                                                        fontSize = 10.5.sp,
+                                                        fontWeight = FontWeight.Bold
+                                                    ),
+                                                    color = FrameScopeColors.SelectionBlue,
+                                                    maxLines = 1,
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                )
+                                            }
                                         }
                                     }
 

@@ -149,6 +149,32 @@ sealed interface CropExportState {
     data class Error(val message: String) : CropExportState
 }
 
+enum class CropExportJobStatus {
+    RUNNING,
+    COMPLETED,
+    FAILED
+}
+
+data class CropExportJob(
+    val jobId: String,
+    val notificationId: Int,
+    val projectId: String,
+    val projectTitle: String,
+    val mediaType: CropMediaType,
+    val formatLabel: String,
+    val outputWidth: Int,
+    val outputHeight: Int,
+    val clickedAtMs: Long,
+    val progress: Float = 0f,
+    val statusText: String = "Processing…",
+    val status: CropExportJobStatus = CropExportJobStatus.RUNNING,
+    val outputPath: String? = null,
+    val fileName: String? = null,
+    val savedToGallery: Boolean = false,
+    val galleryUriString: String? = null,
+    val errorMessage: String? = null
+)
+
 @Serializable
 data class CropProjectRecord(
     val id: String,

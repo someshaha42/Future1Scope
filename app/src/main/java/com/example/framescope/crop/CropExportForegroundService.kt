@@ -10,6 +10,7 @@ import android.content.pm.ServiceInfo
 import android.net.Uri
 import android.os.Build
 import android.os.IBinder
+import android.text.format.DateFormat
 import android.webkit.MimeTypeMap
 import androidx.core.content.FileProvider
 import com.example.framescope.MainActivity
@@ -22,7 +23,10 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.roundToInt
 
 class CropExportForegroundService : Service() {
@@ -31,68 +35,91 @@ class CropExportForegroundService : Service() {
         const val ACTION_START_EXPORT = "com.example.framescope.crop.START_EXPORT"
         const val ACTION_START_SHARE_EXPORT = "com.example.framescope.crop.START_SHARE_EXPORT"
         const val ACTION_CANCEL_EXPORT = "com.example.framescope.crop.CANCEL_EXPORT"
+        const val EXTRA_JOB_ID = "com.example.framescope.crop.EXTRA_JOB_ID"
 
         private const val CHANNEL_ID = "framescope_crop_export"
-        private const val PROGRESS_NOTIFICATION_ID = 4201
-        private const val COMPLETE_NOTIFICATION_ID = 4202
-        private const val NOTIFY_MIN_INTERVAL_MS = 400L
+        private const val SHARE_JOB_KEY = "__share__"
+        private const val SHARE_NOTIFICATION_ID = 4205
+        private const val SHARE_COMPLETE_NOTIFICATION_ID = 4206
+        private const val COMPLETE_NOTIFICATION_OFFSET = 10000
+        private const val NOTIFY_MIN_INTERVAL_MS = 350L
     }
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var activeJob: Job? = null
+    private val activeJobs = ConcurrentHashMap<String, Job>()
+    private val activeNotificationIds = ConcurrentHashMap<String, Int>()
+    private val lastNotifyByJobId = ConcurrentHashMap<String, Pair<Long, Int>>()
+    private val foregroundLock = Any()
 
     @Volatile
-    private var lastNotifyMs = 0L
-
-    @Volatile
-    private var lastNotifyPct = -1
+    private var currentForegroundNotificationId: Int? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START_EXPORT -> {
-                val request = CropExportManager.consumeWorkspaceRequest()
-                if (request == null) {
-                    if (activeJob?.isActive != true) {
+                val jobId = intent.getStringExtra(EXTRA_JOB_ID)
+                val request = jobId?.let { CropExportManager.consumeWorkspaceRequest(it) }
+                val job = jobId?.let { CropExportManager.getJob(it) }
+                if (jobId == null || request == null || job == null) {
+                    if (activeJobs.isEmpty()) {
                         stopSelf()
                     }
                     return START_NOT_STICKY
                 }
-                startExportForeground(
-                    title = getString(R.string.export_notification_title),
-                    statusText = "Starting export…",
-                    progress = 0.02f
+
+                createNotificationChannel()
+                postOrStartForegroundForJob(
+                    jobKey = job.jobId,
+                    notifId = job.notificationId,
+                    notification = buildJobProgressNotification(job),
+                    initialPct = 0
                 )
-                activeJob?.cancel()
-                activeJob = serviceScope.launch {
-                    runWorkspaceExport(request)
+
+                val coroutineJob = serviceScope.launch {
+                    runWorkspaceExport(job, request)
                 }
+                activeJobs[job.jobId] = coroutineJob
             }
 
             ACTION_START_SHARE_EXPORT -> {
                 val request = CropExportManager.consumeShareRequest()
                 if (request == null) {
-                    if (activeJob?.isActive != true) {
+                    if (activeJobs.isEmpty()) {
                         stopSelf()
                     }
                     return START_NOT_STICKY
                 }
-                startExportForeground(
-                    title = getString(R.string.export_notification_title),
+
+                createNotificationChannel()
+                activeJobs[SHARE_JOB_KEY]?.cancel()
+                val shareNotif = buildShareProgressNotification(
                     statusText = "Exporting project to share…",
                     progress = 0.05f
                 )
-                activeJob?.cancel()
-                activeJob = serviceScope.launch {
+                postOrStartForegroundForJob(
+                    jobKey = SHARE_JOB_KEY,
+                    notifId = SHARE_NOTIFICATION_ID,
+                    notification = shareNotif,
+                    initialPct = 5
+                )
+
+                val coroutineJob = serviceScope.launch {
                     runShareExport(request)
                 }
+                activeJobs[SHARE_JOB_KEY] = coroutineJob
             }
 
             ACTION_CANCEL_EXPORT -> {
-                cancelActiveExport()
+                val jobId = intent.getStringExtra(EXTRA_JOB_ID)
+                if (jobId.isNullOrBlank()) {
+                    cancelAllActiveExports()
+                } else {
+                    cancelSingleExport(jobId)
+                }
             }
 
             else -> {
-                if (activeJob?.isActive != true) {
+                if (activeJobs.isEmpty()) {
                     stopSelf()
                 }
             }
@@ -100,54 +127,66 @@ class CropExportForegroundService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun startExportForeground(
-        title: String,
-        statusText: String,
-        progress: Float
+    private fun postOrStartForegroundForJob(
+        jobKey: String,
+        notifId: Int,
+        notification: Notification,
+        initialPct: Int
     ) {
-        createNotificationChannel()
-        lastNotifyMs = System.currentTimeMillis()
-        lastNotifyPct = (progress * 100f).toInt().coerceIn(0, 100)
-        val notification = buildProgressNotification(
-            title = title,
-            statusText = statusText,
-            progress = progress
-        )
+        synchronized(foregroundLock) {
+            activeNotificationIds[jobKey] = notifId
+            lastNotifyByJobId[jobKey] = System.currentTimeMillis() to initialPct
+            if (currentForegroundNotificationId == null) {
+                startForegroundCompat(notifId, notification)
+                currentForegroundNotificationId = notifId
+            } else {
+                val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                runCatching { nm.notify(notifId, notification) }
+            }
+        }
+    }
+
+    private fun startForegroundCompat(notifId: Int, notification: Notification) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
             startForeground(
-                PROGRESS_NOTIFICATION_ID,
+                notifId,
                 notification,
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING
             )
         } else {
             startForeground(
-                PROGRESS_NOTIFICATION_ID,
+                notifId,
                 notification,
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
             )
         }
     }
 
-    private suspend fun runWorkspaceExport(request: CropWorkspaceExportRequest) {
+    private suspend fun runWorkspaceExport(
+        initialJob: CropExportJob,
+        request: CropWorkspaceExportRequest
+    ) {
+        val jobId = initialJob.jobId
         val media = request.media
-        var finalState: CropExportState = CropExportState.Idle
         try {
+            CropExportManager.updateJobProgress(jobId, 0.0f, "Processing…")
+            maybeUpdateJobProgressNotification(
+                jobKey = jobId,
+                force = true
+            )
+
             val result = when (media.mediaType) {
                 CropMediaType.IMAGE -> {
                     val format = request.imageFormat ?: media.imageExportOptions.first()
-                    val status = "Cropping image…"
-                    CropExportManager.updateExportState(CropExportState.Exporting(0.35f, status))
-                    maybeUpdateProgressNotification(
-                        title = getString(R.string.export_notification_title),
-                        statusText = status,
-                        progress = 0.35f,
-                        force = true
-                    )
                     ImageCropProcessor.exportCroppedImage(
                         context = applicationContext,
                         media = media,
                         cropRect = request.cropRect,
-                        formatOption = format
+                        formatOption = format,
+                        onProgress = { progress, text ->
+                            CropExportManager.updateJobProgress(jobId, progress, text)
+                            maybeUpdateJobProgressNotification(jobKey = jobId)
+                        }
                     )
                 }
 
@@ -177,68 +216,78 @@ class CropExportForegroundService : Service() {
                         trimEndMs = request.trimEndMs,
                         allowLosslessPassthrough = true,
                         onProgress = { progress, text ->
-                            CropExportManager.updateExportState(
-                                CropExportState.Exporting(progress, text)
-                            )
-                            maybeUpdateProgressNotification(
-                                title = getString(R.string.export_notification_title),
-                                statusText = text,
-                                progress = progress
-                            )
+                            CropExportManager.updateJobProgress(jobId, progress, text)
+                            maybeUpdateJobProgressNotification(jobKey = jobId)
                         }
                     )
                 }
             }
 
-            finalState = result
-            if (result is CropExportState.Success) {
-                val now = System.currentTimeMillis()
-                val updatedRecord = request.projectRecord?.copy(
-                    exportedFilePath = result.outputPath,
-                    exportedGalleryUriString = result.galleryUriString,
-                    exportedFormatLabel = request.formatLabel,
-                    exportedWidth = request.outputWidth,
-                    exportedHeight = request.outputHeight,
-                    exportedDurationMs = if (media.mediaType == CropMediaType.VIDEO) {
-                        (request.trimEndMs - request.trimStartMs).coerceAtLeast(0L)
-                    } else {
-                        0L
-                    },
-                    updatedAtMs = now,
-                    exportedAtMs = now
-                )
-                if (updatedRecord != null) {
-                    CropProjectsRepository(applicationContext).upsertProject(updatedRecord)
-                    CropExportManager.notifyProjectUpdated(updatedRecord.id)
-                }
-                postCompletionNotification(
-                    title = getString(R.string.export_notification_complete_title),
-                    text = if (result.savedToGallery) {
-                        "${result.fileName} saved to Gallery"
-                    } else {
-                        "${result.fileName} ready"
+            when (result) {
+                is CropExportState.Success -> {
+                    val now = System.currentTimeMillis()
+                    val repo = CropProjectsRepository(applicationContext)
+                    val latestBase = request.projectRecord?.id?.let { repo.getProjectById(it) }
+                        ?: request.projectRecord
+                    val updatedRecord = latestBase?.copy(
+                        exportedFilePath = result.outputPath,
+                        exportedGalleryUriString = result.galleryUriString,
+                        exportedFormatLabel = request.formatLabel,
+                        exportedWidth = request.outputWidth,
+                        exportedHeight = request.outputHeight,
+                        exportedDurationMs = if (media.mediaType == CropMediaType.VIDEO) {
+                            (request.trimEndMs - request.trimStartMs).coerceAtLeast(0L)
+                        } else {
+                            0L
+                        },
+                        updatedAtMs = now,
+                        exportedAtMs = now
+                    )
+                    if (updatedRecord != null) {
+                        repo.upsertProject(updatedRecord)
+                        CropExportManager.notifyProjectUpdated(updatedRecord.id)
                     }
-                )
-            } else if (result is CropExportState.Error) {
-                postCompletionNotification(
-                    title = "Export Failed",
-                    text = result.message
-                )
-            }
+                    CropExportManager.completeJobSuccess(jobId, result)
+                    val timeLabel = formatClickTime(initialJob.clickedAtMs)
+                    postCompletionNotification(
+                        notificationId = initialJob.notificationId + COMPLETE_NOTIFICATION_OFFSET,
+                        requestCode = initialJob.notificationId + COMPLETE_NOTIFICATION_OFFSET,
+                        title = "${getString(R.string.export_notification_complete_title)} • 100%",
+                        text = if (result.savedToGallery) {
+                            "${result.fileName} saved to Gallery ($timeLabel)"
+                        } else {
+                            "${result.fileName} ready ($timeLabel)"
+                        }
+                    )
+                }
 
-            CropExportManager.updateExportState(result)
+                is CropExportState.Error -> {
+                    CropExportManager.failJob(jobId, result.message)
+                    postCompletionNotification(
+                        notificationId = initialJob.notificationId + COMPLETE_NOTIFICATION_OFFSET,
+                        requestCode = initialJob.notificationId + COMPLETE_NOTIFICATION_OFFSET,
+                        title = "Export Failed (${formatClickTime(initialJob.clickedAtMs)})",
+                        text = result.message
+                    )
+                }
+
+                else -> {
+                    CropExportManager.removeJob(jobId)
+                }
+            }
         } catch (_: CancellationException) {
-            CropExportManager.resetExportState()
+            CropExportManager.removeJob(jobId)
         } catch (t: Throwable) {
-            val err = CropExportState.Error(t.message ?: "Failed to crop and export media.")
-            finalState = err
-            CropExportManager.updateExportState(err)
+            val message = t.message ?: "Failed to crop and export media."
+            CropExportManager.failJob(jobId, message)
             postCompletionNotification(
-                title = "Export Failed",
-                text = err.message
+                notificationId = initialJob.notificationId + COMPLETE_NOTIFICATION_OFFSET,
+                requestCode = initialJob.notificationId + COMPLETE_NOTIFICATION_OFFSET,
+                title = "Export Failed (${formatClickTime(initialJob.clickedAtMs)})",
+                text = message
             )
         } finally {
-            finishForegroundSession(finalState)
+            finishJobSession(jobId, initialJob.notificationId)
         }
     }
 
@@ -292,18 +341,15 @@ class CropExportForegroundService : Service() {
                     val format = inspected.imageExportOptions.firstOrNull {
                         it.label == project.selectedFormatLabel
                     } ?: inspected.imageExportOptions.first()
-                    CropExportManager.updateShareProgress(0.4f, "Exporting photo…")
-                    maybeUpdateProgressNotification(
-                        title = getString(R.string.export_notification_title),
-                        statusText = "Exporting photo…",
-                        progress = 0.4f,
-                        force = true
-                    )
                     ImageCropProcessor.exportCroppedImage(
                         context = applicationContext,
                         media = inspected,
                         cropRect = crop,
-                        formatOption = format
+                        formatOption = format,
+                        onProgress = { progress, text ->
+                            CropExportManager.updateShareProgress(progress, text)
+                            maybeUpdateShareProgressNotification(text, progress)
+                        }
                     )
                 }
 
@@ -339,11 +385,7 @@ class CropExportForegroundService : Service() {
                         allowLosslessPassthrough = true,
                         onProgress = { progress, text ->
                             CropExportManager.updateShareProgress(progress, text)
-                            maybeUpdateProgressNotification(
-                                title = getString(R.string.export_notification_title),
-                                statusText = text,
-                                progress = progress
-                            )
+                            maybeUpdateShareProgressNotification(text, progress)
                         }
                     )
                 }
@@ -359,7 +401,9 @@ class CropExportForegroundService : Service() {
                     } else {
                         0L
                     }
-                    val updatedRecord = project.copy(
+                    val repo = CropProjectsRepository(applicationContext)
+                    val latestBase = repo.getProjectById(project.id) ?: project
+                    val updatedRecord = latestBase.copy(
                         exportedFilePath = result.outputPath,
                         exportedGalleryUriString = result.galleryUriString,
                         exportedFormatLabel = formatLabel,
@@ -369,7 +413,7 @@ class CropExportForegroundService : Service() {
                         updatedAtMs = now,
                         exportedAtMs = now
                     )
-                    CropProjectsRepository(applicationContext).upsertProject(updatedRecord)
+                    repo.upsertProject(updatedRecord)
                     CropExportManager.notifyProjectUpdated(updatedRecord.id)
 
                     val outFile = File(result.outputPath)
@@ -388,7 +432,9 @@ class CropExportForegroundService : Service() {
                             )
                         )
                         postCompletionNotification(
-                            title = getString(R.string.export_notification_complete_title),
+                            notificationId = SHARE_COMPLETE_NOTIFICATION_ID,
+                            requestCode = SHARE_COMPLETE_NOTIFICATION_ID,
+                            title = "${getString(R.string.export_notification_complete_title)} • 100%",
                             text = "${result.fileName} is ready to share"
                         )
                     } else {
@@ -399,6 +445,8 @@ class CropExportForegroundService : Service() {
                 is CropExportState.Error -> {
                     CropExportManager.failShareExport(result.message)
                     postCompletionNotification(
+                        notificationId = SHARE_COMPLETE_NOTIFICATION_ID,
+                        requestCode = SHARE_COMPLETE_NOTIFICATION_ID,
                         title = "Export Failed",
                         text = result.message
                     )
@@ -413,26 +461,91 @@ class CropExportForegroundService : Service() {
         } catch (t: Throwable) {
             CropExportManager.failShareExport(t.message ?: "Failed to export project.")
         } finally {
-            finishForegroundSession(CropExportState.Idle)
+            finishJobSession(SHARE_JOB_KEY, SHARE_NOTIFICATION_ID)
         }
     }
 
-    private fun cancelActiveExport() {
-        activeJob?.cancel()
-        activeJob = null
-        CropExportManager.resetExportState()
-        CropExportManager.resetShareExportState()
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+    private fun cancelSingleExport(jobId: String) {
+        if (jobId == SHARE_JOB_KEY) {
+            activeJobs[SHARE_JOB_KEY]?.cancel()
+            CropExportManager.resetShareExportState()
+            finishJobSession(SHARE_JOB_KEY, SHARE_NOTIFICATION_ID)
+            return
+        }
+        val notifId = activeNotificationIds[jobId] ?: CropExportManager.getJob(jobId)?.notificationId
+        activeJobs[jobId]?.cancel()
+        CropExportManager.removeJob(jobId)
+        if (notifId != null) {
+            finishJobSession(jobId, notifId)
+        } else if (activeJobs.isEmpty()) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
     }
 
-    private fun finishForegroundSession(@Suppress("UNUSED_PARAMETER") state: CropExportState) {
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+    private fun cancelAllActiveExports() {
+        val keys = activeJobs.keys.toList()
+        keys.forEach { key ->
+            activeJobs[key]?.cancel()
+            if (key == SHARE_JOB_KEY) {
+                CropExportManager.resetShareExportState()
+            } else {
+                CropExportManager.removeJob(key)
+            }
+        }
+        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        activeNotificationIds.values.forEach { notifId ->
+            runCatching { nm.cancel(notifId) }
+        }
+        synchronized(foregroundLock) {
+            activeJobs.clear()
+            activeNotificationIds.clear()
+            lastNotifyByJobId.clear()
+            currentForegroundNotificationId = null
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
+    }
+
+    private fun finishJobSession(jobKey: String, notifId: Int) {
+        synchronized(foregroundLock) {
+            activeJobs.remove(jobKey)
+            activeNotificationIds.remove(jobKey)
+            lastNotifyByJobId.remove(jobKey)
+
+            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            if (activeNotificationIds.isEmpty()) {
+                currentForegroundNotificationId = null
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            } else {
+                if (currentForegroundNotificationId == notifId) {
+                    val nextEntry = activeNotificationIds.entries.firstOrNull()
+                    if (nextEntry != null) {
+                        val nextKey = nextEntry.key
+                        val nextNotifId = nextEntry.value
+                        val nextNotification = if (nextKey == SHARE_JOB_KEY) {
+                            val shareState = CropExportManager.shareState.value
+                            buildShareProgressNotification(
+                                statusText = shareState.statusText.ifBlank { "Exporting project to share…" },
+                                progress = shareState.progress
+                            )
+                        } else {
+                            CropExportManager.getJob(nextKey)?.let { buildJobProgressNotification(it) }
+                        }
+                        if (nextNotification != null) {
+                            startForegroundCompat(nextNotifId, nextNotification)
+                            currentForegroundNotificationId = nextNotifId
+                        }
+                    }
+                }
+                runCatching { nm.cancel(notifId) }
+            }
+        }
     }
 
     override fun onTimeout(startId: Int, fgsType: Int) {
-        cancelActiveExport()
+        cancelAllActiveExports()
         super.onTimeout(startId, fgsType)
     }
 
@@ -446,50 +559,66 @@ class CropExportForegroundService : Service() {
         manager.createNotificationChannel(channel)
     }
 
-    private fun maybeUpdateProgressNotification(
-        title: String,
+    private fun maybeUpdateJobProgressNotification(
+        jobKey: String,
+        force: Boolean = false
+    ) {
+        val job = CropExportManager.getJob(jobKey) ?: return
+        if (job.status != CropExportJobStatus.RUNNING) return
+        val now = System.currentTimeMillis()
+        val pct = (job.progress * 100f).toInt().coerceIn(0, 100)
+        val prev = lastNotifyByJobId[jobKey]
+        if (!force && prev != null && ((now - prev.first < NOTIFY_MIN_INTERVAL_MS) || (pct == prev.second && now - prev.first < 900L))) {
+            return
+        }
+        lastNotifyByJobId[jobKey] = now to pct
+        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        runCatching {
+            nm.notify(job.notificationId, buildJobProgressNotification(job))
+        }
+    }
+
+    private fun maybeUpdateShareProgressNotification(
         statusText: String,
         progress: Float,
         force: Boolean = false
     ) {
         val now = System.currentTimeMillis()
         val pct = (progress * 100f).toInt().coerceIn(0, 100)
-        if (!force && ((now - lastNotifyMs < NOTIFY_MIN_INTERVAL_MS) || (pct == lastNotifyPct && now - lastNotifyMs < 1_000L))) {
+        val prev = lastNotifyByJobId[SHARE_JOB_KEY]
+        if (!force && prev != null && ((now - prev.first < NOTIFY_MIN_INTERVAL_MS) || (pct == prev.second && now - prev.first < 900L))) {
             return
         }
-        lastNotifyMs = now
-        lastNotifyPct = pct
+        lastNotifyByJobId[SHARE_JOB_KEY] = now to pct
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         runCatching {
             nm.notify(
-                PROGRESS_NOTIFICATION_ID,
-                buildProgressNotification(title, statusText, progress)
+                SHARE_NOTIFICATION_ID,
+                buildShareProgressNotification(statusText, progress)
             )
         }
     }
 
-    private fun buildProgressNotification(
-        title: String,
-        statusText: String,
-        progress: Float
-    ): Notification {
-        val pct = (progress * 100f).toInt().coerceIn(0, 100)
+    private fun buildJobProgressNotification(job: CropExportJob): Notification {
+        val pct = (job.progress * 100f).toInt().coerceIn(0, 100)
+        val timeText = formatClickTime(job.clickedAtMs)
         val openIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
         val openPending = PendingIntent.getActivity(
             this,
-            10,
+            job.notificationId,
             openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
         val cancelIntent = Intent(this, CropExportForegroundService::class.java).apply {
             action = ACTION_CANCEL_EXPORT
+            putExtra(EXTRA_JOB_ID, job.jobId)
         }
         val cancelPending = PendingIntent.getService(
             this,
-            11,
+            job.notificationId,
             cancelIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
@@ -501,7 +630,52 @@ class CropExportForegroundService : Service() {
         ).build()
 
         return Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle(title)
+            .setContentTitle("${getString(R.string.export_notification_title)} • ${job.formatLabel} ($timeText)")
+            .setContentText("${job.statusText} • $pct%")
+            .setSubText(job.projectTitle)
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setContentIntent(openPending)
+            .setOnlyAlertOnce(true)
+            .setOngoing(true)
+            .setProgress(100, pct, false)
+            .addAction(cancelAction)
+            .build()
+    }
+
+    private fun buildShareProgressNotification(
+        statusText: String,
+        progress: Float
+    ): Notification {
+        val pct = (progress * 100f).toInt().coerceIn(0, 100)
+        val openIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val openPending = PendingIntent.getActivity(
+            this,
+            SHARE_NOTIFICATION_ID,
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val cancelIntent = Intent(this, CropExportForegroundService::class.java).apply {
+            action = ACTION_CANCEL_EXPORT
+            putExtra(EXTRA_JOB_ID, SHARE_JOB_KEY)
+        }
+        val cancelPending = PendingIntent.getService(
+            this,
+            SHARE_NOTIFICATION_ID,
+            cancelIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val cancelAction = Notification.Action.Builder(
+            null,
+            getString(R.string.export_notification_cancel),
+            cancelPending
+        ).build()
+
+        return Notification.Builder(this, CHANNEL_ID)
+            .setContentTitle(getString(R.string.export_notification_title))
             .setContentText("$statusText • $pct%")
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setContentIntent(openPending)
@@ -512,13 +686,18 @@ class CropExportForegroundService : Service() {
             .build()
     }
 
-    private fun postCompletionNotification(title: String, text: String) {
+    private fun postCompletionNotification(
+        notificationId: Int,
+        requestCode: Int,
+        title: String,
+        text: String
+    ) {
         val openIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
         val openPending = PendingIntent.getActivity(
             this,
-            12,
+            requestCode,
             openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
@@ -530,7 +709,12 @@ class CropExportForegroundService : Service() {
             .setContentIntent(openPending)
             .setAutoCancel(true)
             .build()
-        runCatching { nm.notify(COMPLETE_NOTIFICATION_ID, notification) }
+        runCatching { nm.notify(notificationId, notification) }
+    }
+
+    private fun formatClickTime(timestampMs: Long): String {
+        val pattern = if (DateFormat.is24HourFormat(applicationContext)) "HH:mm:ss" else "h:mm:ss a"
+        return SimpleDateFormat(pattern, Locale.getDefault()).format(Date(timestampMs))
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
