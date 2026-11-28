@@ -24,14 +24,17 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -64,11 +67,8 @@ import androidx.compose.material.icons.rounded.FastForward
 import androidx.compose.material.icons.rounded.FastRewind
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.MoreVert
-import androidx.compose.material.icons.rounded.Pause
-import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.RepeatOne
-import androidx.compose.material.icons.rounded.Replay
 import androidx.compose.material.icons.rounded.ScreenRotation
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Speed
@@ -80,7 +80,6 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -89,6 +88,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -122,6 +122,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setProgress
@@ -129,6 +130,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -150,6 +152,7 @@ import com.example.framescope.crop.CanvasAspectMode
 import com.example.framescope.crop.CropMediaType
 import com.example.framescope.crop.CropProjectRecord
 import com.example.framescope.crop.NormalizedCropRect
+import com.example.framescope.ui.components.neumorphicShadow
 import com.example.framescope.ui.theme.FrameScopeColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -181,8 +184,20 @@ private data class ResolvedPlaybackSource(
 )
 
 private val GoogleFilesAccentBlue = Color(0xFFA8C7FA)
-private val GoogleFilesSurface = Color(0xFF1F2024)
-private val GoogleFilesSurfaceAlt = Color(0xFF2D2E33)
+private val GoogleFilesSurface = Color(0xFF151C2C)
+private val GoogleFilesSurfaceAlt = Color(0xFF1F2A40)
+
+// FrameScope Glassmorphic + Neumorphic dark-cinema viewer tokens
+private val ViewerNeuLight = Color(0x404B6294)
+private val ViewerNeuDark = Color(0xDE020409)
+private val ViewerGlassFillTop = Color(0xBC1D283E)
+private val ViewerGlassFillBottom = Color(0xA80D1422)
+private val ViewerGlassRimTop = Color(0x52FFFFFF)
+private val ViewerGlassRimBottom = Color(0x18FFFFFF)
+private val ViewerGlassActiveFillTop = Color(0x544F8BFF)
+private val ViewerGlassActiveFillBottom = Color(0x302563EB)
+private val ViewerGlassActiveRimTop = Color(0xCCA8C7FA)
+private val ViewerGlassActiveRimBottom = Color(0x4D4F8BFF)
 
 private const val VIEWER_PREFS_NAME = "framescope_viewer_prefs"
 private const val KEY_SKIP_SECONDS = "double_tap_skip_seconds"
@@ -724,7 +739,7 @@ internal fun ProjectMediaViewer(
                 val barGapPx = with(density) { 8.dp.toPx() }
                 val barBottomMarginPx = bottomSafePx + with(density) { 8.dp.toPx() }
                 val fallbackBarHeightPx = with(density) {
-                    if (project.mediaType == CropMediaType.VIDEO) 98.dp.toPx() else 56.dp.toPx()
+                    if (project.mediaType == CropMediaType.VIDEO) 112.dp.toPx() else 64.dp.toPx()
                 }
                 var measuredBarHeightPx by remember { mutableFloatStateOf(0f) }
                 val effectiveBarHeightPx = if (measuredBarHeightPx > 0f) measuredBarHeightPx else fallbackBarHeightPx
@@ -1053,7 +1068,7 @@ internal fun ProjectMediaViewer(
                     }
                 }
 
-                // Double-tap Seek Ripple Indicator (Left / Right) showing chosen skip seconds
+                // Double-tap Seek Glassmorphic + Neumorphic Indicator (Left / Right)
                 AnimatedVisibility(
                     visible = doubleTapSeekDisplaySeconds != 0f,
                     enter = fadeIn(),
@@ -1066,10 +1081,11 @@ internal fun ProjectMediaViewer(
                 ) {
                     val absSec = abs(doubleTapSeekDisplaySeconds)
                     val secText = formatSkipSecondsLabel(absSec)
-                    Surface(
-                        shape = CircleShape,
-                        color = Color(0xCC1F2024),
-                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.22f))
+                    Box(
+                        modifier = Modifier.viewerGlassSurface(
+                            cornerRadius = 28.dp,
+                            elevation = 8.dp
+                        )
                     ) {
                         Column(
                             modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
@@ -1083,7 +1099,7 @@ internal fun ProjectMediaViewer(
                                     Icons.Rounded.FastForward
                                 },
                                 contentDescription = null,
-                                tint = Color.White,
+                                tint = GoogleFilesAccentBlue,
                                 modifier = Modifier.size(28.dp)
                             )
                             Text(
@@ -1095,7 +1111,7 @@ internal fun ProjectMediaViewer(
                     }
                 }
 
-                // Vertical Brightness / Volume HUD indicator
+                // Vertical Brightness / Volume Glassmorphic + Neumorphic HUD indicator
                 AnimatedVisibility(
                     visible = activeHudMode != ViewerHudMode.NONE,
                     enter = fadeIn(),
@@ -1105,11 +1121,10 @@ internal fun ProjectMediaViewer(
                     val isBrightness = activeHudMode == ViewerHudMode.BRIGHTNESS
                     val valueFrac = if (isBrightness) brightnessLevel else volumeLevel
                     val pct = (valueFrac * 100f).roundToInt().coerceIn(0, 100)
-                    Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = Color(0xCC1F2024),
-                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.18f)),
-                        modifier = Modifier.testTag("viewer_vertical_hud")
+                    Box(
+                        modifier = Modifier
+                            .viewerGlassSurface(cornerRadius = 20.dp, elevation = 8.dp)
+                            .testTag("viewer_vertical_hud")
                     ) {
                         Column(
                             modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
@@ -1133,7 +1148,8 @@ internal fun ProjectMediaViewer(
                                     .width(8.dp)
                                     .height(92.dp)
                                     .clip(RoundedCornerShape(4.dp))
-                                    .background(Color.White.copy(alpha = 0.18f)),
+                                    .background(Color.White.copy(alpha = 0.16f))
+                                    .border(0.6.dp, ViewerGlassRimTop, RoundedCornerShape(4.dp)),
                                 contentAlignment = Alignment.BottomCenter
                             ) {
                                 Box(
@@ -1141,7 +1157,11 @@ internal fun ProjectMediaViewer(
                                         .fillMaxWidth()
                                         .fillMaxHeight(valueFrac.coerceIn(0.02f, 1f))
                                         .clip(RoundedCornerShape(4.dp))
-                                        .background(GoogleFilesAccentBlue)
+                                        .background(
+                                            Brush.verticalGradient(
+                                                listOf(Color.White.copy(alpha = 0.92f), GoogleFilesAccentBlue)
+                                            )
+                                        )
                                 )
                             }
                             Text(
@@ -1157,7 +1177,7 @@ internal fun ProjectMediaViewer(
                     }
                 }
 
-                // Files by Google Bottom Controls Overlay: anchored directly beneath the video/photo canvas bottom edge
+                // Glassmorphic + Neumorphic Bottom Control Dock: anchored directly beneath the video/photo canvas bottom edge
                 AnimatedVisibility(
                     visible = controlsVisible,
                     enter = fadeIn(),
@@ -1167,169 +1187,165 @@ internal fun ProjectMediaViewer(
                         .fillMaxWidth()
                         .offset { IntOffset(0, controlBarTopPx.roundToInt()) }
                 ) {
-                    Column(
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .padding(horizontal = 12.dp)
                             .onSizeChanged { size ->
                                 if (size.height > 0) {
                                     measuredBarHeightPx = size.height.toFloat()
                                 }
                             }
-                            .background(
-                                Brush.verticalGradient(
-                                    listOf(Color.Transparent, Color(0x88000000), Color(0xCC000000))
-                                )
-                            )
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null
-                            ) {
-                                controlsInteractionNonce++
-                            }
-                            .padding(horizontal = 14.dp, vertical = 8.dp)
-                            .testTag("viewer_control_bar"),
-                        verticalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
-                        if (project.mediaType == CropMediaType.VIDEO) {
-                            val safeDuration = videoDurationMs.coerceAtLeast(1L)
-                            val displayPos = if (isScrubbing) {
-                                scrubPreviewMs
-                            } else {
-                                currentPosMs.coerceIn(0L, safeDuration)
-                            }
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .viewerGlassSurface(cornerRadius = 22.dp, elevation = 7.dp)
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) {
+                                    controlsInteractionNonce++
+                                }
+                                .padding(horizontal = 14.dp, vertical = 8.dp)
+                                .testTag("viewer_control_bar"),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            if (project.mediaType == CropMediaType.VIDEO) {
+                                val safeDuration = videoDurationMs.coerceAtLeast(1L)
+                                val displayPos = if (isScrubbing) {
+                                    scrubPreviewMs
+                                } else {
+                                    currentPosMs.coerceIn(0L, safeDuration)
+                                }
 
-                            // Slim Google Files Native Seekbar with Elapsed & Total Duration
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                Text(
-                                    text = formatTimelineMs(displayPos),
-                                    style = MaterialTheme.typography.labelMedium.copy(
-                                        fontFamily = FontFamily.Default,
-                                        fontFeatureSettings = "tnum",
-                                        fontWeight = FontWeight.Medium,
-                                        fontSize = 12.sp
-                                    ),
-                                    color = Color.White
-                                )
+                                // Slim Google Files Native Seekbar with Elapsed & Total Duration
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Text(
+                                        text = formatTimelineMs(displayPos),
+                                        style = MaterialTheme.typography.labelMedium.copy(
+                                            fontFamily = FontFamily.Default,
+                                            fontFeatureSettings = "tnum",
+                                            fontWeight = FontWeight.Medium,
+                                            fontSize = 12.sp
+                                        ),
+                                        color = Color.White
+                                    )
 
-                                SlimGoogleFilesSeekBar(
-                                    positionMs = displayPos,
-                                    durationMs = safeDuration,
-                                    onSeek = { targetMs ->
-                                        isScrubbing = true
-                                        hasCompleted = false
-                                        scrubPreviewMs = targetMs
-                                        currentPosMs = targetMs
-                                        exoPlayer?.seekTo(targetMs)
-                                        controlsInteractionNonce++
-                                    },
-                                    onSeekFinished = {
-                                        isScrubbing = false
-                                        controlsInteractionNonce++
-                                    },
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .testTag("viewer_timeline_slider")
-                                )
+                                    SlimGoogleFilesSeekBar(
+                                        positionMs = displayPos,
+                                        durationMs = safeDuration,
+                                        onSeek = { targetMs ->
+                                            isScrubbing = true
+                                            hasCompleted = false
+                                            scrubPreviewMs = targetMs
+                                            currentPosMs = targetMs
+                                            exoPlayer?.seekTo(targetMs)
+                                            controlsInteractionNonce++
+                                        },
+                                        onSeekFinished = {
+                                            isScrubbing = false
+                                            controlsInteractionNonce++
+                                        },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("viewer_timeline_slider")
+                                    )
 
-                                Text(
-                                    text = formatTimelineMs(safeDuration),
-                                    style = MaterialTheme.typography.labelMedium.copy(
-                                        fontFamily = FontFamily.Default,
-                                        fontFeatureSettings = "tnum",
-                                        fontWeight = FontWeight.Medium,
-                                        fontSize = 12.sp
-                                    ),
-                                    color = Color.White.copy(alpha = 0.85f)
-                                )
-                            }
+                                    Text(
+                                        text = formatTimelineMs(safeDuration),
+                                        style = MaterialTheme.typography.labelMedium.copy(
+                                            fontFamily = FontFamily.Default,
+                                            fontFeatureSettings = "tnum",
+                                            fontWeight = FontWeight.Medium,
+                                            fontSize = 12.sp
+                                        ),
+                                        color = Color.White.copy(alpha = 0.85f)
+                                    )
+                                }
 
-                            // Bottom Quick Chips Row: Skip Seconds picker chip on left + Tap-only Rotate button on right
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Surface(
-                                    shape = RoundedCornerShape(50),
-                                    color = GoogleFilesSurfaceAlt.copy(alpha = 0.9f),
-                                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
-                                    modifier = Modifier
-                                        .minimumInteractiveComponentSize()
-                                        .clip(RoundedCornerShape(50))
-                                        .clickable {
+                                // Bottom Quick Chips Row: Glassmorphic Skip chip on left + Neumorphic-Glass Rotate button on right
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    ViewerGlassInteractivePill(
+                                        onClick = {
                                             showSkipDialog = true
                                             controlsInteractionNonce++
+                                        },
+                                        modifier = Modifier.testTag("viewer_skip_config_button")
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Timer,
+                                                contentDescription = "Configure skip seconds",
+                                                tint = GoogleFilesAccentBlue,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Text(
+                                                text = "Skip ${formatSkipSecondsLabel(skipSeconds)}",
+                                                style = MaterialTheme.typography.labelMedium.copy(
+                                                    fontWeight = FontWeight.Medium,
+                                                    fontSize = 12.sp
+                                                ),
+                                                color = Color.White
+                                            )
                                         }
-                                        .testTag("viewer_skip_config_button")
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    }
+
+                                    ViewerGlassIconButton(
+                                        onClick = {
+                                            isLandscape = !isLandscape
+                                            controlsInteractionNonce++
+                                        },
+                                        active = isLandscape,
+                                        modifier = Modifier.testTag("viewer_rotate_button")
                                     ) {
                                         Icon(
-                                            imageVector = Icons.Rounded.Timer,
-                                            contentDescription = "Configure skip seconds",
-                                            tint = GoogleFilesAccentBlue,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                        Text(
-                                            text = "Skip ${formatSkipSecondsLabel(skipSeconds)}",
-                                            style = MaterialTheme.typography.labelMedium.copy(
-                                                fontWeight = FontWeight.Medium,
-                                                fontSize = 12.sp
-                                            ),
-                                            color = Color.White
+                                            imageVector = Icons.Rounded.ScreenRotation,
+                                            contentDescription = if (isLandscape) {
+                                                "Rotate to portrait"
+                                            } else {
+                                                "Rotate to landscape"
+                                            },
+                                            tint = if (isLandscape) GoogleFilesAccentBlue else Color.White,
+                                            modifier = Modifier.size(20.dp)
                                         )
                                     }
                                 }
-
-                                IconButton(
-                                    onClick = {
-                                        isLandscape = !isLandscape
-                                        controlsInteractionNonce++
-                                    },
-                                    modifier = Modifier
-                                        .minimumInteractiveComponentSize()
-                                        .testTag("viewer_rotate_button")
+                            } else {
+                                // Photo Mode Bottom Bar: Single Tap-Only Neumorphic-Glass Rotate button
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.End
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.ScreenRotation,
-                                        contentDescription = if (isLandscape) {
-                                            "Rotate to portrait"
-                                        } else {
-                                            "Rotate to landscape"
-                                        },
-                                        tint = if (isLandscape) GoogleFilesAccentBlue else Color.White
-                                    )
-                                }
-                            }
-                        } else {
-                            // Photo Mode Bottom Bar: Single Tap-Only Rotate button
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.End
-                            ) {
-                                IconButton(
-                                    onClick = { isLandscape = !isLandscape },
-                                    modifier = Modifier
-                                        .minimumInteractiveComponentSize()
-                                        .testTag("viewer_rotate_button")
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.ScreenRotation,
-                                        contentDescription = if (isLandscape) {
-                                            "Rotate to portrait"
-                                        } else {
-                                            "Rotate to landscape"
-                                        },
-                                        tint = if (isLandscape) GoogleFilesAccentBlue else Color.White
-                                    )
+                                    ViewerGlassIconButton(
+                                        onClick = { isLandscape = !isLandscape },
+                                        active = isLandscape,
+                                        modifier = Modifier.testTag("viewer_rotate_button")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.ScreenRotation,
+                                            contentDescription = if (isLandscape) {
+                                                "Rotate to portrait"
+                                            } else {
+                                                "Rotate to landscape"
+                                            },
+                                            tint = if (isLandscape) GoogleFilesAccentBlue else Color.White,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1337,43 +1353,30 @@ internal fun ProjectMediaViewer(
                 }
             }
 
-            // Files by Google Center Play / Pause Button (ONLY visible when controlsVisible == true!)
-            // Tapping the screen hides/shows controls; tapping THIS center button toggles Play/Pause!
-            AnimatedVisibility(
-                visible = controlsVisible && project.mediaType == CropMediaType.VIDEO && !isExportingForShare,
-                enter = fadeIn(),
-                exit = fadeOut(),
-                modifier = Modifier.align(Alignment.Center)
-            ) {
-                Surface(
-                    shape = CircleShape,
-                    color = Color(0x99000000),
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.24f)),
+            // Visually Hidden Center Play / Pause Tap Zone:
+            // Active ONLY while controls/seekbar are visible so the video object in the center is never blocked.
+            // When controls are hidden, tapping the center simply toggles controls visibility just like anywhere else.
+            if (controlsVisible && project.mediaType == CropMediaType.VIDEO && !isExportingForShare) {
+                Box(
                     modifier = Modifier
-                        .size(64.dp)
+                        .align(Alignment.Center)
+                        .size(84.dp)
                         .clip(CircleShape)
-                        .clickable {
+                        .semantics {
+                            contentDescription = if (isPlaying) "Pause" else "Play"
+                        }
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) {
                             isPlaying = !isPlaying
                             controlsInteractionNonce++
                         }
                         .testTag("viewer_play_pause_button")
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = when {
-                                hasCompleted && !isPlaying -> Icons.Rounded.Replay
-                                isPlaying -> Icons.Rounded.Pause
-                                else -> Icons.Rounded.PlayArrow
-                            },
-                            contentDescription = if (isPlaying) "Pause" else "Play",
-                            tint = Color.White,
-                            modifier = Modifier.size(36.dp)
-                        )
-                    }
-                }
+                )
             }
 
-            // Files by Google Top Bar: Back + File Title + Share + 3-Dot Overflow Menu
+            // Floating Glassmorphic + Neumorphic Top Bar: Back + File Title + Share + 3-Dot Overflow Menu
             AnimatedVisibility(
                 visible = controlsVisible,
                 enter = fadeIn(),
@@ -1382,174 +1385,193 @@ internal fun ProjectMediaViewer(
                     .fillMaxWidth()
                     .align(Alignment.TopCenter)
             ) {
-                Row(
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(
                             Brush.verticalGradient(
-                                listOf(Color(0xCC000000), Color(0x66000000), Color.Transparent)
+                                listOf(Color(0xB8000000), Color(0x44000000), Color.Transparent)
                             )
                         )
                         .statusBarsPadding()
-                        .padding(horizontal = 4.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
                 ) {
                     Row(
-                        modifier = Modifier.weight(1f),
-                        verticalAlignment = Alignment.CenterVertically
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .viewerGlassSurface(cornerRadius = 22.dp, elevation = 6.dp)
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null
+                            ) {
+                                controlsInteractionNonce++
+                            }
+                            .padding(horizontal = 6.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        IconButton(
-                            onClick = {
-                                if (!isExportingForShare) onBack()
-                            },
-                            modifier = Modifier
-                                .minimumInteractiveComponentSize()
-                                .testTag("viewer_back_button")
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                                contentDescription = "Back",
-                                tint = Color.White
-                            )
-                        }
-
-                        Text(
-                            text = project.title,
-                            style = MaterialTheme.typography.titleMedium.copy(
-                                fontWeight = FontWeight.Medium,
-                                fontSize = 16.sp
-                            ),
-                            color = Color.White,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(horizontal = 4.dp)
-                        )
-                    }
-
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(
-                            onClick = {
-                                if (!isExportingForShare) {
-                                    onShareProject(project)
-                                }
-                            },
-                            modifier = Modifier
-                                .minimumInteractiveComponentSize()
-                                .testTag("viewer_share_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Share,
-                                contentDescription = "Share",
-                                tint = Color.White
-                            )
-                        }
-
-                        Box {
-                            IconButton(
+                            ViewerGlassIconButton(
                                 onClick = {
-                                    showMoreMenu = true
-                                    controlsInteractionNonce++
+                                    if (!isExportingForShare) onBack()
                                 },
-                                modifier = Modifier
-                                    .minimumInteractiveComponentSize()
-                                    .testTag("viewer_more_button")
+                                size = 40.dp,
+                                modifier = Modifier.testTag("viewer_back_button")
                             ) {
                                 Icon(
-                                    imageVector = Icons.Rounded.MoreVert,
-                                    contentDescription = "More options",
-                                    tint = Color.White
+                                    imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                                    contentDescription = "Back",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
                                 )
                             }
 
-                            DropdownMenu(
-                                expanded = showMoreMenu,
-                                onDismissRequest = { showMoreMenu = false },
-                                containerColor = GoogleFilesSurface
+                            Text(
+                                text = project.title,
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontWeight = FontWeight.Medium,
+                                    fontSize = 15.sp
+                                ),
+                                color = Color.White,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(horizontal = 8.dp)
+                            )
+                        }
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            ViewerGlassIconButton(
+                                onClick = {
+                                    if (!isExportingForShare) {
+                                        onShareProject(project)
+                                    }
+                                },
+                                size = 40.dp,
+                                modifier = Modifier.testTag("viewer_share_button")
                             ) {
-                                if (project.mediaType == CropMediaType.VIDEO) {
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(
-                                                "Skip seconds (${formatSkipSecondsLabel(skipSeconds)})",
-                                                color = Color.White
-                                            )
-                                        },
-                                        leadingIcon = {
-                                            Icon(
-                                                imageVector = Icons.Rounded.Timer,
-                                                contentDescription = null,
-                                                tint = GoogleFilesAccentBlue
-                                            )
-                                        },
-                                        onClick = {
-                                            showMoreMenu = false
-                                            showSkipDialog = true
-                                        },
-                                        modifier = Modifier.testTag("viewer_menu_skip_seconds")
-                                    )
+                                Icon(
+                                    imageVector = Icons.Rounded.Share,
+                                    contentDescription = "Share",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(19.dp)
+                                )
+                            }
 
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(
-                                                "Playback speed (${formatSpeedLabel(playbackSpeed)})",
-                                                color = Color.White
-                                            )
-                                        },
-                                        leadingIcon = {
-                                            Icon(
-                                                imageVector = Icons.Rounded.Speed,
-                                                contentDescription = null,
-                                                tint = GoogleFilesAccentBlue
-                                            )
-                                        },
-                                        onClick = {
-                                            showMoreMenu = false
-                                            showSpeedDialog = true
-                                        },
-                                        modifier = Modifier.testTag("viewer_menu_speed")
-                                    )
-
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(
-                                                if (isLooping) "Loop: On" else "Loop: Off",
-                                                color = Color.White
-                                            )
-                                        },
-                                        leadingIcon = {
-                                            Icon(
-                                                imageVector = if (isLooping) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat,
-                                                contentDescription = null,
-                                                tint = if (isLooping) GoogleFilesAccentBlue else Color.White.copy(alpha = 0.8f)
-                                            )
-                                        },
-                                        onClick = {
-                                            isLooping = !isLooping
-                                            showMoreMenu = false
-                                            controlsInteractionNonce++
-                                        },
-                                        modifier = Modifier.testTag("viewer_menu_loop")
+                            Box {
+                                ViewerGlassIconButton(
+                                    onClick = {
+                                        showMoreMenu = true
+                                        controlsInteractionNonce++
+                                    },
+                                    size = 40.dp,
+                                    active = showMoreMenu,
+                                    modifier = Modifier.testTag("viewer_more_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.MoreVert,
+                                        contentDescription = "More options",
+                                        tint = if (showMoreMenu) GoogleFilesAccentBlue else Color.White,
+                                        modifier = Modifier.size(20.dp)
                                     )
                                 }
 
-                                DropdownMenuItem(
-                                    text = { Text("File info", color = Color.White) },
-                                    leadingIcon = {
-                                        Icon(
-                                            imageVector = Icons.Rounded.Info,
-                                            contentDescription = null,
-                                            tint = Color.White.copy(alpha = 0.85f)
+                                DropdownMenu(
+                                    expanded = showMoreMenu,
+                                    onDismissRequest = { showMoreMenu = false },
+                                    containerColor = GoogleFilesSurface,
+                                    shape = RoundedCornerShape(16.dp),
+                                    border = BorderStroke(1.dp, ViewerGlassRimTop)
+                                ) {
+                                    if (project.mediaType == CropMediaType.VIDEO) {
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    "Skip seconds (${formatSkipSecondsLabel(skipSeconds)})",
+                                                    color = Color.White
+                                                )
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.Timer,
+                                                    contentDescription = null,
+                                                    tint = GoogleFilesAccentBlue
+                                                )
+                                            },
+                                            onClick = {
+                                                showMoreMenu = false
+                                                showSkipDialog = true
+                                            },
+                                            modifier = Modifier.testTag("viewer_menu_skip_seconds")
                                         )
-                                    },
-                                    onClick = {
-                                        showMoreMenu = false
-                                        showInfoDialog = true
-                                    },
-                                    modifier = Modifier.testTag("viewer_menu_info")
-                                )
+
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    "Playback speed (${formatSpeedLabel(playbackSpeed)})",
+                                                    color = Color.White
+                                                )
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.Speed,
+                                                    contentDescription = null,
+                                                    tint = GoogleFilesAccentBlue
+                                                )
+                                            },
+                                            onClick = {
+                                                showMoreMenu = false
+                                                showSpeedDialog = true
+                                            },
+                                            modifier = Modifier.testTag("viewer_menu_speed")
+                                        )
+
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    if (isLooping) "Loop: On" else "Loop: Off",
+                                                    color = Color.White
+                                                )
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = if (isLooping) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat,
+                                                    contentDescription = null,
+                                                    tint = if (isLooping) GoogleFilesAccentBlue else Color.White.copy(alpha = 0.8f)
+                                                )
+                                            },
+                                            onClick = {
+                                                isLooping = !isLooping
+                                                showMoreMenu = false
+                                                controlsInteractionNonce++
+                                            },
+                                            modifier = Modifier.testTag("viewer_menu_loop")
+                                        )
+                                    }
+
+                                    DropdownMenuItem(
+                                        text = { Text("File info", color = Color.White) },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Info,
+                                                contentDescription = null,
+                                                tint = Color.White.copy(alpha = 0.85f)
+                                            )
+                                        },
+                                        onClick = {
+                                            showMoreMenu = false
+                                            showInfoDialog = true
+                                        },
+                                        modifier = Modifier.testTag("viewer_menu_info")
+                                    )
+                                }
                             }
                         }
                     }
@@ -1885,6 +1907,147 @@ internal fun ProjectMediaViewer(
     }
 }
 
+private fun Modifier.viewerGlassSurface(
+    cornerRadius: Dp = 20.dp,
+    elevation: Dp = 6.dp,
+    isActive: Boolean = false
+): Modifier {
+    val shape = RoundedCornerShape(cornerRadius)
+    val fillColors = if (isActive) {
+        listOf(ViewerGlassActiveFillTop, ViewerGlassActiveFillBottom)
+    } else {
+        listOf(ViewerGlassFillTop, ViewerGlassFillBottom)
+    }
+    val rimColors = if (isActive) {
+        listOf(ViewerGlassActiveRimTop, ViewerGlassActiveRimBottom)
+    } else {
+        listOf(ViewerGlassRimTop, ViewerGlassRimBottom)
+    }
+    return this
+        .neumorphicShadow(
+            cornerRadius = cornerRadius,
+            elevation = elevation,
+            lightColor = ViewerNeuLight,
+            darkColor = ViewerNeuDark
+        )
+        .clip(shape)
+        .background(
+            brush = Brush.linearGradient(
+                colors = fillColors,
+                start = Offset.Zero,
+                end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY)
+            )
+        )
+        .border(
+            width = if (isActive) 1.3.dp else 1.dp,
+            brush = Brush.linearGradient(
+                colors = rimColors,
+                start = Offset.Zero,
+                end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY)
+            ),
+            shape = shape
+        )
+}
+
+@Composable
+private fun ViewerGlassIconButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    size: Dp = 40.dp,
+    active: Boolean = false,
+    enabled: Boolean = true,
+    content: @Composable BoxScope.() -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.91f else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMedium
+        ),
+        label = "viewer_glass_icon_scale"
+    )
+
+    val fillBrush = if (active) {
+        Brush.linearGradient(listOf(ViewerGlassActiveFillTop, ViewerGlassActiveFillBottom))
+    } else {
+        Brush.linearGradient(listOf(ViewerGlassFillTop, ViewerGlassFillBottom))
+    }
+    val rimBrush = if (active) {
+        Brush.linearGradient(listOf(ViewerGlassActiveRimTop, ViewerGlassActiveRimBottom))
+    } else {
+        Brush.linearGradient(listOf(ViewerGlassRimTop, ViewerGlassRimBottom))
+    }
+
+    Box(
+        modifier = modifier
+            .minimumInteractiveComponentSize()
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .size(size)
+            .neumorphicShadow(
+                cornerRadius = size / 2,
+                elevation = if (isPressed) 2.dp else 4.dp,
+                lightColor = ViewerNeuLight,
+                darkColor = ViewerNeuDark
+            )
+            .clip(CircleShape)
+            .background(brush = fillBrush)
+            .border(width = if (active) 1.25.dp else 0.9.dp, brush = rimBrush, shape = CircleShape)
+            .clickable(
+                enabled = enabled,
+                interactionSource = interactionSource,
+                indication = ripple(bounded = true),
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center,
+        content = content
+    )
+}
+
+@Composable
+private fun ViewerGlassInteractivePill(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    active: Boolean = false,
+    content: @Composable BoxScope.() -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.95f else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMedium
+        ),
+        label = "viewer_glass_pill_scale"
+    )
+
+    Box(
+        modifier = modifier
+            .minimumInteractiveComponentSize()
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .viewerGlassSurface(
+                cornerRadius = 50.dp,
+                elevation = if (isPressed) 2.dp else 4.dp,
+                isActive = active
+            )
+            .clickable(
+                interactionSource = interactionSource,
+                indication = ripple(bounded = true),
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center,
+        content = content
+    )
+}
+
 @Composable
 private fun SlimGoogleFilesSeekBar(
     positionMs: Long,
@@ -1962,7 +2125,7 @@ private fun SlimGoogleFilesSeekBar(
             val thumbCenterX = trackLeft + trackWidth * fraction
 
             drawRoundRect(
-                color = Color.White.copy(alpha = 0.28f),
+                color = Color.White.copy(alpha = 0.24f),
                 topLeft = Offset(trackLeft, trackTop),
                 size = Size(trackWidth, trackHeightPx),
                 cornerRadius = corner
@@ -1971,25 +2134,33 @@ private fun SlimGoogleFilesSeekBar(
             val activeWidth = (thumbCenterX - trackLeft).coerceAtLeast(0f)
             if (activeWidth > 0f) {
                 drawRoundRect(
-                    color = GoogleFilesAccentBlue,
+                    brush = Brush.horizontalGradient(
+                        colors = listOf(Color(0xFF60A5FA), GoogleFilesAccentBlue),
+                        startX = trackLeft,
+                        endX = thumbCenterX.coerceAtLeast(trackLeft + 1f)
+                    ),
                     topLeft = Offset(trackLeft, trackTop),
                     size = Size(activeWidth, trackHeightPx),
                     cornerRadius = corner
                 )
             }
 
-            if (isDragging) {
-                drawCircle(
-                    color = GoogleFilesAccentBlue.copy(alpha = 0.24f),
-                    radius = 15.dp.toPx(),
-                    center = Offset(thumbCenterX, centerY)
-                )
-            }
+            drawCircle(
+                color = GoogleFilesAccentBlue.copy(alpha = if (isDragging) 0.30f else 0.16f),
+                radius = if (isDragging) 15.dp.toPx() else 9.5.dp.toPx(),
+                center = Offset(thumbCenterX, centerY)
+            )
 
             drawCircle(
                 color = GoogleFilesAccentBlue,
                 radius = thumbRadiusDp.dp.toPx(),
                 center = Offset(thumbCenterX, centerY)
+            )
+
+            drawCircle(
+                color = Color.White.copy(alpha = 0.72f),
+                radius = (thumbRadiusDp * 0.42f).dp.toPx(),
+                center = Offset(thumbCenterX - 1.dp.toPx(), centerY - 1.dp.toPx())
             )
         }
     }
