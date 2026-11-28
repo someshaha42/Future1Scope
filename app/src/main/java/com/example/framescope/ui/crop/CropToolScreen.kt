@@ -47,7 +47,7 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Crop
 import android.text.format.DateFormat
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.DownloadDone
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Pause
@@ -77,6 +77,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -142,6 +143,7 @@ fun CropToolScreen(
     val coroutineScope = rememberCoroutineScope()
     var previewImageProject by remember { mutableStateOf<CropProjectRecord?>(null) }
     var viewingRecentProjectId by rememberSaveable { mutableStateOf<String?>(null) }
+    var viewingExportJobId by rememberSaveable { mutableStateOf<String?>(null) }
     var showProjectSettingsDialog by remember { mutableStateOf(false) }
     var pendingDeleteProject by remember { mutableStateOf<CropProjectRecord?>(null) }
     var canvasMenuExpanded by remember { mutableStateOf(false) }
@@ -234,11 +236,11 @@ fun CropToolScreen(
         viewModel.clearMessage()
     }
 
-    BackHandler(enabled = state.isPreviewMode && viewingRecentProjectId == null) {
+    BackHandler(enabled = state.isPreviewMode && viewingRecentProjectId == null && viewingExportJobId == null) {
         viewModel.exitPreviewMode()
     }
 
-    BackHandler(enabled = !state.isPreviewMode && !state.showImportPanel && state.media != null && viewingRecentProjectId == null) {
+    BackHandler(enabled = !state.isPreviewMode && !state.showImportPanel && state.media != null && viewingRecentProjectId == null && viewingExportJobId == null) {
         viewModel.openImportPanel()
     }
 
@@ -879,7 +881,13 @@ fun CropToolScreen(
                             pipelineSupport = state.pipelineSupport,
                             onExport = { runWithExportNotificationPermission(viewModel::startExport) },
                             onCancelExportJob = viewModel::cancelExportJob,
-                            onDismissExportJob = viewModel::dismissExportJob
+                            onDismissExportJob = viewModel::dismissExportJob,
+                            onOpenExportJob = { job ->
+                                if (viewModel.isExportJobAvailable(job)) {
+                                    viewingExportJobId = job.jobId
+                                }
+                            },
+                            onEditExportJob = viewModel::restoreExportHistoryItemForEdit
                         )
 
                         Spacer(modifier = Modifier.height(10.dp))
@@ -889,39 +897,71 @@ fun CropToolScreen(
         }
         }
 
-        val activeViewerProject = viewingRecentProjectId?.let { selectedId ->
+        val activeExportJob = viewingExportJobId?.let { jobId ->
+            state.projectExportJobs.firstOrNull { it.jobId == jobId }
+        }
+        val activeExportViewerProject = activeExportJob?.let { job ->
+            viewModel.buildViewerRecordPure(job)
+        }
+        val activeRecentViewerProject = viewingRecentProjectId?.let { selectedId ->
             state.recentProjects.firstOrNull { it.id == selectedId }
         }
+        val activeViewerProject = activeExportViewerProject ?: activeRecentViewerProject
+        val viewerProjectList = if (activeExportViewerProject != null) {
+            listOf(activeExportViewerProject)
+        } else {
+            state.recentProjects
+        }
+
         if (activeViewerProject != null) {
-            ProjectMediaViewer(
-                project = activeViewerProject,
-                projects = state.recentProjects,
-                isExportingForShare = state.isSharingProjectExport,
-                exportProgress = state.shareExportProgress,
-                exportStatusText = state.shareExportStatus,
-                onBack = { viewingRecentProjectId = null },
-                onSelectProject = { nextProject ->
-                    viewingRecentProjectId = nextProject.id
-                },
-                onOpenProject = { proj ->
-                    viewingRecentProjectId = null
-                    viewModel.openProject(proj)
-                },
-                onShareProject = { proj ->
-                    runWithExportNotificationPermission {
-                        viewModel.shareProjectFromViewer(proj) { shareUri, mimeType, updated ->
-                            viewingRecentProjectId = updated.id
-                            val err = launchShareSheet(context, shareUri, mimeType)
-                            if (err != null) {
-                                coroutineScope.launch {
-                                    snackbarHostState.showSnackbar(err)
+            key(
+                activeViewerProject.id,
+                activeViewerProject.exportedFilePath,
+                activeViewerProject.exportedGalleryUriString
+            ) {
+                ProjectMediaViewer(
+                    project = activeViewerProject,
+                    projects = viewerProjectList,
+                    isExportingForShare = state.isSharingProjectExport,
+                    exportProgress = state.shareExportProgress,
+                    exportStatusText = state.shareExportStatus,
+                    onBack = {
+                        viewingExportJobId = null
+                        viewingRecentProjectId = null
+                    },
+                    onSelectProject = { nextProject ->
+                        if (viewingExportJobId == null) {
+                            viewingRecentProjectId = nextProject.id
+                        }
+                    },
+                    onOpenProject = { proj ->
+                        val matchingJob = activeExportJob
+                        viewingExportJobId = null
+                        viewingRecentProjectId = null
+                        if (matchingJob != null) {
+                            viewModel.restoreExportHistoryItemForEdit(matchingJob)
+                        } else {
+                            viewModel.openProject(proj)
+                        }
+                    },
+                    onShareProject = { proj ->
+                        runWithExportNotificationPermission {
+                            viewModel.shareProjectFromViewer(proj) { shareUri, mimeType, updated ->
+                                if (viewingRecentProjectId != null) {
+                                    viewingRecentProjectId = updated.id
+                                }
+                                val err = launchShareSheet(context, shareUri, mimeType)
+                                if (err != null) {
+                                    coroutineScope.launch {
+                                        snackbarHostState.showSnackbar(err)
+                                    }
                                 }
                             }
                         }
-                    }
-                },
-                onCancelShareExport = viewModel::cancelShareProjectExport
-            )
+                    },
+                    onCancelShareExport = viewModel::cancelShareProjectExport
+                )
+            }
         }
         }
     }
@@ -1176,7 +1216,9 @@ private fun ExportActionCard(
     pipelineSupport: CodecPipelineSupport?,
     onExport: () -> Unit,
     onCancelExportJob: (String) -> Unit,
-    onDismissExportJob: (String) -> Unit
+    onDismissExportJob: (String) -> Unit,
+    onOpenExportJob: (CropExportJob) -> Unit,
+    onEditExportJob: (CropExportJob) -> Unit
 ) {
     val context = LocalContext.current
     val runningCount = exportJobs.count { it.status == CropExportJobStatus.RUNNING }
@@ -1365,15 +1407,71 @@ private fun ExportActionCard(
                                 ) {
                                     Column(
                                         modifier = Modifier.weight(1f),
-                                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
                                     ) {
-                                        Text(
-                                            text = "#${index + 1} • ${job.formatLabel} (${job.outputWidth}×${job.outputHeight})",
-                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                                            color = FrameScopeColors.TextPrimary,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Text(
+                                                text = "#${index + 1}",
+                                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                                                color = FrameScopeColors.TextPrimary
+                                            )
+                                            Surface(
+                                                shape = RoundedCornerShape(6.dp),
+                                                color = if (isCompleted) {
+                                                    FrameScopeColors.ReadyGreenBg
+                                                } else {
+                                                    FrameScopeColors.SelectionBlueTint
+                                                },
+                                                border = BorderStroke(
+                                                    1.dp,
+                                                    if (isCompleted) {
+                                                        FrameScopeColors.ReadyGreen.copy(alpha = 0.5f)
+                                                    } else {
+                                                        FrameScopeColors.SelectionBlue.copy(alpha = 0.55f)
+                                                    }
+                                                )
+                                            ) {
+                                                Text(
+                                                    text = job.formatLabel,
+                                                    style = MaterialTheme.typography.labelMedium.copy(
+                                                        fontSize = 11.sp,
+                                                        fontWeight = FontWeight.Bold
+                                                    ),
+                                                    color = if (isCompleted) {
+                                                        FrameScopeColors.ReadyGreen
+                                                    } else {
+                                                        FrameScopeColors.SelectionBlue
+                                                    },
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                            Text(
+                                                text = "${job.outputWidth}×${job.outputHeight}",
+                                                style = MaterialTheme.typography.labelMedium.copy(
+                                                    fontFamily = FontFamily.Default,
+                                                    fontFeatureSettings = "tnum",
+                                                    fontWeight = FontWeight.SemiBold
+                                                ),
+                                                color = FrameScopeColors.TextSecondary,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                        val startTime = formatExportClickTime(context, job.clickedAtMs)
+                                        val endTimeText = when (job.status) {
+                                            CropExportJobStatus.COMPLETED -> {
+                                                val endFormatted = job.completedAtMs
+                                                    ?.takeIf { it > 0L }
+                                                    ?.let { formatExportClickTime(context, it) }
+                                                    ?: "--"
+                                                "Start: $startTime  •  End: $endFormatted"
+                                            }
+                                            CropExportJobStatus.RUNNING -> "Start: $startTime  •  End: Processing…"
+                                            CropExportJobStatus.FAILED -> "Start: $startTime  •  Failed"
+                                        }
                                         Row(
                                             verticalAlignment = Alignment.CenterVertically,
                                             horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -1385,13 +1483,14 @@ private fun ExportActionCard(
                                                 modifier = Modifier.size(13.dp)
                                             )
                                             Text(
-                                                text = "Clicked at ${formatExportClickTime(context, job.clickedAtMs)}",
+                                                text = endTimeText,
                                                 style = MaterialTheme.typography.labelMedium.copy(
                                                     fontFamily = FontFamily.Default,
                                                     fontFeatureSettings = "tnum"
                                                 ),
                                                 color = FrameScopeColors.TextSecondary,
-                                                maxLines = 1
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
                                             )
                                         }
                                     }
@@ -1417,86 +1516,147 @@ private fun ExportActionCard(
                                         .clip(RoundedCornerShape(50))
                                 )
 
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
+                                if (isCompleted) {
                                     Row(
-                                        modifier = Modifier.weight(1f),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        if (isCompleted) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.DownloadDone,
-                                                contentDescription = null,
-                                                tint = FrameScopeColors.ReadyGreen,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                        }
-                                        Text(
-                                            text = when (job.status) {
-                                                CropExportJobStatus.RUNNING -> job.statusText
-                                                CropExportJobStatus.COMPLETED -> job.fileName?.let {
-                                                    if (job.savedToGallery) "$it • Saved to Gallery" else "$it • Complete"
-                                                } ?: "100% Complete"
-                                                CropExportJobStatus.FAILED -> job.errorMessage ?: "Export failed"
-                                            },
-                                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium),
-                                            color = when (job.status) {
-                                                CropExportJobStatus.RUNNING -> FrameScopeColors.TextSecondary
-                                                CropExportJobStatus.COMPLETED -> FrameScopeColors.ReadyGreen
-                                                CropExportJobStatus.FAILED -> FrameScopeColors.SpecRedText
-                                            },
-                                            maxLines = 2,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-
-                                    Spacer(modifier = Modifier.width(8.dp))
-
-                                    if (isRunning) {
+                                        // Left button: Open directly in player
                                         Surface(
                                             shape = RoundedCornerShape(8.dp),
-                                            color = FrameScopeColors.SpecRedContainer,
-                                            border = BorderStroke(1.dp, FrameScopeColors.SpecRedBorder),
+                                            color = FrameScopeColors.ReadyGreenBg,
+                                            border = BorderStroke(1.dp, FrameScopeColors.ReadyGreen.copy(alpha = 0.6f)),
                                             modifier = Modifier
                                                 .minimumInteractiveComponentSize()
                                                 .clip(RoundedCornerShape(8.dp))
-                                                .clickable { onCancelExportJob(job.jobId) }
-                                                .testTag("cancel_export_job_$index")
+                                                .clickable { onOpenExportJob(job) }
+                                                .testTag("open_export_job_$index")
                                         ) {
                                             Row(
-                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                                                 verticalAlignment = Alignment.CenterVertically,
                                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                                             ) {
                                                 Icon(
-                                                    imageVector = Icons.Rounded.Close,
-                                                    contentDescription = "Cancel export #${index + 1}",
-                                                    tint = FrameScopeColors.SpecRedText,
-                                                    modifier = Modifier.size(15.dp)
+                                                    imageVector = Icons.Rounded.PlayArrow,
+                                                    contentDescription = "Open export #${index + 1}",
+                                                    tint = FrameScopeColors.ReadyGreen,
+                                                    modifier = Modifier.size(16.dp)
                                                 )
                                                 Text(
-                                                    text = "Cancel",
-                                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                                                    color = FrameScopeColors.SpecRedText
+                                                    text = "Open",
+                                                    style = MaterialTheme.typography.labelMedium.copy(
+                                                        fontWeight = FontWeight.Bold,
+                                                        fontSize = 12.sp
+                                                    ),
+                                                    color = FrameScopeColors.ReadyGreen,
+                                                    maxLines = 1
                                                 )
                                             }
                                         }
-                                    } else if (job.status == CropExportJobStatus.FAILED) {
-                                        TextButton(
-                                            onClick = { onDismissExportJob(job.jobId) },
+
+                                        // Right button: Edit from this export snapshot
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = FrameScopeColors.SelectionBlueTint,
+                                            border = BorderStroke(1.dp, FrameScopeColors.SelectionBlue),
                                             modifier = Modifier
                                                 .minimumInteractiveComponentSize()
-                                                .testTag("dismiss_export_job_$index")
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .clickable { onEditExportJob(job) }
+                                                .testTag("edit_export_job_$index")
                                         ) {
-                                            Text(
-                                                text = "Dismiss",
-                                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                                                color = FrameScopeColors.TextSecondary
-                                            )
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.Edit,
+                                                    contentDescription = "Edit export #${index + 1}",
+                                                    tint = FrameScopeColors.SelectionBlue,
+                                                    modifier = Modifier.size(15.dp)
+                                                )
+                                                Text(
+                                                    text = "Edit",
+                                                    style = MaterialTheme.typography.labelMedium.copy(
+                                                        fontWeight = FontWeight.Bold,
+                                                        fontSize = 12.sp
+                                                    ),
+                                                    color = FrameScopeColors.TextPrimary,
+                                                    maxLines = 1
+                                                )
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = when (job.status) {
+                                                CropExportJobStatus.RUNNING -> job.statusText
+                                                CropExportJobStatus.FAILED -> job.errorMessage ?: "Export failed"
+                                                CropExportJobStatus.COMPLETED -> "100% Complete"
+                                            },
+                                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium),
+                                            color = when (job.status) {
+                                                CropExportJobStatus.RUNNING -> FrameScopeColors.TextSecondary
+                                                CropExportJobStatus.FAILED -> FrameScopeColors.SpecRedText
+                                                CropExportJobStatus.COMPLETED -> FrameScopeColors.ReadyGreen
+                                            },
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f)
+                                        )
+
+                                        Spacer(modifier = Modifier.width(8.dp))
+
+                                        if (isRunning) {
+                                            Surface(
+                                                shape = RoundedCornerShape(8.dp),
+                                                color = FrameScopeColors.SpecRedContainer,
+                                                border = BorderStroke(1.dp, FrameScopeColors.SpecRedBorder),
+                                                modifier = Modifier
+                                                    .minimumInteractiveComponentSize()
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .clickable { onCancelExportJob(job.jobId) }
+                                                    .testTag("cancel_export_job_$index")
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Rounded.Close,
+                                                        contentDescription = "Cancel export #${index + 1}",
+                                                        tint = FrameScopeColors.SpecRedText,
+                                                        modifier = Modifier.size(15.dp)
+                                                    )
+                                                    Text(
+                                                        text = "Cancel",
+                                                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                                        color = FrameScopeColors.SpecRedText
+                                                    )
+                                                }
+                                            }
+                                        } else if (job.status == CropExportJobStatus.FAILED) {
+                                            TextButton(
+                                                onClick = { onDismissExportJob(job.jobId) },
+                                                modifier = Modifier
+                                                    .minimumInteractiveComponentSize()
+                                                    .testTag("dismiss_export_job_$index")
+                                            ) {
+                                                Text(
+                                                    text = "Dismiss",
+                                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                                    color = FrameScopeColors.TextSecondary
+                                                )
+                                            }
                                         }
                                     }
                                 }

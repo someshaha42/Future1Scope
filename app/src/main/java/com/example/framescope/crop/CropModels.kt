@@ -166,6 +166,7 @@ data class CropExportJob(
     val outputWidth: Int,
     val outputHeight: Int,
     val clickedAtMs: Long,
+    val completedAtMs: Long? = null,
     val progress: Float = 0f,
     val statusText: String = "Processing…",
     val status: CropExportJobStatus = CropExportJobStatus.RUNNING,
@@ -173,7 +174,23 @@ data class CropExportJob(
     val fileName: String? = null,
     val savedToGallery: Boolean = false,
     val galleryUriString: String? = null,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val cropLeft: Float = 0f,
+    val cropTop: Float = 0f,
+    val cropRight: Float = 1f,
+    val cropBottom: Float = 1f,
+    val aspectRatioName: String = CropAspectRatio.FREE.name,
+    val customAspectWidth: String = "4",
+    val customAspectHeight: String = "3",
+    val canvasAspectModeName: String = CanvasAspectMode.ORIGINAL.name,
+    val customCanvasWidth: String = "4",
+    val customCanvasHeight: String = "3",
+    val trimStartMs: Long = 0L,
+    val trimEndMs: Long = 0L,
+    val bitrateModeName: String = VideoBitrateMode.ORIGINAL_PRESERVATION.name,
+    val customBitrateMbps: Float = 12f,
+    val selectedFormatLabel: String? = null,
+    val hasSavedEditSnapshot: Boolean = false
 )
 
 @Serializable
@@ -189,7 +206,23 @@ data class CropExportHistoryItem(
     val outputPath: String? = null,
     val fileName: String? = null,
     val savedToGallery: Boolean = false,
-    val galleryUriString: String? = null
+    val galleryUriString: String? = null,
+    val cropLeft: Float = 0f,
+    val cropTop: Float = 0f,
+    val cropRight: Float = 1f,
+    val cropBottom: Float = 1f,
+    val aspectRatioName: String = CropAspectRatio.FREE.name,
+    val customAspectWidth: String = "4",
+    val customAspectHeight: String = "3",
+    val canvasAspectModeName: String = CanvasAspectMode.ORIGINAL.name,
+    val customCanvasWidth: String = "4",
+    val customCanvasHeight: String = "3",
+    val trimStartMs: Long = 0L,
+    val trimEndMs: Long = 0L,
+    val bitrateModeName: String = VideoBitrateMode.ORIGINAL_PRESERVATION.name,
+    val customBitrateMbps: Float = 12f,
+    val selectedFormatLabel: String? = null,
+    val hasSavedEditSnapshot: Boolean = false
 ) {
     val mediaType: CropMediaType
         get() = runCatching { CropMediaType.valueOf(mediaTypeName) }.getOrDefault(CropMediaType.VIDEO)

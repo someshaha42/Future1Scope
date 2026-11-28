@@ -227,6 +227,7 @@ class CropExportForegroundService : Service() {
                     } else {
                         0L
                     }
+                    val rec = request.projectRecord
                     val historyItem = CropExportHistoryItem(
                         jobId = initialJob.jobId,
                         configSignature = initialJob.configSignature,
@@ -239,7 +240,23 @@ class CropExportForegroundService : Service() {
                         outputPath = result.outputPath,
                         fileName = result.fileName,
                         savedToGallery = result.savedToGallery,
-                        galleryUriString = result.galleryUriString
+                        galleryUriString = result.galleryUriString,
+                        cropLeft = rec?.cropLeft ?: initialJob.cropLeft,
+                        cropTop = rec?.cropTop ?: initialJob.cropTop,
+                        cropRight = rec?.cropRight ?: initialJob.cropRight,
+                        cropBottom = rec?.cropBottom ?: initialJob.cropBottom,
+                        aspectRatioName = rec?.aspectRatioName ?: initialJob.aspectRatioName,
+                        customAspectWidth = rec?.customAspectWidth ?: initialJob.customAspectWidth,
+                        customAspectHeight = rec?.customAspectHeight ?: initialJob.customAspectHeight,
+                        canvasAspectModeName = rec?.canvasAspectModeName ?: initialJob.canvasAspectModeName,
+                        customCanvasWidth = rec?.customCanvasWidth ?: initialJob.customCanvasWidth,
+                        customCanvasHeight = rec?.customCanvasHeight ?: initialJob.customCanvasHeight,
+                        trimStartMs = request.trimStartMs,
+                        trimEndMs = request.trimEndMs,
+                        bitrateModeName = rec?.bitrateModeName ?: initialJob.bitrateModeName,
+                        customBitrateMbps = rec?.customBitrateMbps ?: initialJob.customBitrateMbps,
+                        selectedFormatLabel = rec?.selectedFormatLabel ?: request.formatLabel,
+                        hasSavedEditSnapshot = true
                     )
                     val updatedRecord = repo.recordCompletedExport(
                         projectId = projectId,
@@ -251,7 +268,7 @@ class CropExportForegroundService : Service() {
                     if (updatedRecord != null) {
                         CropExportManager.notifyProjectUpdated(updatedRecord.id)
                     }
-                    CropExportManager.completeJobSuccess(jobId, result)
+                    CropExportManager.completeJobSuccess(jobId, result, completedAtMs = now)
                     if (updatedRecord != null && CropExportManager.consumeShareTargetForJob(jobId)) {
                         val authority = "${applicationContext.packageName}.fileprovider"
                         val defaultMime = if (media.mediaType == CropMediaType.VIDEO) "video/mp4" else "image/*"
@@ -491,7 +508,23 @@ class CropExportForegroundService : Service() {
                         outputPath = result.outputPath,
                         fileName = result.fileName,
                         savedToGallery = result.savedToGallery,
-                        galleryUriString = result.galleryUriString
+                        galleryUriString = result.galleryUriString,
+                        cropLeft = crop.left,
+                        cropTop = crop.top,
+                        cropRight = crop.right,
+                        cropBottom = crop.bottom,
+                        aspectRatioName = project.aspectRatioName,
+                        customAspectWidth = project.customAspectWidth,
+                        customAspectHeight = project.customAspectHeight,
+                        canvasAspectModeName = project.canvasAspectModeName,
+                        customCanvasWidth = project.customCanvasWidth,
+                        customCanvasHeight = project.customCanvasHeight,
+                        trimStartMs = trimStart,
+                        trimEndMs = trimEnd,
+                        bitrateModeName = VideoBitrateMode.ORIGINAL_PRESERVATION.name,
+                        customBitrateMbps = customBitrateMbps,
+                        selectedFormatLabel = formatLabel,
+                        hasSavedEditSnapshot = true
                     )
                     val updatedRecord = repo.recordCompletedExport(
                         projectId = project.id,
@@ -501,7 +534,7 @@ class CropExportForegroundService : Service() {
                         completedAtMs = now
                     ) ?: project
                     CropExportManager.notifyProjectUpdated(updatedRecord.id)
-                    CropExportManager.completeJobSuccess(jobId, result)
+                    CropExportManager.completeJobSuccess(jobId, result, completedAtMs = now)
 
                     val outFile = File(result.outputPath)
                     val shareUri = runCatching { FileProvider.getUriForFile(applicationContext, authority, outFile) }.getOrNull()

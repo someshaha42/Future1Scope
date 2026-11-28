@@ -69,6 +69,7 @@ object CropExportManager {
     ): CropExportJob {
         val jobId = UUID.randomUUID().toString()
         val notificationId = nextNotificationId.getAndIncrement()
+        val rec = request.projectRecord
         val job = CropExportJob(
             jobId = jobId,
             notificationId = notificationId,
@@ -82,7 +83,23 @@ object CropExportManager {
             clickedAtMs = System.currentTimeMillis(),
             progress = 0f,
             statusText = "Processing…",
-            status = CropExportJobStatus.RUNNING
+            status = CropExportJobStatus.RUNNING,
+            cropLeft = rec?.cropLeft ?: request.cropRect.left,
+            cropTop = rec?.cropTop ?: request.cropRect.top,
+            cropRight = rec?.cropRight ?: request.cropRect.right,
+            cropBottom = rec?.cropBottom ?: request.cropRect.bottom,
+            aspectRatioName = rec?.aspectRatioName ?: CropAspectRatio.FREE.name,
+            customAspectWidth = rec?.customAspectWidth ?: "4",
+            customAspectHeight = rec?.customAspectHeight ?: "3",
+            canvasAspectModeName = rec?.canvasAspectModeName ?: CanvasAspectMode.ORIGINAL.name,
+            customCanvasWidth = rec?.customCanvasWidth ?: "4",
+            customCanvasHeight = rec?.customCanvasHeight ?: "3",
+            trimStartMs = request.trimStartMs,
+            trimEndMs = request.trimEndMs,
+            bitrateModeName = rec?.bitrateModeName ?: VideoBitrateMode.ORIGINAL_PRESERVATION.name,
+            customBitrateMbps = rec?.customBitrateMbps ?: 12f,
+            selectedFormatLabel = rec?.selectedFormatLabel ?: request.formatLabel,
+            hasSavedEditSnapshot = true
         )
         pendingWorkspaceRequests[jobId] = request
         _jobs.update { current -> current + job }
@@ -158,11 +175,16 @@ object CropExportManager {
         }
     }
 
-    fun completeJobSuccess(jobId: String, result: CropExportState.Success) {
+    fun completeJobSuccess(
+        jobId: String,
+        result: CropExportState.Success,
+        completedAtMs: Long = System.currentTimeMillis()
+    ) {
         _jobs.update { list ->
             list.map { job ->
                 if (job.jobId == jobId) {
                     job.copy(
+                        completedAtMs = completedAtMs,
                         progress = 1f,
                         statusText = "100% Complete",
                         status = CropExportJobStatus.COMPLETED,
@@ -225,7 +247,23 @@ object CropExportManager {
             clickedAtMs = System.currentTimeMillis(),
             progress = 0f,
             statusText = "Processing…",
-            status = CropExportJobStatus.RUNNING
+            status = CropExportJobStatus.RUNNING,
+            cropLeft = project.cropLeft,
+            cropTop = project.cropTop,
+            cropRight = project.cropRight,
+            cropBottom = project.cropBottom,
+            aspectRatioName = project.aspectRatioName,
+            customAspectWidth = project.customAspectWidth,
+            customAspectHeight = project.customAspectHeight,
+            canvasAspectModeName = project.canvasAspectModeName,
+            customCanvasWidth = project.customCanvasWidth,
+            customCanvasHeight = project.customCanvasHeight,
+            trimStartMs = project.trimStartMs,
+            trimEndMs = project.trimEndMs,
+            bitrateModeName = project.bitrateModeName,
+            customBitrateMbps = project.customBitrateMbps,
+            selectedFormatLabel = fallbackFormat,
+            hasSavedEditSnapshot = true
         )
         pendingShareRequests[jobId] = CropShareExportRequest(
             project = project,

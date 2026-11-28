@@ -118,13 +118,30 @@ data class CropToolUiState(
                     outputWidth = item.outputWidth,
                     outputHeight = item.outputHeight,
                     clickedAtMs = item.clickedAtMs,
+                    completedAtMs = item.completedAtMs,
                     progress = 1f,
                     statusText = "100% Complete",
                     status = CropExportJobStatus.COMPLETED,
                     outputPath = item.outputPath,
                     fileName = item.fileName,
                     savedToGallery = item.savedToGallery,
-                    galleryUriString = item.galleryUriString
+                    galleryUriString = item.galleryUriString,
+                    cropLeft = item.cropLeft,
+                    cropTop = item.cropTop,
+                    cropRight = item.cropRight,
+                    cropBottom = item.cropBottom,
+                    aspectRatioName = item.aspectRatioName,
+                    customAspectWidth = item.customAspectWidth,
+                    customAspectHeight = item.customAspectHeight,
+                    canvasAspectModeName = item.canvasAspectModeName,
+                    customCanvasWidth = item.customCanvasWidth,
+                    customCanvasHeight = item.customCanvasHeight,
+                    trimStartMs = item.trimStartMs,
+                    trimEndMs = item.trimEndMs,
+                    bitrateModeName = item.bitrateModeName,
+                    customBitrateMbps = item.customBitrateMbps,
+                    selectedFormatLabel = item.selectedFormatLabel,
+                    hasSavedEditSnapshot = item.hasSavedEditSnapshot
                 )
             }
             val liveMap = allExportJobs
@@ -1265,6 +1282,161 @@ class CropToolViewModel(
 
     fun dismissExportJob(jobId: String) {
         CropExportManager.removeJob(jobId)
+    }
+
+    fun restoreExportHistoryItemForEdit(job: CropExportJob) {
+        val current = _uiState.value
+        val info = current.media ?: return
+        pendingGestureStartSnapshot = null
+
+        val prevSnap = current.toSnapshot()
+        if (!job.hasSavedEditSnapshot) {
+            val matchedImageFormat = if (info.mediaType == CropMediaType.IMAGE) {
+                info.imageExportOptions.firstOrNull {
+                    it.label == (job.selectedFormatLabel ?: job.formatLabel)
+                } ?: current.selectedImageFormat
+            } else {
+                current.selectedImageFormat
+            }
+            _uiState.update { state ->
+                state.copy(
+                    isPreviewMode = false,
+                    isVideoPlaying = false,
+                    isZoomEnabled = false,
+                    selectedImageFormat = matchedImageFormat,
+                    highlightedExportJobId = job.jobId,
+                    message = "Restored export (${job.formatLabel}) to editor."
+                ).withDynamicSupport()
+            }
+            persistCurrentProjectAsync()
+            return
+        }
+
+        val safeLeft = job.cropLeft.coerceIn(0f, 0.9999f)
+        val safeTop = job.cropTop.coerceIn(0f, 0.9999f)
+        val restoredCrop = NormalizedCropRect(
+            left = safeLeft,
+            top = safeTop,
+            right = job.cropRight.coerceIn(safeLeft + 0.0001f, 1f),
+            bottom = job.cropBottom.coerceIn(safeTop + 0.0001f, 1f)
+        )
+        val restoredAspect = runCatching {
+            CropAspectRatio.valueOf(job.aspectRatioName)
+        }.getOrDefault(CropAspectRatio.FREE)
+        val restoredCanvasMode = runCatching {
+            CanvasAspectMode.valueOf(job.canvasAspectModeName)
+        }.getOrDefault(CanvasAspectMode.ORIGINAL)
+        val restoredTrimStart = if (info.mediaType == CropMediaType.VIDEO) {
+            job.trimStartMs.coerceIn(0L, info.durationMs)
+        } else {
+            0L
+        }
+        val restoredTrimEnd = if (info.mediaType == CropMediaType.VIDEO) {
+            if (job.trimEndMs > restoredTrimStart) {
+                job.trimEndMs.coerceAtMost(info.durationMs)
+            } else {
+                info.durationMs
+            }
+        } else {
+            0L
+        }
+        val restoredBitrateMode = runCatching {
+            VideoBitrateMode.valueOf(job.bitrateModeName)
+        }.getOrDefault(VideoBitrateMode.ORIGINAL_PRESERVATION)
+
+        val formatTarget = job.selectedFormatLabel ?: job.formatLabel
+        val restoredImageFormat = if (info.mediaType == CropMediaType.IMAGE) {
+            info.imageExportOptions.firstOrNull { it.label == formatTarget }
+                ?: current.selectedImageFormat
+                ?: info.imageExportOptions.firstOrNull()
+        } else {
+            current.selectedImageFormat
+        }
+        val restoredVideoFormat = if (info.mediaType == CropMediaType.VIDEO) {
+            info.videoExportOptions.firstOrNull { it.label == formatTarget }
+                ?: current.selectedVideoFormat
+                ?: info.videoExportOptions.firstOrNull()
+        } else {
+            current.selectedVideoFormat
+        }
+
+        val nextSnap = CropEditSnapshot(
+            cropRect = restoredCrop,
+            aspectRatio = restoredAspect,
+            customAspectWidth = job.customAspectWidth,
+            customAspectHeight = job.customAspectHeight
+        )
+        pushHistory(prevSnap, nextSnap)
+
+        _uiState.update { state ->
+            state.copy(
+                cropRect = restoredCrop,
+                zoom = 1f,
+                panOffset = Offset.Zero,
+                isZoomEnabled = false,
+                isPreviewMode = false,
+                canvasAspectMode = restoredCanvasMode,
+                showCanvasOptions = false,
+                customCanvasWidth = job.customCanvasWidth,
+                customCanvasHeight = job.customCanvasHeight,
+                aspectRatio = restoredAspect,
+                customAspectWidth = job.customAspectWidth,
+                customAspectHeight = job.customAspectHeight,
+                customAspectError = null,
+                isVideoPlaying = false,
+                trimStartMs = restoredTrimStart,
+                trimEndMs = restoredTrimEnd,
+                currentVideoPositionMs = restoredTrimStart,
+                seekRequestMs = if (info.mediaType == CropMediaType.VIDEO) restoredTrimStart else null,
+                bitrateMode = restoredBitrateMode,
+                customBitrateMbps = job.customBitrateMbps,
+                selectedImageFormat = restoredImageFormat,
+                selectedVideoFormat = restoredVideoFormat,
+                highlightedExportJobId = job.jobId,
+                message = "Loaded settings from export (${job.formatLabel}) — ready to edit."
+            ).withHistoryFlags().withDynamicSupport()
+        }
+        persistCurrentProjectAsync()
+    }
+
+    fun isExportJobAvailable(job: CropExportJob): Boolean {
+        val hasLocalExport = !job.outputPath.isNullOrBlank() && File(job.outputPath).let { it.exists() && it.length() > 0L }
+        val hasGalleryExport = !job.galleryUriString.isNullOrBlank() && runCatching {
+            val uri = Uri.parse(job.galleryUriString)
+            appContext.contentResolver.openAssetFileDescriptor(uri, "r")?.use { true } ?: false
+        }.getOrDefault(false)
+        if (!hasLocalExport && !hasGalleryExport) {
+            _uiState.update {
+                it.copy(message = "Exported file is no longer available.")
+            }
+            return false
+        }
+        return true
+    }
+
+    fun buildViewerRecordPure(job: CropExportJob): CropProjectRecord? {
+        val state = _uiState.value
+        val base = state.recentProjects.firstOrNull { it.id == job.projectId }
+            ?: buildProjectRecordFromState(state)
+            ?: return null
+
+        val completedTs = job.completedAtMs ?: job.clickedAtMs
+        val trimDur = if (job.mediaType == CropMediaType.VIDEO && job.trimEndMs > job.trimStartMs) {
+            (job.trimEndMs - job.trimStartMs).coerceAtLeast(0L)
+        } else {
+            0L
+        }
+        return base.copy(
+            mediaTypeName = job.mediaType.name,
+            exportedFilePath = job.outputPath,
+            exportedGalleryUriString = job.galleryUriString,
+            exportedFormatLabel = job.formatLabel,
+            exportedWidth = job.outputWidth,
+            exportedHeight = job.outputHeight,
+            exportedDurationMs = trimDur,
+            exportedAtMs = completedTs,
+            updatedAtMs = completedTs
+        )
     }
 
     fun cancelShareProjectExport() {
