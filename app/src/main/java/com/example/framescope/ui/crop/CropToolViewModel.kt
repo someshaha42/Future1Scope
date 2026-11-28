@@ -91,6 +91,8 @@ data class CropToolUiState(
     val recentProjects: List<CropProjectRecord> = emptyList(),
     val projectThumbnails: Map<String, Bitmap> = emptyMap(),
     val allExportJobs: List<CropExportJob> = emptyList(),
+    val highlightedExportJobId: String? = null,
+    val persistedExportedSignature: String? = null,
     val isSharingProjectExport: Boolean = false,
     val shareExportProgress: Float = 0f,
     val shareExportStatus: String = "",
@@ -108,6 +110,58 @@ data class CropToolUiState(
             .filter { it.status == CropExportJobStatus.RUNNING }
             .groupingBy { it.projectId }
             .eachCount()
+
+    val currentExportSignature: String
+        get() {
+            val info = media ?: return ""
+            val formatLabel = if (info.mediaType == CropMediaType.VIDEO) {
+                "MP4"
+            } else {
+                val chosen = selectedImageFormat
+                if (chosen != null && !chosen.supportInfo.isSupported && !chosen.supportInfo.alternativeName.isNullOrBlank()) {
+                    chosen.supportInfo.alternativeName
+                } else {
+                    chosen?.label ?: "PNG"
+                }
+            }
+            val pid = currentProjectId ?: info.uri.toString()
+            return listOf(
+                pid,
+                info.mediaType.name,
+                String.format(
+                    Locale.US,
+                    "%.4f,%.4f,%.4f,%.4f",
+                    cropRect.left,
+                    cropRect.top,
+                    cropRect.right,
+                    cropRect.bottom
+                ),
+                "${outputWidth}x${outputHeight}",
+                if (info.mediaType == CropMediaType.VIDEO) "${trimStartMs}-${trimEndMs}" else "0-0",
+                formatLabel,
+                selectedImageFormat?.id?.name ?: "",
+                selectedVideoFormat?.container?.name ?: "",
+                bitrateMode.name,
+                String.format(Locale.US, "%.2f", customBitrateMbps)
+            ).joinToString("|")
+        }
+
+    val matchingExistingExportJob: CropExportJob?
+        get() {
+            val sig = currentExportSignature
+            if (sig.isBlank()) return null
+            val matching = projectExportJobs.filter { it.configSignature == sig }
+            return matching.firstOrNull { it.status == CropExportJobStatus.RUNNING }
+                ?: matching.firstOrNull { it.status == CropExportJobStatus.COMPLETED }
+        }
+
+    val isMatchingPersistedExportCompleted: Boolean
+        get() {
+            val sig = currentExportSignature
+            return sig.isNotBlank() &&
+                matchingExistingExportJob == null &&
+                persistedExportedSignature == sig
+        }
     val outputWidth: Int
         get() {
             val info = media ?: return 0
@@ -197,7 +251,18 @@ class CropToolViewModel(
         }
         viewModelScope.launch {
             CropExportManager.jobs.collect { jobs ->
-                _uiState.update { it.copy(allExportJobs = jobs) }
+                _uiState.update { current ->
+                    val keepHighlight = current.highlightedExportJobId?.let { hid ->
+                        jobs.any {
+                            it.jobId == hid &&
+                                (it.status == CropExportJobStatus.RUNNING || it.status == CropExportJobStatus.COMPLETED)
+                        }
+                    } == true
+                    current.copy(
+                        allExportJobs = jobs,
+                        highlightedExportJobId = if (keepHighlight) current.highlightedExportJobId else null
+                    )
+                }
             }
         }
         viewModelScope.launch {
@@ -220,8 +285,18 @@ class CropToolViewModel(
             CropExportManager.lastUpdatedProjectId.collect { update ->
                 if (update != null) {
                     val (_, projectId) = update
+                    val latest = projectsRepository.getProjectById(projectId)
                     _uiState.update { s ->
-                        s.copy(projectThumbnails = s.projectThumbnails - projectId)
+                        val nextPersistedSig = if (s.currentProjectId == projectId && latest != null) {
+                            val hasFile = !latest.exportedFilePath.isNullOrBlank() && File(latest.exportedFilePath).exists()
+                            if (hasFile) latest.lastExportedConfigSignature else null
+                        } else {
+                            s.persistedExportedSignature
+                        }
+                        s.copy(
+                            projectThumbnails = s.projectThumbnails - projectId,
+                            persistedExportedSignature = nextPersistedSig
+                        )
                     }
                     refreshRecentProjects()
                 }
@@ -574,7 +649,9 @@ class CropToolViewModel(
                         customBitrateMbps = initialCustomMbps,
                         selectedImageFormat = info.imageExportOptions.firstOrNull(),
                         selectedVideoFormat = firstVideoFormat,
-                        pipelineSupport = pipelineSupport
+                        pipelineSupport = pipelineSupport,
+                        persistedExportedSignature = null,
+                        highlightedExportJobId = null
                     ).withDynamicSupport()
                 }
 
@@ -598,13 +675,16 @@ class CropToolViewModel(
                     isLoadingMedia = true,
                     isVideoPlaying = false,
                     isPreviewMode = false,
+                    highlightedExportJobId = null,
                     message = null
                 )
             }
 
-            val accessible = projectsRepository.isProjectSourceAccessible(project)
+            val latestProject = projectsRepository.getProjectById(project.id) ?: project
+
+            val accessible = projectsRepository.isProjectSourceAccessible(latestProject)
             if (!accessible) {
-                projectsRepository.deleteProject(project.id)
+                projectsRepository.deleteProject(latestProject.id)
                 refreshRecentProjects()
                 _uiState.update {
                     it.copy(
@@ -615,16 +695,16 @@ class CropToolViewModel(
                 return@launch
             }
 
-            val localFile = project.localCopyPath?.let { File(it) }?.takeIf { it.exists() && it.length() > 0L }
+            val localFile = latestProject.localCopyPath?.let { File(it) }?.takeIf { it.exists() && it.length() > 0L }
             val uriToLoad = if (localFile != null) {
                 Uri.fromFile(localFile)
             } else {
-                Uri.parse(project.sourceUriString)
+                Uri.parse(latestProject.sourceUriString)
             }
 
             val result = CropMediaInspector.inspect(appContext, uriToLoad)
             result.onFailure {
-                projectsRepository.deleteProject(project.id)
+                projectsRepository.deleteProject(latestProject.id)
                 refreshRecentProjects()
                 _uiState.update {
                     it.copy(
@@ -657,7 +737,7 @@ class CropToolViewModel(
                 }
 
                 val savedImageFormat = info.imageExportOptions.firstOrNull {
-                    it.label == project.selectedFormatLabel
+                    it.label == latestProject.selectedFormatLabel
                 } ?: info.imageExportOptions.firstOrNull()
 
                 val savedVideoFormat = info.videoExportOptions.firstOrNull()
@@ -679,24 +759,24 @@ class CropToolViewModel(
                     }
                 }
 
-                val safeLeft = project.cropLeft.coerceIn(0f, 0.9999f)
-                val safeTop = project.cropTop.coerceIn(0f, 0.9999f)
+                val safeLeft = latestProject.cropLeft.coerceIn(0f, 0.9999f)
+                val safeTop = latestProject.cropTop.coerceIn(0f, 0.9999f)
                 val restoredCrop = NormalizedCropRect(
                     left = safeLeft,
                     top = safeTop,
-                    right = project.cropRight.coerceIn(safeLeft + 0.0001f, 1f),
-                    bottom = project.cropBottom.coerceIn(safeTop + 0.0001f, 1f)
+                    right = latestProject.cropRight.coerceIn(safeLeft + 0.0001f, 1f),
+                    bottom = latestProject.cropBottom.coerceIn(safeTop + 0.0001f, 1f)
                 )
                 val restoredAspect = runCatching {
-                    CropAspectRatio.valueOf(project.aspectRatioName)
+                    CropAspectRatio.valueOf(latestProject.aspectRatioName)
                 }.getOrDefault(CropAspectRatio.FREE)
                 val restoredCanvasMode = runCatching {
-                    CanvasAspectMode.valueOf(project.canvasAspectModeName)
+                    CanvasAspectMode.valueOf(latestProject.canvasAspectModeName)
                 }.getOrDefault(CanvasAspectMode.ORIGINAL)
 
-                val restoredTrimStart = project.trimStartMs.coerceIn(0L, info.durationMs)
-                val restoredTrimEnd = if (project.trimEndMs > restoredTrimStart) {
-                    project.trimEndMs.coerceAtMost(info.durationMs)
+                val restoredTrimStart = latestProject.trimStartMs.coerceIn(0L, info.durationMs)
+                val restoredTrimEnd = if (latestProject.trimEndMs > restoredTrimStart) {
+                    latestProject.trimEndMs.coerceAtMost(info.durationMs)
                 } else {
                     info.durationMs
                 }
@@ -708,16 +788,24 @@ class CropToolViewModel(
                     12f
                 }
 
+                val persistedSigIfValid = if (!latestProject.exportedFilePath.isNullOrBlank() &&
+                    File(latestProject.exportedFilePath).exists()
+                ) {
+                    latestProject.lastExportedConfigSignature
+                } else {
+                    null
+                }
+
                 _uiState.update { prev ->
                     prev.copy(
                         isLoadingMedia = false,
                         media = info,
                         previewBitmap = bitmap,
                         showImportPanel = false,
-                        currentProjectId = project.id,
-                        currentProjectTitle = project.title,
-                        currentSourceUriString = project.sourceUriString,
-                        currentLocalCopyPath = project.localCopyPath,
+                        currentProjectId = latestProject.id,
+                        currentProjectTitle = latestProject.title,
+                        currentSourceUriString = latestProject.sourceUriString,
+                        currentLocalCopyPath = latestProject.localCopyPath,
                         cropRect = restoredCrop,
                         zoom = 1f,
                         panOffset = Offset.Zero,
@@ -725,11 +813,11 @@ class CropToolViewModel(
                         isPreviewMode = false,
                         canvasAspectMode = restoredCanvasMode,
                         showCanvasOptions = false,
-                        customCanvasWidth = project.customCanvasWidth,
-                        customCanvasHeight = project.customCanvasHeight,
+                        customCanvasWidth = latestProject.customCanvasWidth,
+                        customCanvasHeight = latestProject.customCanvasHeight,
                         aspectRatio = restoredAspect,
-                        customAspectWidth = project.customAspectWidth,
-                        customAspectHeight = project.customAspectHeight,
+                        customAspectWidth = latestProject.customAspectWidth,
+                        customAspectHeight = latestProject.customAspectHeight,
                         customAspectError = null,
                         canUndo = false,
                         canRedo = false,
@@ -747,7 +835,8 @@ class CropToolViewModel(
                         customBitrateMbps = restoredBitrateMbps,
                         selectedImageFormat = savedImageFormat,
                         selectedVideoFormat = savedVideoFormat,
-                        pipelineSupport = pipelineSupport
+                        pipelineSupport = pipelineSupport,
+                        persistedExportedSignature = persistedSigIfValid
                     ).withHistoryFlags().withDynamicSupport()
                 }
             }
@@ -1025,8 +1114,6 @@ class CropToolViewModel(
         val state = _uiState.value
         val media = state.media ?: return
 
-        _uiState.update { it.copy(isVideoPlaying = false, message = null) }
-
         val formatLabel = if (media.mediaType == CropMediaType.VIDEO) {
             "MP4"
         } else {
@@ -1039,10 +1126,60 @@ class CropToolViewModel(
         }
 
         val record = buildProjectRecordFromState(state)
-        val projectId = record?.id ?: state.currentProjectId ?: UUID.randomUUID().toString()
+        val projectId = record?.id ?: state.currentProjectId ?: media.uri.toString()
         val projectTitle = record?.title
             ?: state.currentProjectTitle
             ?: CropExportsRepository(appContext).formatClockDateTitle(System.currentTimeMillis())
+        val configSignature = state.currentExportSignature
+
+        val existingJob = CropExportManager.findActiveOrCompletedJobBySignature(
+            projectId = projectId,
+            configSignature = configSignature
+        )
+        if (existingJob != null) {
+            when (existingJob.status) {
+                CropExportJobStatus.RUNNING -> {
+                    val pct = (existingJob.progress * 100f).toInt().coerceIn(0, 100)
+                    _uiState.update {
+                        it.copy(
+                            isVideoPlaying = false,
+                            highlightedExportJobId = existingJob.jobId,
+                            message = "Export is still processing ($pct%) — not completed yet. Make a change to start a new export."
+                        )
+                    }
+                    return
+                }
+                CropExportJobStatus.COMPLETED -> {
+                    _uiState.update {
+                        it.copy(
+                            isVideoPlaying = false,
+                            highlightedExportJobId = existingJob.jobId,
+                            message = "Already completed (100%). Make a change before exporting to start a new export."
+                        )
+                    }
+                    return
+                }
+                CropExportJobStatus.FAILED -> Unit
+            }
+        }
+
+        if (state.isMatchingPersistedExportCompleted) {
+            _uiState.update {
+                it.copy(
+                    isVideoPlaying = false,
+                    message = "Already completed (100%). Make a change before exporting to start a new export."
+                )
+            }
+            return
+        }
+
+        _uiState.update {
+            it.copy(
+                isVideoPlaying = false,
+                highlightedExportJobId = null,
+                message = null
+            )
+        }
 
         if (record != null) {
             viewModelScope.launch {
@@ -1065,6 +1202,7 @@ class CropToolViewModel(
         val job = CropExportManager.enqueueWorkspaceExport(
             projectId = projectId,
             projectTitle = projectTitle,
+            configSignature = configSignature,
             request = request
         )
 
@@ -1235,7 +1373,8 @@ class CropToolViewModel(
             exportedHeight = existing?.exportedHeight ?: 0,
             exportedDurationMs = existing?.exportedDurationMs ?: 0L,
             updatedAtMs = System.currentTimeMillis(),
-            exportedAtMs = existing?.exportedAtMs
+            exportedAtMs = existing?.exportedAtMs,
+            lastExportedConfigSignature = existing?.lastExportedConfigSignature
         )
     }
 

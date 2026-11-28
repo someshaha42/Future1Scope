@@ -241,7 +241,8 @@ class CropExportForegroundService : Service() {
                             0L
                         },
                         updatedAtMs = now,
-                        exportedAtMs = now
+                        exportedAtMs = now,
+                        lastExportedConfigSignature = initialJob.configSignature.ifBlank { latestBase.lastExportedConfigSignature }
                     )
                     if (updatedRecord != null) {
                         repo.upsertProject(updatedRecord)

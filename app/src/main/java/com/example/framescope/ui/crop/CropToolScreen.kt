@@ -773,6 +773,9 @@ fun CropToolScreen(
                         }
                         ExportActionCard(
                             exportJobs = state.projectExportJobs,
+                            matchingExistingJob = state.matchingExistingExportJob,
+                            isMatchingPersistedCompleted = state.isMatchingPersistedExportCompleted,
+                            highlightedExportJobId = state.highlightedExportJobId,
                             formatLabel = formatLabel,
                             outputWidth = state.outputWidth,
                             outputHeight = state.outputHeight,
@@ -1067,6 +1070,9 @@ private fun ToolbarIconLabelAction(
 @Composable
 private fun ExportActionCard(
     exportJobs: List<CropExportJob>,
+    matchingExistingJob: CropExportJob?,
+    isMatchingPersistedCompleted: Boolean,
+    highlightedExportJobId: String?,
     formatLabel: String,
     outputWidth: Int,
     outputHeight: Int,
@@ -1120,6 +1126,41 @@ private fun ExportActionCard(
                     text = "Export $formatLabel (${outputWidth}×${outputHeight})",
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
                 )
+            }
+
+            if (matchingExistingJob?.status == CropExportJobStatus.RUNNING) {
+                val matchingPct = (matchingExistingJob.progress * 100f).toInt().coerceIn(0, 100)
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("crop_export_already_running_notice"),
+                    shape = RoundedCornerShape(12.dp),
+                    color = FrameScopeColors.SelectionBlueTint,
+                    border = BorderStroke(1.dp, FrameScopeColors.SelectionBlue.copy(alpha = 0.6f))
+                ) {
+                    Text(
+                        text = "Export still processing ($matchingPct%) — not completed yet. Edit crop, trim, or format to start another export.",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = FrameScopeColors.SelectionBlue,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)
+                    )
+                }
+            } else if (matchingExistingJob?.status == CropExportJobStatus.COMPLETED || isMatchingPersistedCompleted) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("crop_export_already_completed_notice"),
+                    shape = RoundedCornerShape(12.dp),
+                    color = FrameScopeColors.ReadyGreenBg,
+                    border = BorderStroke(1.dp, FrameScopeColors.ReadyGreen.copy(alpha = 0.55f))
+                ) {
+                    Text(
+                        text = "Already exported & completed (100%). Edit crop, trim, or format to start a new export.",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = FrameScopeColors.ReadyGreen,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)
+                    )
+                }
             }
 
             if (pipelineSupport != null) {
@@ -1181,9 +1222,19 @@ private fun ExportActionCard(
                         val pct = (job.progress * 100f).toInt().coerceIn(0, 100)
                         val isRunning = job.status == CropExportJobStatus.RUNNING
                         val isCompleted = job.status == CropExportJobStatus.COMPLETED
+                        val isHighlighted = (isRunning || isCompleted) &&
+                            (job.jobId == highlightedExportJobId || job.jobId == matchingExistingJob?.jobId)
                         val borderColor = when (job.status) {
-                            CropExportJobStatus.RUNNING -> FrameScopeColors.SelectionBlue.copy(alpha = 0.65f)
-                            CropExportJobStatus.COMPLETED -> FrameScopeColors.ReadyGreen.copy(alpha = 0.65f)
+                            CropExportJobStatus.RUNNING -> if (isHighlighted) {
+                                FrameScopeColors.SelectionBlue
+                            } else {
+                                FrameScopeColors.SelectionBlue.copy(alpha = 0.65f)
+                            }
+                            CropExportJobStatus.COMPLETED -> if (isHighlighted) {
+                                FrameScopeColors.ReadyGreen
+                            } else {
+                                FrameScopeColors.ReadyGreen.copy(alpha = 0.65f)
+                            }
                             CropExportJobStatus.FAILED -> FrameScopeColors.SpecRedBorder
                         }
                         val progressColor = when (job.status) {
@@ -1197,8 +1248,12 @@ private fun ExportActionCard(
                                 .fillMaxWidth()
                                 .testTag("crop_export_process_item_$index"),
                             shape = RoundedCornerShape(14.dp),
-                            color = FrameScopeColors.InnerSurface,
-                            border = BorderStroke(1.dp, borderColor)
+                            color = when {
+                                isHighlighted && isRunning -> FrameScopeColors.SelectionBlueTint.copy(alpha = 0.32f)
+                                isHighlighted && isCompleted -> FrameScopeColors.ReadyGreenBg.copy(alpha = 0.55f)
+                                else -> FrameScopeColors.InnerSurface
+                            },
+                            border = BorderStroke(if (isHighlighted) 1.75.dp else 1.dp, borderColor)
                         ) {
                             Column(
                                 modifier = Modifier

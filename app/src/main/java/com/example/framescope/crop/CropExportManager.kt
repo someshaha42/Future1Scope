@@ -58,6 +58,7 @@ object CropExportManager {
     fun enqueueWorkspaceExport(
         projectId: String,
         projectTitle: String,
+        configSignature: String,
         request: CropWorkspaceExportRequest
     ): CropExportJob {
         val jobId = UUID.randomUUID().toString()
@@ -67,6 +68,7 @@ object CropExportManager {
             notificationId = notificationId,
             projectId = projectId,
             projectTitle = projectTitle,
+            configSignature = configSignature,
             mediaType = request.media.mediaType,
             formatLabel = request.formatLabel,
             outputWidth = request.outputWidth,
@@ -79,6 +81,15 @@ object CropExportManager {
         pendingWorkspaceRequests[jobId] = request
         _jobs.update { current -> current + job }
         return job
+    }
+
+    fun findActiveOrCompletedJobBySignature(projectId: String, configSignature: String): CropExportJob? {
+        if (configSignature.isBlank()) return null
+        val matching = _jobs.value.filter {
+            it.projectId == projectId && it.configSignature == configSignature
+        }
+        return matching.firstOrNull { it.status == CropExportJobStatus.RUNNING }
+            ?: matching.firstOrNull { it.status == CropExportJobStatus.COMPLETED }
     }
 
     fun consumeWorkspaceRequest(jobId: String): CropWorkspaceExportRequest? {
