@@ -63,6 +63,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.framescope.R
@@ -283,14 +285,28 @@ private fun SwagatamHeader(
     compact: Boolean,
     isSelected: Boolean
 ) {
-    val fontSize = if (compact) 40.sp else 48.sp
+    val initialFontSize = if (compact) 34.sp else 40.sp
+    var fittedFontSize by remember(compact) { mutableStateOf(initialFontSize) }
     Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
             text = "স্বাগতম",
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Clip,
+            textAlign = TextAlign.Center,
+            onTextLayout = { layoutResult ->
+                if ((layoutResult.didOverflowWidth || layoutResult.lineCount > 1) && fittedFontSize.value > 22f) {
+                    fittedFontSize = (fittedFontSize.value * 0.90f).coerceAtLeast(22f).sp
+                }
+            },
             style = MaterialTheme.typography.headlineLarge.copy(
-                fontSize = fontSize,
+                fontSize = fittedFontSize,
+                lineHeight = (fittedFontSize.value * 1.28f).sp,
                 fontWeight = FontWeight.ExtraBold,
                 color = if (isSelected) FrameScopeColors.SelectionBlue else FrameScopeColors.TextPrimary
             )

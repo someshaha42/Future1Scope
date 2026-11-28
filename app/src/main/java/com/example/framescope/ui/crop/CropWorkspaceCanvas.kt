@@ -1,10 +1,7 @@
 package com.example.framescope.ui.crop
 
 import android.graphics.Bitmap
-import android.graphics.SurfaceTexture
-import android.media.MediaPlayer
-import android.view.Surface
-import android.view.TextureView
+import androidx.annotation.OptIn
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
@@ -59,10 +56,17 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.compose.PlayerSurface
+import androidx.media3.ui.compose.SURFACE_TYPE_TEXTURE_VIEW
 import com.example.framescope.crop.CropMediaType
 import com.example.framescope.crop.ImportedMediaInfo
 import com.example.framescope.crop.NormalizedCropRect
@@ -698,6 +702,7 @@ fun CropWorkspaceCanvas(
     }
 }
 
+@OptIn(UnstableApi::class)
 @Composable
 private fun CropVideoTexturePreview(
     media: ImportedMediaInfo,
@@ -712,13 +717,12 @@ private fun CropVideoTexturePreview(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    var mediaPlayer by remember(media.uri) { mutableStateOf<MediaPlayer?>(null) }
     var isPrepared by remember(media.uri) { mutableStateOf(false) }
     var isLifecycleResumed by remember {
         mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
     }
     var lastKnownPositionMs by remember(media.uri) {
-        mutableLongStateOf(trimStartMs.coerceAtLeast(1L))
+        mutableLongStateOf(trimStartMs.coerceAtLeast(0L))
     }
 
     val latestIsPlaying by rememberUpdatedState(isPlaying)
@@ -726,8 +730,66 @@ private fun CropVideoTexturePreview(
     val latestIsLifecycleResumed by rememberUpdatedState(isLifecycleResumed)
     val latestTrimStartMs by rememberUpdatedState(trimStartMs)
     val latestTrimEndMs by rememberUpdatedState(trimEndMs)
+    val latestOnPositionChanged by rememberUpdatedState(onPositionChanged)
+    val latestOnPlaybackError by rememberUpdatedState(onPlaybackError)
 
-    DisposableEffect(lifecycleOwner) {
+    val exoPlayer = remember(media.uri) {
+        runCatching {
+            val renderersFactory = DefaultRenderersFactory(context).apply {
+                setEnableDecoderFallback(true)
+            }
+            ExoPlayer.Builder(context, renderersFactory).build().apply {
+                repeatMode = Player.REPEAT_MODE_ONE
+                volume = if (latestIsMuted) 0f else 1f
+                setMediaItem(MediaItem.fromUri(media.uri))
+                val initialPos = if (latestTrimEndMs > latestTrimStartMs) {
+                    lastKnownPositionMs.coerceIn(latestTrimStartMs, latestTrimEndMs)
+                } else {
+                    lastKnownPositionMs.coerceAtLeast(latestTrimStartMs)
+                }
+                if (initialPos > 0L) {
+                    seekTo(initialPos)
+                }
+                prepare()
+                playWhenReady = latestIsPlaying && latestIsLifecycleResumed
+            }
+        }.onFailure {
+            latestOnPlaybackError()
+        }.getOrNull()
+    }
+
+    DisposableEffect(exoPlayer) {
+        val player = exoPlayer
+        val listener = if (player != null) {
+            object : Player.Listener {
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    if (playbackState == Player.STATE_READY) {
+                        isPrepared = true
+                        latestOnPositionChanged(player.currentPosition.coerceAtLeast(0L))
+                    }
+                }
+
+                override fun onPlayerError(error: PlaybackException) {
+                    isPrepared = false
+                    latestOnPlaybackError()
+                }
+            }.also { player.addListener(it) }
+        } else {
+            null
+        }
+
+        onDispose {
+            isPrepared = false
+            if (player != null) {
+                if (listener != null) {
+                    player.removeListener(listener)
+                }
+                runCatching { player.release() }
+            }
+        }
+    }
+
+    DisposableEffect(lifecycleOwner, exoPlayer) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_RESUME -> {
@@ -735,14 +797,10 @@ private fun CropVideoTexturePreview(
                 }
                 Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> {
                     isLifecycleResumed = false
-                    runCatching {
-                        mediaPlayer?.let { mp ->
-                            if (isPrepared) {
-                                lastKnownPositionMs = mp.currentPosition.toLong().coerceAtLeast(0L)
-                            }
-                            if (mp.isPlaying) {
-                                mp.pause()
-                            }
+                    exoPlayer?.let { player ->
+                        runCatching {
+                            lastKnownPositionMs = player.currentPosition.coerceAtLeast(0L)
+                            player.playWhenReady = false
                         }
                     }
                 }
@@ -755,57 +813,44 @@ private fun CropVideoTexturePreview(
         }
     }
 
-    DisposableEffect(media.uri) {
-        onDispose {
-            isPrepared = false
-            runCatching { mediaPlayer?.stop() }
-            runCatching { mediaPlayer?.release() }
-            mediaPlayer = null
-        }
-    }
-
-    LaunchedEffect(isPlaying, isPrepared, isLifecycleResumed) {
-        val player = mediaPlayer ?: return@LaunchedEffect
-        if (!isPrepared) return@LaunchedEffect
+    LaunchedEffect(exoPlayer, isPlaying, isLifecycleResumed) {
+        val player = exoPlayer ?: return@LaunchedEffect
         val shouldPlay = isPlaying && isLifecycleResumed
-        runCatching {
-            if (shouldPlay && !player.isPlaying) {
-                player.start()
-            } else if (!shouldPlay && player.isPlaying) {
-                lastKnownPositionMs = player.currentPosition.toLong().coerceAtLeast(0L)
-                player.pause()
+        if (shouldPlay) {
+            if (player.playbackState == Player.STATE_IDLE) {
+                player.prepare()
             }
+            player.playWhenReady = true
+        } else {
+            lastKnownPositionMs = player.currentPosition.coerceAtLeast(0L)
+            player.playWhenReady = false
         }
     }
 
-    LaunchedEffect(isMuted, isPrepared) {
-        val player = mediaPlayer ?: return@LaunchedEffect
-        if (!isPrepared) return@LaunchedEffect
-        val vol = if (isMuted) 0f else 1f
-        runCatching { player.setVolume(vol, vol) }
+    LaunchedEffect(exoPlayer, isMuted) {
+        exoPlayer?.volume = if (isMuted) 0f else 1f
     }
 
-    LaunchedEffect(seekRequestMs, isPrepared) {
+    LaunchedEffect(exoPlayer, seekRequestMs) {
         val targetMs = seekRequestMs ?: return@LaunchedEffect
-        val player = mediaPlayer ?: return@LaunchedEffect
-        if (!isPrepared) return@LaunchedEffect
+        val player = exoPlayer ?: return@LaunchedEffect
         runCatching {
-            player.seekTo(targetMs, MediaPlayer.SEEK_CLOSEST)
+            player.seekTo(targetMs.coerceAtLeast(0L))
             lastKnownPositionMs = targetMs
             onPositionChanged(targetMs)
         }
         onSeekHandled()
     }
 
-    LaunchedEffect(isPlaying, isPrepared, isLifecycleResumed, trimStartMs, trimEndMs) {
-        val player = mediaPlayer ?: return@LaunchedEffect
-        if (!isPrepared || !isPlaying || !isLifecycleResumed) return@LaunchedEffect
+    LaunchedEffect(exoPlayer, isPlaying, isPrepared, isLifecycleResumed, trimStartMs, trimEndMs) {
+        val player = exoPlayer ?: return@LaunchedEffect
+        if (!isPlaying || !isLifecycleResumed) return@LaunchedEffect
         while (isActive) {
-            val pos = runCatching { player.currentPosition.toLong() }.getOrDefault(lastKnownPositionMs)
+            val pos = player.currentPosition.coerceAtLeast(0L)
             lastKnownPositionMs = pos
             onPositionChanged(pos)
             if (trimEndMs > trimStartMs && pos >= trimEndMs) {
-                runCatching { player.seekTo(trimStartMs, MediaPlayer.SEEK_CLOSEST) }
+                player.seekTo(trimStartMs.coerceAtLeast(0L))
                 lastKnownPositionMs = trimStartMs
                 onPositionChanged(trimStartMs)
             }
@@ -813,79 +858,13 @@ private fun CropVideoTexturePreview(
         }
     }
 
-    AndroidView(
-        modifier = Modifier.fillMaxSize(),
-        factory = { ctx ->
-            TextureView(ctx).apply {
-                isOpaque = false
-                surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                    override fun onSurfaceTextureAvailable(
-                        surfaceTexture: SurfaceTexture,
-                        width: Int,
-                        height: Int
-                    ) {
-                        val surface = Surface(surfaceTexture)
-                        val player = MediaPlayer()
-                        mediaPlayer = player
-                        runCatching {
-                            player.setDataSource(context, media.uri)
-                            player.setSurface(surface)
-                            player.isLooping = true
-                            player.setOnPreparedListener { mp ->
-                                isPrepared = true
-                                val vol = if (latestIsMuted) 0f else 1f
-                                runCatching { mp.setVolume(vol, vol) }
-                                val minSeek = latestTrimStartMs.coerceAtLeast(1L)
-                                val resumeTargetMs = if (latestTrimEndMs > latestTrimStartMs) {
-                                    lastKnownPositionMs.coerceIn(minSeek, latestTrimEndMs)
-                                } else {
-                                    lastKnownPositionMs.coerceAtLeast(minSeek)
-                                }
-                                runCatching { mp.seekTo(resumeTargetMs, MediaPlayer.SEEK_CLOSEST) }
-                                onPositionChanged(resumeTargetMs)
-                                if (latestIsPlaying && latestIsLifecycleResumed) {
-                                    runCatching { mp.start() }
-                                }
-                            }
-                            player.setOnErrorListener { _, _, _ ->
-                                onPlaybackError()
-                                true
-                            }
-                            player.prepareAsync()
-                        }.onFailure {
-                            onPlaybackError()
-                        }
-                    }
-
-                    override fun onSurfaceTextureSizeChanged(
-                        surface: SurfaceTexture,
-                        width: Int,
-                        height: Int
-                    ) = Unit
-
-                    override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
-                        runCatching {
-                            mediaPlayer?.let { mp ->
-                                if (isPrepared) {
-                                    lastKnownPositionMs = mp.currentPosition.toLong().coerceAtLeast(0L)
-                                }
-                            }
-                        }
-                        isPrepared = false
-                        runCatching { mediaPlayer?.stop() }
-                        runCatching { mediaPlayer?.release() }
-                        mediaPlayer = null
-                        return true
-                    }
-
-                    override fun onSurfaceTextureUpdated(surface: SurfaceTexture) = Unit
-                }
-            }
-        },
-        update = { view ->
-            view.requestLayout()
-        }
-    )
+    if (exoPlayer != null) {
+        PlayerSurface(
+            player = exoPlayer,
+            surfaceType = SURFACE_TYPE_TEXTURE_VIEW,
+            modifier = Modifier.fillMaxSize()
+        )
+    }
 }
 
 private fun hitTestCropTarget(

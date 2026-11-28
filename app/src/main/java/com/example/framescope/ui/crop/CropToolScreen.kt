@@ -229,8 +229,8 @@ fun CropToolScreen(
         viewModel.exitPreviewMode()
     }
 
-    BackHandler(enabled = !state.isPreviewMode && state.showImportPanel && state.media != null && viewingRecentProjectId == null) {
-        viewModel.closeImportPanelIfLoaded()
+    BackHandler(enabled = !state.isPreviewMode && !state.showImportPanel && state.media != null && viewingRecentProjectId == null) {
+        viewModel.openImportPanel()
     }
 
     previewImageProject?.let { project ->
@@ -370,8 +370,7 @@ fun CropToolScreen(
                         if (state.isPreviewMode) {
                             viewModel.exitPreviewMode()
                         } else {
-                            viewModel.saveProjectOnExit()
-                            onBack()
+                            viewModel.openImportPanel()
                         }
                     },
                     onOpenCanvasMenu = {
@@ -843,10 +842,14 @@ fun CropToolScreen(
         if (activeViewerProject != null) {
             ProjectMediaViewer(
                 project = activeViewerProject,
+                projects = state.recentProjects,
                 isExportingForShare = state.isSharingProjectExport,
                 exportProgress = state.shareExportProgress,
                 exportStatusText = state.shareExportStatus,
                 onBack = { viewingRecentProjectId = null },
+                onSelectProject = { nextProject ->
+                    viewingRecentProjectId = nextProject.id
+                },
                 onOpenProject = { proj ->
                     viewingRecentProjectId = null
                     viewModel.openProject(proj)
